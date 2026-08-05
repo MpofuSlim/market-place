@@ -22,10 +22,16 @@ never change either casually.
   UTC `Instant` → `TIMESTAMPTZ`. Containers pin `-Duser.timezone=UTC`.
 
 > [!IMPORTANT]
-> **Branch naming: `feature/<short-kebab-description>`, cut from the default
-> branch.** One feature per branch; push with `git push -u origin <branch>`
-> and open a **draft** PR. (Exception: a branch explicitly designated by the
-> operator for a session.)
+> **Branch naming: ALWAYS `feature/<short-kebab-description>`, cut from the
+> default branch — NO exceptions.** Claude Code / web sessions frequently
+> start on an auto-assigned `claude/<random-words>` branch. That is a harness
+> artifact, NOT this project's convention — NEVER push it and NEVER open a PR
+> from it. Before the FIRST push of any session, rename:
+> `git branch -m feature/<name>` (or create `feature/<name>` from the current
+> HEAD), push that, and delete any `claude/*` branch that reached the remote.
+> The operator has stated this preference explicitly and permanently — do not
+> ask again, just comply. One feature per branch; push with
+> `git push -u origin <branch>` and open a **draft** PR.
 
 ## What this service deliberately does NOT own
 
