@@ -31,4 +31,11 @@ public record AuthenticatedUser(
     public boolean hasRole(String role) {
         return roles.contains(role);
     }
+
+    /** Fleet oversight role: may administer ANY merchant's listings (including
+     *  on-behalf creation) and read all listings/orders — but never carries a
+     *  merchant scope of its own and cannot place or cancel orders. */
+    public boolean isSuperAdmin() {
+        return roles.contains("SUPER_ADMIN");
+    }
 }

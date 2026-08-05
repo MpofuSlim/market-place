@@ -7,11 +7,16 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.util.UUID;
+
 /**
  * Create payload for a merchant listing. Deliberately carries NO currency (the
- * cell currency is applied server-side) and NO merchant/shop scope (taken from
- * the JWT claims) — a client can never price in a foreign currency or list
- * under another merchant.
+ * cell currency is applied server-side); merchant/shop scope is taken from the
+ * JWT claims — a client can never price in a foreign currency or list under
+ * another merchant. The optional {@code merchantId} exists ONLY for the
+ * SUPER_ADMIN on-behalf-creation exception (see
+ * {@code ListingService.resolveCreateMerchantId}): a MERCHANT_ADMIN sending a
+ * value different from their claim is refused 422.
  */
 @Schema(description = "Create a merchant listing (starts as DRAFT)")
 public record ListingCreateRequest(
@@ -44,6 +49,14 @@ public record ListingCreateRequest(
         @NotNull
         @Min(0)
         @Max(1_000_000)
-        Integer stockQty
+        Integer stockQty,
+
+        @Schema(description = "Target merchant for SUPER_ADMIN on-behalf creation — REQUIRED for "
+                + "SUPER_ADMIN callers (who carry no merchantId claim), and the one deliberate "
+                + "exception to merchant-scope-from-JWT. MERCHANT_ADMIN callers may omit it "
+                + "(their JWT claim is used) or send their own merchant id; a different value "
+                + "is refused with 422 merchant_scope_mismatch.",
+                example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", nullable = true)
+        UUID merchantId
 ) {
 }

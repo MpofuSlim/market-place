@@ -55,8 +55,8 @@ class SecuritySurfaceIT extends PostgresTestContainer {
 
     @Test
     void customerRoleCannotManageListings() throws Exception {
-        // Authenticated but not MERCHANT_ADMIN (the only listing-admin role,
-        // by owner decision): method security
+        // Authenticated but neither MERCHANT_ADMIN nor SUPER_ADMIN (the only
+        // listing-admin roles, by owner decision): method security
         // refuses INSIDE handler invocation — must render the fleet 403
         // envelope, not fall into the Exception catch-all as a 500.
         String customerToken = TestJwts.customer(UUID.randomUUID(), jwtSecret);
@@ -64,6 +64,76 @@ class SecuritySurfaceIT extends PostgresTestContainer {
                         .header("Authorization", "Bearer " + customerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_LISTING_BODY))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void superAdminPassesTheListingGateAndFailsOnlyOnTheMissingTargetMerchant() throws Exception {
+        // SUPER_ADMIN is admitted by the class-level hasAnyRole gate; without
+        // a target merchantId in the body the SERVICE refuses with 400
+        // merchant_id_required — proving the refusal is the on-behalf rule,
+        // not a role 403 (admin tokens carry no merchantId claim).
+        String adminToken = TestJwts.superAdmin(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(post("/marketplace/listings")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_LISTING_BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("merchant_id_required"));
+    }
+
+    @Test
+    void anonymousImageGetIsPublicUnknownListingIs404NotUnauthorized() throws Exception {
+        // Pins that SecurityConfig's GET /marketplace/catalog/** permitAll
+        // covers the new /{id}/image path: an anonymous probe reaches the
+        // controller (404 image_not_found), it is never bounced with a 401.
+        mockMvc.perform(get("/marketplace/catalog/{id}/image", UUID.randomUUID()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("image_not_found"));
+    }
+
+    @Test
+    void customerCannotListAllOrders() throws Exception {
+        // GET /marketplace/orders is the SUPER_ADMIN oversight read — a
+        // CUSTOMER keeps /mine and must be refused here with the fleet 403.
+        String customerToken = TestJwts.customer(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/orders")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void merchantAdminCannotReadOrders() throws Exception {
+        // Order reads are CUSTOMER (own) or SUPER_ADMIN (any) — merchant
+        // tokens get the same 403 on both the by-id and the oversight read.
+        String merchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/orders/{id}", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(get("/marketplace/orders")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void superAdminCannotPlaceOrCancelOrders() throws Exception {
+        // Oversight is read-only on the order surface: placing/cancelling
+        // stays CUSTOMER-only, so an admin token is refused with the fleet 403.
+        String adminToken = TestJwts.superAdmin(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(post("/marketplace/orders")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .header("Idempotency-Key", "admin-cannot-order-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"buyerMsisdn":"+263771234567","items":[{"listingId":"9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d","quantity":1}]}"""))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(post("/marketplace/orders/{id}/cancel", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }

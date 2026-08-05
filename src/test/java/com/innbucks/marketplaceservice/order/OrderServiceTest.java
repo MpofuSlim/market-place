@@ -659,4 +659,72 @@ class OrderServiceTest {
             assertEquals("order_not_found", ex.code());
         }
     }
+
+    // ------------------------------------------------------------------
+    // Reads: CUSTOMER owner-masking vs SUPER_ADMIN oversight
+    // ------------------------------------------------------------------
+
+    private static final AuthenticatedUser SUPER_ADMIN = new AuthenticatedUser(
+            UUID.randomUUID().toString(), Set.of("SUPER_ADMIN"), null, null, null, "ZW");
+
+    @Test
+    void customerGetOrderStaysOwnerMaskedNotYoursIsTheSame404() {
+        UUID orderId = UUID.randomUUID();
+        when(orderRepository.findByIdAndBuyerUuid(orderId, BUYER_UUID))
+                .thenReturn(Optional.empty());
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.getOrder(BUYER, orderId));
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.status());
+        assertEquals("order_not_found", ex.code());
+        // Never the unscoped lookup for a customer.
+        verify(orderRepository, never()).findById(any(UUID.class));
+    }
+
+    @Test
+    void superAdminGetsAnyOrderByIdWithoutOwnerScoping() {
+        MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+        when(orderRepository.findById(order.getId())).thenReturn(Optional.of(order));
+        when(itemRepository.findByOrderId(order.getId()))
+                .thenReturn(List.of(orderItem(order.getId(), new UUID(0, 1), 2)));
+
+        OrderResponse resp = service.getOrder(SUPER_ADMIN, order.getId());
+
+        assertEquals(order.getId(), resp.id());
+        assertEquals(1, resp.items().size());
+        // Fleet oversight is the plain findById — the buyer-scoped query would
+        // 404 (the admin's uuid owns nothing).
+        verify(orderRepository, never()).findByIdAndBuyerUuid(any(), any());
+    }
+
+    @Test
+    void getAllWithoutAFilterPagesEveryBuyersOrders() {
+        MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+        when(orderRepository.findAll(any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(order)));
+        when(itemRepository.findByOrderIdIn(List.of(order.getId())))
+                .thenReturn(List.of(orderItem(order.getId(), new UUID(0, 1), 2)));
+
+        var page = service.getAll(null, org.springframework.data.domain.PageRequest.of(0, 20));
+
+        assertEquals(1, page.getTotalElements());
+        assertEquals(order.getId(), page.getContent().getFirst().id());
+        assertEquals(1, page.getContent().getFirst().items().size());
+        verify(orderRepository, never()).findByBuyerUuid(any(), any());
+    }
+
+    @Test
+    void getAllWithABuyerFilterNarrowsToThatBuyer() {
+        when(orderRepository.findByBuyerUuid(eq(BUYER_UUID),
+                any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.getAll(BUYER_UUID, org.springframework.data.domain.PageRequest.of(0, 20));
+
+        verify(orderRepository).findByBuyerUuid(eq(BUYER_UUID),
+                any(org.springframework.data.domain.Pageable.class));
+        verify(orderRepository, never())
+                .findAll(any(org.springframework.data.domain.Pageable.class));
+    }
 }

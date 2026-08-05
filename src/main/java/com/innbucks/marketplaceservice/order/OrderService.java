@@ -300,7 +300,39 @@ public class OrderService {
 
     @Transactional(readOnly = true)
     public Page<OrderResponse> getMine(AuthenticatedUser buyer, Pageable pageable) {
-        Page<MarketOrder> page = orderRepository.findByBuyerUuid(UUID.fromString(buyer.uuid()), pageable);
+        return withItems(orderRepository.findByBuyerUuid(UUID.fromString(buyer.uuid()), pageable));
+    }
+
+    /**
+     * SUPER_ADMIN oversight read: EVERY buyer's orders, newest-first per the
+     * controller's pageable, optionally narrowed to one buyer. Role gating is
+     * the controller's {@code @PreAuthorize}; nothing here is owner-scoped.
+     */
+    @Transactional(readOnly = true)
+    public Page<OrderResponse> getAll(UUID buyerUuidFilter, Pageable pageable) {
+        Page<MarketOrder> page = buyerUuidFilter == null
+                ? orderRepository.findAll(pageable)
+                : orderRepository.findByBuyerUuid(buyerUuidFilter, pageable);
+        return withItems(page);
+    }
+
+    /**
+     * Single-order read. CUSTOMER callers stay owner-masked (an order that
+     * exists but belongs to someone else is the same 404 as a nonexistent id);
+     * SUPER_ADMIN reads ANY order by id — fleet oversight, so no masking.
+     */
+    @Transactional(readOnly = true)
+    public OrderResponse getOrder(AuthenticatedUser caller, UUID orderId) {
+        MarketOrder order = caller.isSuperAdmin()
+                ? orderRepository.findById(orderId)
+                        .orElseThrow(() -> ApiException.notFound("order_not_found", "Order not found"))
+                : requireOwn(caller, orderId);
+        return toResponse(order, itemRepository.findByOrderId(order.getId()).stream()
+                .map(OrderService::toLine).toList());
+    }
+
+    /** Bulk-loads every page row's items in ONE query (no N+1). */
+    private Page<OrderResponse> withItems(Page<MarketOrder> page) {
         List<UUID> orderIds = page.getContent().stream().map(MarketOrder::getId).toList();
         Map<UUID, List<MarketOrderItem>> itemsByOrder = orderIds.isEmpty() ? Map.of()
                 : itemRepository.findByOrderIdIn(orderIds).stream()
@@ -308,13 +340,6 @@ public class OrderService {
         return page.map(order -> toResponse(order,
                 itemsByOrder.getOrDefault(order.getId(), List.of()).stream()
                         .map(OrderService::toLine).toList()));
-    }
-
-    @Transactional(readOnly = true)
-    public OrderResponse getOwn(AuthenticatedUser buyer, UUID orderId) {
-        MarketOrder order = requireOwn(buyer, orderId);
-        return toResponse(order, itemRepository.findByOrderId(order.getId()).stream()
-                .map(OrderService::toLine).toList());
     }
 
     // ------------------------------------------------------------------

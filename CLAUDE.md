@@ -39,11 +39,23 @@ never change either casually.
   VERIFIES them (HS256 shared secret + RS256 dual-verify selected by the
   token's own `alg` header when `JWT_PUBLIC_KEY` is set). Roles used here:
   `CUSTOMER` (buyers), `MERCHANT_ADMIN` (sellers, scoped by the JWT's
-  `merchantId` claim). **Listing administration is MERCHANT_ADMIN-only — an
-  explicit owner decision (2026-08-05); do not re-add SHOP_ADMIN without the
-  owner asking.** Merchant scope comes from the JWT, NEVER from a request
-  body. The principal uuid prefers the `userUuid` claim (fleet tokens carry
-  the login identifier, not the uuid, in `sub`).
+  `merchantId` claim), and `SUPER_ADMIN` (fleet oversight: manages ANY
+  merchant's listings — update/status/image upload+delete, no ownership
+  check, no `merchantId` claim needed — reads ALL listings via
+  `GET /marketplace/listings/mine` (optional `?merchantId=` filter) and ALL
+  orders via `GET /marketplace/orders` (optional `?buyerUuid=`) plus any
+  single order by id; **cannot place or cancel orders** — those stay
+  CUSTOMER-only). **Merchant-side listing administration is
+  MERCHANT_ADMIN-only — an explicit owner decision (2026-08-05); do not
+  re-add SHOP_ADMIN without the owner asking.** Merchant scope comes from
+  the JWT, NEVER from a request body — with ONE deliberate, owner-approved
+  exception: SUPER_ADMIN creates listings ON BEHALF of a merchant via the
+  optional `merchantId` field on the create request (400
+  `merchant_id_required` if omitted, since admin tokens carry no merchant
+  claim). For MERCHANT_ADMIN callers that field is refused whenever it
+  differs from their claim (422 `merchant_scope_mismatch`), so the invariant
+  stays intact for merchants. The principal uuid prefers the `userUuid`
+  claim (fleet tokens carry the login identifier, not the uuid, in `sub`).
 * **Payments** — there is NO InnBucks Merchant API client in this repo. The
   platform payments service drives orders through the internal S2S surface
   (`/marketplace/internal/orders/*`: read, extend-expiry, confirm-payment),
@@ -94,6 +106,19 @@ never change either casually.
 * **Input hygiene**: Bean Validation on every DTO; jsoup-sanitized free text
   on listing write paths (stored-XSS defense); pagination hard-capped;
   MSISDNs normalised to E.164 (libphonenumber) before storage.
+* **Listing images** (event-service banner design, V2): BYTEA bytes +
+  content-type columns, `@Basic(fetch = LAZY)` so list endpoints never pull
+  bytes. Upload (`PUT /marketplace/listings/{id}/image`, multipart part
+  `image`) validates the allow-listed content type AND the magic-byte
+  signature — jpeg/png/webp only, GIF deliberately rejected — with a 10 MB
+  cap enforced twice (servlet `spring.servlet.multipart.max-file-size` and
+  in-code; `GlobalExceptionHandler` maps the container's rejection to the
+  same 400 `image_too_large`). Bytes are served ONLY via the public
+  `GET /marketplace/catalog/{id}/image` with the stored Content-Type +
+  `X-Content-Type-Options: nosniff` + 1h public cache — status-independent
+  by design (DRAFT owners need the preview; UUIDs are unguessable). The
+  JSON listing-create contract stays non-multipart (published FE contract) —
+  a deliberate deviation from event-service's multipart create.
 * **Error shape**: everything renders as the fleet `ApiResult` envelope via
   `GlobalExceptionHandler`; server.error includes nothing; unhandled → generic
   500, internals stay in logs.

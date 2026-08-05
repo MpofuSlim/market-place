@@ -38,6 +38,13 @@ public final class TestJwts {
         return forUser(userUuid).role("MERCHANT_ADMIN").merchantId(merchantId).sign(secret);
     }
 
+    /** SUPER_ADMIN (fleet oversight) token — deliberately carries NO
+     *  merchantId claim, exactly like the real admin tokens user-service
+     *  mints; the service layer must not require one for admins. */
+    public static String superAdmin(UUID userUuid, String secret) {
+        return forUser(userUuid).role("SUPER_ADMIN").sign(secret);
+    }
+
     public static Builder forUser(UUID userUuid) {
         return new Builder(userUuid);
     }

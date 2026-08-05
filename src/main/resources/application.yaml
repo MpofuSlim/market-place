@@ -41,6 +41,15 @@ spring:
     locations: classpath:db/migration
   lifecycle:
     timeout-per-shutdown-phase: 30s
+  servlet:
+    # Listing image upload cap (PUT /marketplace/listings/{id}/image) —
+    # mirrors event-service's 10 MB banner cap. ListingService re-checks the
+    # size in code and GlobalExceptionHandler maps the container's rejection
+    # to the same 400 image_too_large, so both layers speak one contract.
+    # max-request-size leaves ~1 MB headroom for the multipart framing.
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
 
 marketplace:
   order:

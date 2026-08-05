@@ -12,6 +12,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 /**
  * Renders every error as the fleet ApiResult envelope. Unhandled exceptions
@@ -70,6 +71,21 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResult<Void>> unreadable(HttpMessageNotReadableException ex) {
         return ResponseEntity.badRequest()
                 .body(ApiResult.error("MALFORMED_REQUEST", "Request body is malformed"));
+    }
+
+    /**
+     * The servlet multipart cap (spring.servlet.multipart.max-file-size, 10MB)
+     * trips BEFORE the controller runs, so ListingService's own size check
+     * never sees the request — without this mapping an oversized image upload
+     * would fall into the catch-all below as a 500. Render the SAME 400
+     * envelope the in-code guard produces so clients see one contract for
+     * "too big" regardless of which layer refused.
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResult<Void>> uploadTooLarge(MaxUploadSizeExceededException ex) {
+        return ResponseEntity.badRequest()
+                .body(ApiResult.error("image_too_large",
+                        "That image is too large. Please use one under 10 MB."));
     }
 
     @ExceptionHandler(Exception.class)

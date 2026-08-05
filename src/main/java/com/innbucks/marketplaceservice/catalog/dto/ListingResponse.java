@@ -48,7 +48,13 @@ public record ListingResponse(
         Instant createdAt,
 
         @Schema(description = "UTC instant", example = "2026-08-05T09:15:00Z")
-        Instant updatedAt
+        Instant updatedAt,
+
+        @Schema(description = "Public URL serving the listing image bytes (no auth, GET only); "
+                + "null when no image has been uploaded. Event-service bannerUrl convention.",
+                example = "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                nullable = true)
+        String imageUrl
 ) {
 
     public static ListingResponse from(Listing listing) {
@@ -63,6 +69,11 @@ public record ListingResponse(
                 listing.getStockQty(),
                 listing.getStatus(),
                 listing.getCreatedAt(),
-                listing.getUpdatedAt());
+                listing.getUpdatedAt(),
+                // hasImage() reads only the content-type column — the lazy
+                // bytes stay unloaded on list endpoints.
+                listing.hasImage()
+                        ? "/marketplace/catalog/" + listing.getId() + "/image"
+                        : null);
     }
 }

@@ -62,6 +62,31 @@ public class CatalogService {
                 .orElseThrow(() -> ApiException.notFound("listing_not_found", "Listing not found"));
     }
 
+    /**
+     * Raw image bytes + stored content type for the public image endpoint.
+     *
+     * <p>DELIBERATELY served regardless of listing status (unlike
+     * {@link #getById}, which hides non-ACTIVE listings): listing UUIDs are
+     * unguessable, a product image leaks nothing sensitive, and the owning
+     * merchant needs the image URL to preview a DRAFT listing before
+     * publishing it. Missing listing and missing image are the same 404 —
+     * the endpoint never confirms which.
+     */
+    @Transactional(readOnly = true)
+    public ListingImage getImage(UUID id) {
+        Listing listing = listingRepository.findById(id)
+                .orElseThrow(() -> ApiException.notFound("image_not_found",
+                        "No image has been uploaded for this listing"));
+        if (!listing.hasImage()) {
+            throw ApiException.notFound("image_not_found",
+                    "No image has been uploaded for this listing");
+        }
+        return new ListingImage(listing.getImageBytes(), listing.getImageContentType());
+    }
+
+    /** Mirror of event-service's {@code BannerImage} pair. */
+    public record ListingImage(byte[] bytes, String contentType) {}
+
     private static String blankToNull(String value) {
         if (value == null) {
             return null;
