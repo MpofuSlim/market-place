@@ -39,7 +39,9 @@ public class ApiException extends RuntimeException {
     }
 
     public static ApiException unprocessable(String code, String message) {
-        return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
+        // UNPROCESSABLE_CONTENT is RFC 9110's name for 422; the old
+        // UNPROCESSABLE_ENTITY constant is deprecated in Spring Framework 7.
+        return new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, code, message);
     }
 
     public static ApiException forbidden(String code, String message) {

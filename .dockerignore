@@ -1,0 +1,26 @@
+# Build outputs
+**/target/
+**/data/
+**/*.log
+
+# IDE / editor
+**/.idea/
+**/.vscode/
+**/*.iml
+**/.settings/
+**/.project
+**/.classpath
+
+# Git / CI
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Local dev artifacts
+**/.DS_Store
+**/Thumbs.db
+**/local/
+
+# Tests should never ship inside images
+**/src/test/

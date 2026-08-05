@@ -19,6 +19,8 @@
     <description>InnBucks Marketplace — listings, catalog and orders</description>
 
     <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <java.version>21</java.version>
         <spring.boot.version>4.1.0</spring.boot.version>
         <!-- tomcat-embed-core pinned by the Boot BOM carries known CVEs on the
@@ -380,6 +382,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
                 <configuration>
                     <source>${java.version}</source>
                     <target>${java.version}</target>
@@ -402,6 +405,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.5.4</version>
                 <executions>
                     <execution>
                         <goals>

@@ -38,9 +38,12 @@ never change either casually.
 * **Identity** — user-service mints the fleet JWTs; this service only
   VERIFIES them (HS256 shared secret + RS256 dual-verify selected by the
   token's own `alg` header when `JWT_PUBLIC_KEY` is set). Roles used here:
-  `CUSTOMER` (buyers), `MERCHANT_ADMIN` / `SHOP_ADMIN` (sellers, scoped by
-  the JWT's `merchantId`/`shopId` claims). Merchant scope comes from the JWT,
-  NEVER from a request body.
+  `CUSTOMER` (buyers), `MERCHANT_ADMIN` (sellers, scoped by the JWT's
+  `merchantId` claim). **Listing administration is MERCHANT_ADMIN-only — an
+  explicit owner decision (2026-08-05); do not re-add SHOP_ADMIN without the
+  owner asking.** Merchant scope comes from the JWT, NEVER from a request
+  body. The principal uuid prefers the `userUuid` claim (fleet tokens carry
+  the login identifier, not the uuid, in `sub`).
 * **Payments** — there is NO InnBucks Merchant API client in this repo. The
   platform payments service drives orders through the internal S2S surface
   (`/marketplace/internal/orders/*`: read, extend-expiry, confirm-payment),

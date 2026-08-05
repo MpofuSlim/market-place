@@ -65,6 +65,8 @@ marketplace:
     # Same design as user-service/payment-service (A09). Boot-required under a
     # deployment profile via ProductionSecretsGuard.
     hmac-secret: ${AUDIT_HMAC_SECRET:change-me-audit-hmac-secret-change-me-audit}
+    # Newest-window row budget per nightly integrity walk.
+    verify-limit: ${MARKETPLACE_AUDIT_VERIFY_LIMIT:5000}
 
 innbucks:
   country: ${INNBUCKS_COUNTRY:ZW}
