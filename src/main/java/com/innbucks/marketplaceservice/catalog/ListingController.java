@@ -299,12 +299,39 @@ public class ListingController {
             }""";
 
     @Operation(summary = "Create a listing",
-            description = "Creates a DRAFT listing owned by the caller's merchant (merchantId JWT claim). "
+            description = "Creates a DRAFT listing owned by the caller's merchant (merchantId JWT claim) — "
+                    + "merchants NEVER send a merchantId; scope is automatic from the token. "
                     + "Currency is always the cell currency; HTML in title/description/category is "
                     + "stripped server-side. Publish it via PATCH /marketplace/listings/{id}/status. "
-                    + "SUPER_ADMIN creates ON BEHALF of a merchant and MUST send the request merchantId "
-                    + "field (admins carry no merchant claim); a MERCHANT_ADMIN sending a merchantId "
-                    + "different from their own claim is refused with 422.")
+                    + "SUPER_ADMIN only: creates ON BEHALF of a merchant and MUST send the request "
+                    + "merchantId field (admins carry no merchant claim); a MERCHANT_ADMIN sending a "
+                    + "merchantId different from their own claim is refused with 422.",
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                            schema = @Schema(implementation = ListingCreateRequest.class),
+                            examples = {
+                                    @ExampleObject(name = "merchant (normal)",
+                                            summary = "MERCHANT_ADMIN — no merchantId, scope comes from your JWT",
+                                            value = """
+                                                    {
+                                                      "title": "Wireless Bluetooth Speaker",
+                                                      "description": "Portable speaker with 12h battery life.",
+                                                      "category": "electronics",
+                                                      "priceCents": 2599,
+                                                      "stockQty": 120
+                                                    }"""),
+                                    @ExampleObject(name = "super-admin on behalf of a merchant",
+                                            summary = "SUPER_ADMIN only — must name the target merchant",
+                                            value = """
+                                                    {
+                                                      "title": "Wireless Bluetooth Speaker",
+                                                      "description": "Portable speaker with 12h battery life.",
+                                                      "category": "electronics",
+                                                      "priceCents": 2599,
+                                                      "stockQty": 120,
+                                                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54"
+                                                    }""")
+                            })))
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Listing created as DRAFT",
                     content = @Content(mediaType = "application/json",
@@ -394,7 +421,17 @@ public class ListingController {
     @Schema(name = "CreateListingMultipartRequest")
     @SuppressWarnings("unused")
     private static class CreateListingMultipartRequest {
-        @Schema(description = "Listing JSON payload", implementation = ListingCreateRequest.class)
+        @Schema(description = "Listing JSON payload. MERCHANT_ADMIN: no merchantId — scope comes "
+                + "from your JWT (SUPER_ADMIN on-behalf creation adds it).",
+                implementation = ListingCreateRequest.class,
+                example = """
+                        {
+                          "title": "Wireless Bluetooth Speaker",
+                          "description": "Portable speaker with 12h battery life.",
+                          "category": "electronics",
+                          "priceCents": 2599,
+                          "stockQty": 120
+                        }""")
         public ListingCreateRequest listing;
 
         @Schema(type = "string", format = "binary",
