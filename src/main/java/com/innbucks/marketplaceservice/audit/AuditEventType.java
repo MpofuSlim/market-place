@@ -16,6 +16,10 @@ public enum AuditEventType {
     LISTING_UPDATED,
     /** A listing moved between DRAFT/ACTIVE/INACTIVE/ARCHIVED. */
     LISTING_STATUS_CHANGED,
+    /** A listing's image was uploaded or replaced (bytes + content type). */
+    LISTING_IMAGE_UPDATED,
+    /** A listing's image was removed (both image columns cleared). */
+    LISTING_IMAGE_DELETED,
     /** A buyer created an order — stock was reserved and a payable total minted. */
     ORDER_CREATED,
     /** An order was confirmed as paid by the platform payments service — the

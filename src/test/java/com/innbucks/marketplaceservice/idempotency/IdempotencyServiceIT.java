@@ -23,8 +23,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * restate the code). Runs the actual V1 Flyway migration so the table shape
  * is the production one. No Spring context — the service is constructed
  * directly on the container's DataSource.
+ *
+ * <p>{@code disabledWithoutDocker} matches the fleet convention documented on
+ * {@code support/PostgresTestContainer}: a dev box without Docker SKIPS this
+ * class (CI runs it) — without the flag it was the one IT that went red
+ * instead of skipping.
  */
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class IdempotencyServiceIT {
 
     @Container

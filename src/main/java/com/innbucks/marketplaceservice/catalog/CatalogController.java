@@ -14,12 +14,16 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
 import java.util.UUID;
 
 /**
@@ -54,7 +58,8 @@ public class CatalogController {
                     "stockQty": 150,
                     "status": "ACTIVE",
                     "createdAt": "2026-08-05T09:15:00Z",
-                    "updatedAt": "2026-08-05T09:25:00Z"
+                    "updatedAt": "2026-08-05T09:25:00Z",
+                    "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
                   }
                 ],
                 "page": 0,
@@ -79,7 +84,8 @@ public class CatalogController {
                 "stockQty": 150,
                 "status": "ACTIVE",
                 "createdAt": "2026-08-05T09:15:00Z",
-                "updatedAt": "2026-08-05T09:25:00Z"
+                "updatedAt": "2026-08-05T09:25:00Z",
+                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
               }
             }""";
 
@@ -87,6 +93,12 @@ public class CatalogController {
             {
               "code": "listing_not_found",
               "message": "Listing not found"
+            }""";
+
+    private static final String EXAMPLE_IMAGE_NOT_FOUND_404 = """
+            {
+              "code": "image_not_found",
+              "message": "No image has been uploaded for this listing"
             }""";
 
     private static final String EXAMPLE_INVALID_ID_400 = """
@@ -144,6 +156,41 @@ public class CatalogController {
                     schema = @Schema(type = "string", format = "uuid"))
             @PathVariable("id") String id) {
         return ApiResult.ok(catalogService.getById(parseListingId(id)));
+    }
+
+    @Operation(summary = "Get a listing's image",
+            description = "Returns the raw bytes of the listing image with its original Content-Type. "
+                    + "Served for ANY listing status (a DRAFT owner needs the preview; ids are "
+                    + "unguessable UUIDs) — 404 only when the listing is unknown or has no image, "
+                    + "indistinguishably.")
+    @SecurityRequirements({})
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
+                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h)",
+                    content = @Content(mediaType = "image/png",
+                            schema = @Schema(type = "string", format = "binary"))),
+            @ApiResponse(responseCode = "400", description = "Malformed id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400))),
+            @ApiResponse(responseCode = "404", description = "Unknown listing id, or no image uploaded",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "image-not-found",
+                                    value = EXAMPLE_IMAGE_NOT_FOUND_404)))
+    })
+    @GetMapping("/{id}/image")
+    public ResponseEntity<byte[]> getImage(
+            @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id) {
+        CatalogService.ListingImage image = catalogService.getImage(parseListingId(id));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(image.contentType()))
+                // OWASP A03: stop the browser MIME-sniffing the stored bytes into
+                // an executable type (e.g. HTML/JS) regardless of the served
+                // Content-Type — defence-in-depth alongside upload magic-byte checks.
+                .header("X-Content-Type-Options", "nosniff")
+                .cacheControl(CacheControl.maxAge(Duration.ofHours(1)).cachePublic())
+                .body(image.bytes());
     }
 
     /** Manual parse: GlobalExceptionHandler has no MethodArgumentTypeMismatch

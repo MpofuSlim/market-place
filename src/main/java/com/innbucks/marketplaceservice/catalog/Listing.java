@@ -1,9 +1,11 @@
 package com.innbucks.marketplaceservice.catalog;
 
+import jakarta.persistence.Basic;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
@@ -11,6 +13,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -67,6 +70,19 @@ public class Listing {
     @Column(name = "status", nullable = false, length = 16)
     private ListingStatus status;
 
+    // Listing image bytes. Declared as BYTEA — Postgres has no length cap that
+    // would truncate real-world images, unlike the default Hibernate varbinary
+    // mapping. Lazy-loaded so list endpoints don't pull bytes into memory;
+    // clients fetch the bytes via GET /marketplace/catalog/{id}/image using
+    // the imageUrl on the response. (Event-service banner design.)
+    @Basic(fetch = FetchType.LAZY)
+    @Column(name = "image_bytes", columnDefinition = "BYTEA")
+    @ToString.Exclude
+    private byte[] imageBytes;
+
+    @Column(name = "image_content_type", length = 64)
+    private String imageContentType;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -82,4 +98,15 @@ public class Listing {
     @Version
     @Column(name = "version", nullable = false)
     private Long version;
+
+    /**
+     * Image presence WITHOUT touching the lazy {@link #imageBytes}: the
+     * content type is only ever written alongside the bytes (and cleared with
+     * them), so its presence is the marker. Used by
+     * {@code ListingResponse.from} to derive {@code imageUrl} on list
+     * endpoints without loading megabytes per row.
+     */
+    public boolean hasImage() {
+        return imageContentType != null && !imageContentType.isBlank();
+    }
 }

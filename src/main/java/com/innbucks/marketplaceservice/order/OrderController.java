@@ -28,27 +28,33 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
 /**
- * Buyer order surface. CUSTOMER-only; every read/mutation is owner-scoped by
- * the JWT subject — a non-owner gets the same 404 as a nonexistent order, so
- * the API never confirms someone else's order ids.
+ * Buyer order surface plus the SUPER_ADMIN oversight reads. Placing/cancelling
+ * orders is CUSTOMER-only (an admin cannot move money on a buyer's behalf);
+ * every CUSTOMER read/mutation is owner-scoped by the JWT subject — a
+ * non-owner gets the same 404 as a nonexistent order, so the API never
+ * confirms someone else's order ids. SUPER_ADMIN reads any order / all orders
+ * (method-level {@code @PreAuthorize} per endpoint — there is deliberately no
+ * class-level role gate anymore).
  */
 @RestController
 @RequestMapping("/marketplace/orders")
-@PreAuthorize("hasRole('CUSTOMER')")
 @RequiredArgsConstructor
 @Tag(name = "Orders", description = "Buyer orders: create (reserves stock, mints a payable total), "
         + "read own, cancel while awaiting payment. Payment itself rides the platform payments "
-        + "service via the internal S2S surface.")
+        + "service via the internal S2S surface. SUPER_ADMIN additionally reads all orders "
+        + "(GET /marketplace/orders, GET /{id}) but can never place or cancel one.")
 public class OrderController {
 
     private final OrderService orderService;
 
     @PostMapping
+    @PreAuthorize("hasRole('CUSTOMER')")
     @Operation(summary = "Create an order",
             description = "Reserves stock atomically per line and mints a PENDING_PAYMENT order with a "
                     + "server-computed total (unit prices come from the listing rows — never from the "
@@ -161,6 +167,7 @@ public class OrderController {
     }
 
     @GetMapping("/mine")
+    @PreAuthorize("hasRole('CUSTOMER')")
     @Operation(summary = "List my orders",
             description = "The caller's orders, newest first. Page size is hard-capped fleet-wide.")
     @ApiResponses({
@@ -224,10 +231,88 @@ public class OrderController {
                 OrderPageResponse.from(orderService.getMine(CurrentUser.get(), pageable))));
     }
 
+    @GetMapping
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @Operation(summary = "List all orders (SUPER_ADMIN)",
+            description = "Fleet-oversight read: every buyer's orders, newest first, optionally "
+                    + "narrowed with ?buyerUuid=. Page size is hard-capped fleet-wide. SUPER_ADMIN "
+                    + "only — CUSTOMER tokens are refused (buyers read their own via /mine).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Orders returned",
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = OrderPageResponse.class),
+                            examples = @ExampleObject(name = "All orders", value = """
+                                    {
+                                      "code": "OK",
+                                      "message": "Success",
+                                      "data": {
+                                        "items": [
+                                          {
+                                            "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                            "orderRef": "MKT-4F9A1C22B7D3",
+                                            "status": "PENDING_PAYMENT",
+                                            "totalCents": 3550,
+                                            "currency": "USD",
+                                            "expiresAt": "2026-08-05T10:45:00Z",
+                                            "createdAt": "2026-08-05T10:15:00Z",
+                                            "items": [
+                                              {
+                                                "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                                "titleSnapshot": "Solar Lantern 20W",
+                                                "unitPriceCents": 1550,
+                                                "quantity": 2,
+                                                "lineTotalCents": 3100
+                                              },
+                                              {
+                                                "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
+                                                "titleSnapshot": "USB-C Charging Cable 2m",
+                                                "unitPriceCents": 450,
+                                                "quantity": 1,
+                                                "lineTotalCents": 450
+                                              }
+                                            ]
+                                          }
+                                        ],
+                                        "page": 0,
+                                        "size": 20,
+                                        "totalItems": 1,
+                                        "totalPages": 1
+                                      }
+                                    }
+                                    """))),
+            @ApiResponse(responseCode = "400", description = "Malformed buyerUuid filter",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"invalid_buyer_uuid","message":"buyerUuid filter must be a UUID"}
+                                    """))),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid JWT",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"UNAUTHORIZED","message":"Invalid or missing token","data":null}
+                                    """))),
+            @ApiResponse(responseCode = "403", description = "Authenticated but not SUPER_ADMIN",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}
+                                    """)))
+    })
+    public ResponseEntity<ApiResult<OrderPageResponse>> getAll(
+            @Parameter(description = "Optional filter: only this buyer's orders",
+                    example = "6f9619ff-8b86-4011-b42d-00c04fc964ff",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @RequestParam(value = "buyerUuid", required = false) String buyerUuid,
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable) {
+        return ResponseEntity.ok(ApiResult.ok(OrderPageResponse.from(
+                orderService.getAll(parseOptionalBuyerUuid(buyerUuid), pageable))));
+    }
+
     @GetMapping("/{id}")
-    @Operation(summary = "Get one of my orders",
-            description = "Owner-scoped: an order that exists but belongs to someone else returns the "
-                    + "same 404 as a nonexistent id.")
+    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')")
+    @Operation(summary = "Get one order",
+            description = "CUSTOMER: owner-scoped — an order that exists but belongs to someone else "
+                    + "returns the same 404 as a nonexistent id. SUPER_ADMIN: reads ANY order by id "
+                    + "(fleet oversight, no owner masking).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Order returned",
                     content = @Content(mediaType = "application/json",
@@ -273,7 +358,13 @@ public class OrderController {
                             examples = @ExampleObject(value = """
                                     {"code":"UNAUTHORIZED","message":"Invalid or missing token","data":null}
                                     """))),
-            @ApiResponse(responseCode = "404", description = "No such order owned by the caller",
+            @ApiResponse(responseCode = "403", description = "Authenticated but neither CUSTOMER nor SUPER_ADMIN",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}
+                                    """))),
+            @ApiResponse(responseCode = "404", description = "No such order owned by the caller "
+                    + "(SUPER_ADMIN: no such order at all)",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(value = """
                                     {"code":"order_not_found","message":"Order not found"}
@@ -283,10 +374,11 @@ public class OrderController {
             @Parameter(description = "Order id (UUID)",
                     example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
             @PathVariable("id") String id) {
-        return ResponseEntity.ok(ApiResult.ok(orderService.getOwn(CurrentUser.get(), parseOrderId(id))));
+        return ResponseEntity.ok(ApiResult.ok(orderService.getOrder(CurrentUser.get(), parseOrderId(id))));
     }
 
     @PostMapping("/{id}/cancel")
+    @PreAuthorize("hasRole('CUSTOMER')")
     @Operation(summary = "Cancel one of my orders",
             description = "Only a PENDING_PAYMENT order can be cancelled (the state machine refuses "
                     + "everything else with 409); its reserved stock is returned exactly once.")
@@ -361,6 +453,19 @@ public class OrderController {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException ex) {
             throw ApiException.badRequest("invalid_order_id", "Order id must be a UUID");
+        }
+    }
+
+    /** Absent/blank → null (no filter); present garbage is a clean 400 rather
+     *  than silently returning every buyer's orders. */
+    private static UUID parseOptionalBuyerUuid(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw.trim());
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest("invalid_buyer_uuid", "buyerUuid filter must be a UUID");
         }
     }
 }
