@@ -1,0 +1,24 @@
+# Trivy CVE waiver list — release.yml passes this file as --ignorefile.
+#
+# Trivy scans for ALL fixed AND unfixed CRITICAL/HIGH CVEs (the
+# --ignore-unfixed default would silently ship unfixed CRITICALs).
+# Use this file to acknowledge specific CVEs that you've decided are
+# acceptable for now, instead of disabling the whole "unfixed" category.
+#
+# RULES for adding an entry:
+#   1. One CVE per line (just the CVE-YYYY-NNNNN id).
+#   2. EVERY entry MUST carry a comment line above it with:
+#         - owner (who's tracking this)
+#         - reason (why it's safe / why no fix is available)
+#         - review date (revisit if no fix lands by then)
+#      An entry without that comment will be removed on the next audit.
+#   3. Prefer fixing or upgrading the affected package over adding a waiver.
+#
+# Example:
+#   # @mpofuslim — no fix from upstream for transitive netty path traversal
+#   # in v4.2.x branch; not in the request-handling path on our use of
+#   # spring-cloud-gateway. Review by 2026-09-01.
+#   CVE-2026-12345
+#
+# (Empty — every CVE Trivy finds is currently either patched or otherwise
+# absent from our build.)

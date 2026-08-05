@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Two console appenders; profile picks one. Default (no profile, or any profile
+  outside json/docker/prod) prints human-readable lines with
+  [service,traceId] inline so local tail-f stays readable. Under
+  json / docker / prod the output switches to Logstash-encoded JSON — one
+  object per line, traceId/service/level/etc. as typed fields so
+  Loki/ELK/CloudWatch Insights can query without regex. Operators flip the
+  profile in docker-compose / k8s manifests; the app itself doesn't care
+  which one is active.
+-->
+<configuration>
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="marketplace-service"/>
+
+    <appender name="PLAIN_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [${appName},%X{traceId:-},%X{spanId:-},%X{correlationId:-}] %-40.40logger{39} : %m%n%rEx</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"${appName}"}</customFields>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
+            <includeContext>false</includeContext>
+            <fieldNames>
+                <version>[ignore]</version>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <!-- Sentry: ERROR-level events ship as Sentry issues; INFO/WARN log
+         lines are kept as breadcrumb trail and attached to the next issue.
+         DSN comes from the SENTRY_DSN env var the SDK auto-reads; if blank
+         the appender silently no-ops, so dev / CI pay nothing. MDC
+         (traceId/spanId/correlationId) is captured into every event so an
+         issue links back to the matching log line and OTel trace. -->
+    <appender name="SENTRY" class="io.sentry.logback.SentryAppender">
+        <options>
+            <dsn>${SENTRY_DSN:-}</dsn>
+            <environment>${SENTRY_ENV:-development}</environment>
+            <release>${SENTRY_RELEASE:-}</release>
+            <sendDefaultPii>false</sendDefaultPii>
+            <tracesSampleRate>${SENTRY_TRACES_SAMPLE:-0.1}</tracesSampleRate>
+        </options>
+        <minimumEventLevel>ERROR</minimumEventLevel>
+        <minimumBreadcrumbLevel>INFO</minimumBreadcrumbLevel>
+    </appender>
+
+    <springProfile name="json | docker | prod">
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
+            <appender-ref ref="SENTRY"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!json &amp; !docker &amp; !prod">
+        <root level="INFO">
+            <appender-ref ref="PLAIN_CONSOLE"/>
+            <appender-ref ref="SENTRY"/>
+        </root>
+    </springProfile>
+</configuration>

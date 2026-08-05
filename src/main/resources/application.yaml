@@ -1,0 +1,159 @@
+spring:
+  application:
+    name: marketplace-service
+  data:
+    web:
+      pageable:
+        max-page-size: ${PAGEABLE_MAX_PAGE_SIZE:100}
+        default-page-size: ${PAGEABLE_DEFAULT_PAGE_SIZE:20}
+    # Shared Redis — read side of the cross-service logout denylist only (no
+    # Spring Data Redis repositories). Same Redis the gateway / user-service /
+    # loyalty and the rest of the fleet use.
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      repositories:
+        enabled: false
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/marketplace_service}
+    driver-class-name: ${DB_DRIVER:org.postgresql.Driver}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD}
+    hikari:
+      pool-name: marketplace-service-pool
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      minimum-idle: ${DB_POOL_MIN:10}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
+      idle-timeout: ${DB_IDLE_TIMEOUT_MS:600000}
+      max-lifetime: ${DB_MAX_LIFETIME_MS:1800000}
+  jpa:
+    hibernate:
+      # Schema is owned by Flyway migrations; Hibernate only validates.
+      ddl-auto: ${JPA_DDL_AUTO:validate}
+    show-sql: ${JPA_SHOW_SQL:false}
+    properties:
+      hibernate:
+        dialect: ${HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    baseline-on-migrate: false
+    locations: classpath:db/migration
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+marketplace:
+  order:
+    # How long a PENDING_PAYMENT order holds its stock before the expiry
+    # sweeper releases it. Mirrors the ticketing seat-hold philosophy: a
+    # blocked unit of stock beats an oversell, but holds must always lapse.
+    payment-ttl-minutes: ${MARKETPLACE_ORDER_PAYMENT_TTL_MINUTES:30}
+    # Cap on line items per order and units per line — abuse guard, keeps a
+    # single order from reserving a whole listing's stock via one request.
+    max-items: ${MARKETPLACE_ORDER_MAX_ITEMS:20}
+    max-quantity-per-item: ${MARKETPLACE_ORDER_MAX_QTY_PER_ITEM:25}
+  listing:
+    # Hard caps on merchant listing volume (abuse guard).
+    max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}
+  scheduler:
+    # Order-expiry sweep: releases stock held by lapsed PENDING_PAYMENT orders.
+    expiry-sweep-cron: ${MARKETPLACE_EXPIRY_SWEEP_CRON:0 * * * * *}
+    # Nightly tamper-evidence walk over the audit chain.
+    audit-verify-cron: ${MARKETPLACE_AUDIT_VERIFY_CRON:0 30 3 * * *}
+  audit:
+    # Keyed HMAC sealing every audit row + the deletion-evident chain link.
+    # Same design as user-service/payment-service (A09). Boot-required under a
+    # deployment profile via ProductionSecretsGuard.
+    hmac-secret: ${AUDIT_HMAC_SECRET:change-me-audit-hmac-secret-change-me-audit}
+    # Newest-window row budget per nightly integrity walk.
+    verify-limit: ${MARKETPLACE_AUDIT_VERIFY_LIMIT:5000}
+
+innbucks:
+  country: ${INNBUCKS_COUNTRY:ZW}
+  currency: ${INNBUCKS_CURRENCY:USD}
+  # Shared S2S secret presented as X-Internal-Token on /marketplace/internal/**
+  # by the payments service. Constant-time compared in the controller; the
+  # fleet gateway edge-denies the path ("three files must agree").
+  internal-api-token: ${INTERNAL_API_TOKEN:change-me-internal-token-change-me-internal-token}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui/index.html
+  api-docs:
+    path: /v3/api-docs
+  # Internal S2S endpoints never appear in the published spec.
+  paths-to-exclude: /marketplace/internal/**
+
+server:
+  port: ${SERVER_PORT:8087}
+  shutdown: graceful
+  # Never leak internals on the fallback /error path. Handled errors already
+  # return the ApiResult envelope via GlobalExceptionHandler.
+  error:
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${random.uuid}
+
+# Static token the fleet Prometheus presents on X-Metrics-Token to read
+# /actuator/prometheus (MetricsScrapeAuthFilter). Blank fail-closes: scraping
+# is off until the cell provisions METRICS_SCRAPE_TOKEN — same value
+# fleet-wide, lock-step with ticketing-system's prometheus job.
+monitoring:
+  scrape-token: ${METRICS_SCRAPE_TOKEN:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    enabled: ${TRACING_ENABLED:false}
+    sampling:
+      probability: ${TRACE_SAMPLE:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:-},%X{country:-},%X{traceId:-},%X{spanId:-},%X{correlationId:-}]"
+
+jwt:
+  # Verifies user-service-minted fleet tokens. HS256 shared secret today;
+  # OWASP A02 stage-1 RS256/JWKS dual-verify: when JWT_PUBLIC_KEY is set this
+  # service verifies BOTH HS256 and RS256 (alg selected per-token). This
+  # service only VERIFIES — it never mints; ideally the cell flips user-service
+  # to RS256 so marketplace-service holds no mint-capable secret at all.
+  secret: ${JWT_SECRET:change-me-change-me-change-me-change-me}
+  public-key: ${JWT_PUBLIC_KEY:}
+  expiration: ${JWT_EXPIRATION_MS:86400000}
+
+---
+# OWASP A05: in a deployed cell each backend serves its OpenAPI SPEC ONLY
+# (/v3/api-docs) for the gateway to aggregate — the interactive Swagger UI
+# stays OFF here (the gateway hosts the single UI behind HTTP Basic).
+spring:
+  config:
+    activate:
+      on-profile: prod
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: false

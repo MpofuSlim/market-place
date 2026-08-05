@@ -1,0 +1,73 @@
+version: 2
+updates:
+
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    target-branch: "main"
+    labels:
+      - "dependencies"
+      - "java"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      spring-ecosystem:
+        patterns:
+          - "org.springframework*"
+          - "org.springframework.boot*"
+          - "org.springframework.cloud*"
+          - "org.springframework.security*"
+        update-types: ["minor", "patch"]
+      jackson:
+        patterns:
+          - "com.fasterxml.jackson*"
+          - "tools.jackson*"
+        update-types: ["minor", "patch"]
+      netty:
+        patterns:
+          - "io.netty*"
+        update-types: ["minor", "patch"]
+      testcontainers:
+        patterns:
+          - "org.testcontainers*"
+        update-types: ["minor", "patch"]
+      observability:
+        patterns:
+          - "io.micrometer*"
+          - "io.opentelemetry*"
+          - "io.sentry*"
+          - "net.logstash.logback*"
+        update-types: ["minor", "patch"]
+
+  # Single-service repo: the Dockerfile lives at the repo root, not under a
+  # per-service subdirectory as in the ticketing monorepo.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "08:00", timezone: "Etc/UTC" }
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "docker"]
+    commit-message: { prefix: "docker" }
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+    groups:
+      docker-actions:
+        patterns:
+          - "docker/*"

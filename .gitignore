@@ -1,24 +1,26 @@
-# Compiled class file
+# Build output
+target/
 *.class
 
-# Log file
+# Never commit real secrets — .env.example is the committed template.
+.env
+.env.local
+*.pem
+*.p12
+*.jks
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# Logs / JVM crash dumps
 *.log
-
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# OS noise
+.DS_Store

@@ -1,0 +1,54 @@
+# Profile for @SpringBootTest integration tests (*IT). Activated via
+# @ActiveProfiles("test") on support/PostgresTestContainer. "test" is one of
+# ProductionSecretsGuard's NON_DEPLOYMENT_PROFILES, so the dev-only placeholder
+# secrets below are legal here (and ONLY here).
+spring:
+  cloud:
+    # No Eureka registry in a test run — a registering context would hang on
+    # connect retries and pollute logs.
+    discovery:
+      enabled: false
+  datasource:
+    # Overridden per-container by PostgresTestContainer's @DynamicPropertySource;
+    # a concrete value here keeps the profile self-sufficient (application.yaml's
+    # ${DB_PASSWORD} has no default).
+    password: test-local-password
+  data:
+    redis:
+      # Deliberately points at localhost with no Redis expected to be running:
+      # RevokedTokenDenylist and TokenVersionStore FAIL OPEN on any Redis error
+      # (a blip must never 401 every request — the short token TTL is the
+      # backstop), so JWT auth in these tests exercises exactly that documented
+      # degraded mode. Nothing in the ITs asserts revocation behaviour.
+      host: localhost
+      port: 6379
+      password: ""
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+marketplace:
+  scheduler:
+    # "-" = Scheduled.CRON_DISABLED. The ITs drive OrderExpirySweeper (and could
+    # drive AuditIntegrityVerifier) directly; a background firing mid-test would
+    # race the assertions.
+    expiry-sweep-cron: "-"
+    audit-verify-cron: "-"
+  audit:
+    hmac-secret: dev-only-test-audit-hmac-secret-5e7a9b1c3d2f4a6b
+
+jwt:
+  # >= 32 bytes (HS256 floor in Keys.hmacShaKeyFor). TestJwts signs with this
+  # same value, so what the tests mint is what JwtFilter verifies.
+  secret: dev-only-test-jwt-secret-4f9a1c22b7d3e8f6a2c4
+
+innbucks:
+  internal-api-token: dev-only-test-internal-token-9d5c7f8e2a1b3c4d
+
+# Blank keeps MetricsScrapeAuthFilter fail-closed: /actuator/prometheus answers
+# 401 to everything — SecuritySurfaceIT pins that.
+monitoring:
+  scrape-token: ""

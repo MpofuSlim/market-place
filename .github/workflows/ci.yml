@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches:
+      - "main"
+      - "develop"
+      - "claude/**"
+      - "feature/**"
+      - "release/**"
+      - "hotfix/**"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege (OWASP A08 — CI/CD integrity). Without this block the job
+# inherits the repo-default token scope, which can be read/write across the
+# whole repo. The test job only needs to read source; the dependency-review
+# job opts up to pull-requests:write at the job level for its PR summary.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # All third-party actions are pinned to an immutable commit SHA (not a
+      # movable tag) so a hijacked/retagged release can't inject code into CI
+      # (OWASP A08). Dependabot's github-actions ecosystem bumps the SHA +
+      # trailing version comment together; keep them in lock-step on edits.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Cache Maven wrapper distribution
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/wrapper
+          key: ${{ runner.os }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-wrapper-
+
+      - name: Bootstrap Maven wrapper (retry transient downloads)
+        run: |
+          for attempt in 1 2 3; do
+            ./mvnw -B -ntp -version && exit 0
+            echo "Maven wrapper bootstrap attempt ${attempt} failed; retrying in $((attempt * 10))s..."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Maven wrapper bootstrap failed after 3 attempts (transient Maven Central download issue)."
+          exit 1
+
+      - name: Build + test + integration-test
+        run: ./mvnw -B -ntp verify
+
+      - name: Summarise JaCoCo coverage per module
+        if: always()
+        run: |
+          {
+            echo "## JaCoCo coverage"
+            echo ""
+            echo "| Module | Line % | Branch % | Method % |"
+            echo "|--------|-------:|---------:|---------:|"
+            for xml in $(find . -path '*/target/site/jacoco/jacoco.xml' | sort); do
+              module=$(echo "$xml" | sed 's|^\./||;s|/target.*||')
+              pcts=$(python3 - "$xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          out = {}
+          for c in root.findall('counter'):
+              t, m, cv = c.get('type'), int(c.get('missed')), int(c.get('covered'))
+              total = m + cv
+              out[t] = f"{100*cv/total:.1f}" if total else "n/a"
+          print(f"{out.get('LINE','n/a')}|{out.get('BRANCH','n/a')}|{out.get('METHOD','n/a')}")
+          PY
+              )
+              line=$(echo "$pcts" | cut -d'|' -f1)
+              branch=$(echo "$pcts" | cut -d'|' -f2)
+              method=$(echo "$pcts" | cut -d'|' -f3)
+              echo "| ${module} | ${line} | ${branch} | ${method} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload JaCoCo HTML + XML reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jacoco-coverage
+          path: '**/target/site/jacoco/**'
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Software-supply-chain SCA gate (OWASP A08). Runs only on PRs and is
+  # DIFF-SCOPED: it inspects the dependency manifest changes this PR introduces
+  # (via GitHub's dependency graph) and fails only when the PR ADDS a dependency
+  # with a known High/Critical advisory — so it can't red the existing clean
+  # baseline, it only stops NEW vulnerable deps from landing. Complements the
+  # Release workflow's Trivy image scan, which catches transitive/library CVEs
+  # in the built fat jar; this one surfaces direct-dependency advisories at PR
+  # time before an image is even built.
+  dependency-review:
+    # dependency-review-action needs GitHub's Dependency Graph, which on a
+    # PRIVATE repo requires paid GitHub Advanced Security (it's free on public
+    # repos). On a private repo without GHAS the action hard-errors
+    # "Dependency review is not supported on this repository" and reds every PR.
+    #
+    # Two guards, belt-and-suspenders (learned on InnRewards — an earlier
+    # `visibility == 'public'` gate alone did NOT skip; the pull_request
+    # payload's repository.visibility read as truthy on a private repo, so the
+    # job ran and failed anyway):
+    #   1. `if` gates on the canonical `repository.private` boolean (reliable
+    #      where `visibility` is not) so the job cleanly SKIPS on a private repo
+    #      and auto-re-enables if it ever goes public / GHAS is licensed;
+    #   2. `continue-on-error` on the step so that even if the payload metadata
+    #      is wrong again, the "not supported" error can never RED the PR.
+    # Called-out A08 exception (see CLAUDE.md) — NOT a silent removal:
+    # transitive/library CVEs stay covered by the Release Trivy image scan;
+    # only the PR-time direct-dependency advisory surface is dropped while
+    # private + no GHAS.
+    if: github.event_name == 'pull_request' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # for comment-summary-in-pr
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dependency review
+        continue-on-error: true
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
