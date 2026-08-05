@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
@@ -185,6 +186,47 @@ class ListingServiceTest {
     // ------------------------------------------------------------------
     // Per-merchant cap
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // Create with inline image (the multipart one-shot variant)
+    // ------------------------------------------------------------------
+
+    @Test
+    void createWithInlineImageStoresBytesInTheSameInsert() {
+        service.create(MERCHANT, createReq("Solar Lantern", "desc", "home"),
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
+
+        ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository).save(saved.capture());
+        assertArrayEquals(pngBytes(), saved.getValue().getImageBytes());
+        assertEquals("image/png", saved.getValue().getImageContentType());
+        assertTrue(saved.getValue().hasImage());
+    }
+
+    @Test
+    void createWithAnInvalidImageRefusesTheWholeCreate() {
+        // Atomicity: a bad file must never leave an imageless half-created
+        // listing behind — validation runs BEFORE the insert.
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", "home"),
+                        new MockMultipartFile("image", "fake.png", "image/png",
+                                "not-an-image".getBytes())));
+
+        assertEquals("unsupported_image_type", ex.code());
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    void createWithAnExplicitlyEmptyImagePartIsImageRequired() {
+        // Only an ABSENT part means "no image" — a sent-but-empty part is a
+        // client bug and refuses the create.
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", "home"),
+                        new MockMultipartFile("image", "empty.png", "image/png", new byte[0])));
+
+        assertEquals("image_required", ex.code());
+        verify(listingRepository, never()).save(any());
+    }
 
     @Test
     void createAtThePerMerchantCapConflicts() {
