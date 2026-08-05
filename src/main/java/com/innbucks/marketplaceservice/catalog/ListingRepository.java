@@ -45,20 +45,43 @@ public interface ListingRepository extends JpaRepository<Listing, UUID> {
 
     Optional<Listing> findByIdAndStatus(UUID id, ListingStatus status);
 
-    /**
+    /*
      * Public catalog browse: ACTIVE only, optional case-insensitive title
-     * 'contains' filter and exact category filter. {@code q} MUST already have
-     * its LIKE wildcards escaped with {@code !}
-     * (see {@code CatalogService.escapeLike}) — a raw {@code %}/{@code _} from
-     * a client would otherwise act as a wildcard.
+     * 'contains' filter and exact category filter — one explicit query per
+     * filter combination, selected in CatalogService.
+     *
+     * Deliberately NOT the single "(:q is null or ...)" nullable-param query:
+     * on PostgreSQL an untyped null bind inside lower(...) is inferred as
+     * bytea and the query dies at runtime with "function lower(bytea) does
+     * not exist" (found by SecuritySurfaceIT on the first CI run — the
+     * mocked-repo unit tests can't see it).
+     *
+     * {@code q} MUST already have its LIKE wildcards escaped with {@code !}
+     * (see CatalogService.escapeLike) — a raw %/_ from a client would
+     * otherwise act as a wildcard.
      */
+
+    Page<Listing> findByStatus(ListingStatus status, Pageable pageable);
+
+    Page<Listing> findByStatusAndCategory(ListingStatus status, String category, Pageable pageable);
+
     @Query("""
             select l from Listing l
-             where l.status = com.innbucks.marketplaceservice.catalog.ListingStatus.ACTIVE
-               and (:q is null or lower(l.title) like lower(concat('%', :q, '%')) escape '!')
-               and (:category is null or l.category = :category)
+             where l.status = :status
+               and lower(l.title) like lower(concat('%', :q, '%')) escape '!'
             """)
-    Page<Listing> searchActive(@Param("q") String q,
-                               @Param("category") String category,
-                               Pageable pageable);
+    Page<Listing> findByStatusAndTitleLike(@Param("status") ListingStatus status,
+                                           @Param("q") String q,
+                                           Pageable pageable);
+
+    @Query("""
+            select l from Listing l
+             where l.status = :status
+               and l.category = :category
+               and lower(l.title) like lower(concat('%', :q, '%')) escape '!'
+            """)
+    Page<Listing> findByStatusAndCategoryAndTitleLike(@Param("status") ListingStatus status,
+                                                      @Param("category") String category,
+                                                      @Param("q") String q,
+                                                      Pageable pageable);
 }

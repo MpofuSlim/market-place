@@ -4,6 +4,7 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -36,9 +37,22 @@ public class CatalogService {
         }
         PageRequest pageable = PageRequest.of(Math.max(page, 0),
                 Math.clamp(size, 1, MAX_PAGE_SIZE), NEWEST_FIRST);
-        return ListingPageResponse.from(
-                listingRepository.searchActive(titleFilter, blankToNull(category), pageable)
-                        .map(ListingResponse::from));
+        String categoryFilter = blankToNull(category);
+        // One explicit repository query per filter combination — never a
+        // nullable-param query (Postgres infers bytea for untyped null binds
+        // and 500s; see the note in ListingRepository).
+        Page<Listing> result;
+        if (titleFilter == null && categoryFilter == null) {
+            result = listingRepository.findByStatus(ListingStatus.ACTIVE, pageable);
+        } else if (titleFilter == null) {
+            result = listingRepository.findByStatusAndCategory(ListingStatus.ACTIVE, categoryFilter, pageable);
+        } else if (categoryFilter == null) {
+            result = listingRepository.findByStatusAndTitleLike(ListingStatus.ACTIVE, titleFilter, pageable);
+        } else {
+            result = listingRepository.findByStatusAndCategoryAndTitleLike(
+                    ListingStatus.ACTIVE, categoryFilter, titleFilter, pageable);
+        }
+        return ListingPageResponse.from(result.map(ListingResponse::from));
     }
 
     @Transactional(readOnly = true)
