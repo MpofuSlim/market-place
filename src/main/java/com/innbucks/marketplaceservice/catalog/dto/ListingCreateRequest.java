@@ -51,12 +51,12 @@ public record ListingCreateRequest(
         @Max(1_000_000)
         Integer stockQty,
 
-        @Schema(description = "Target merchant for SUPER_ADMIN on-behalf creation — REQUIRED for "
-                + "SUPER_ADMIN callers (who carry no merchantId claim), and the one deliberate "
-                + "exception to merchant-scope-from-JWT. MERCHANT_ADMIN callers may omit it "
-                + "(their JWT claim is used) or send their own merchant id; a different value "
-                + "is refused with 422 merchant_scope_mismatch.",
-                example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", nullable = true)
+        @Schema(description = "MERCHANT_ADMIN callers: OMIT this — your merchant scope comes from "
+                + "your JWT automatically, and sending a different value is refused with 422 "
+                + "merchant_scope_mismatch. SUPER_ADMIN only: REQUIRED, names the merchant the "
+                + "listing is created on behalf of (admin tokens carry no merchantId claim) — "
+                + "the one deliberate exception to merchant-scope-from-JWT.",
+                nullable = true)
         UUID merchantId
 ) {
 }
