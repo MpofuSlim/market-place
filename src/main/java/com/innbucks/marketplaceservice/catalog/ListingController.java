@@ -11,6 +11,7 @@ import com.innbucks.marketplaceservice.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Encoding;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -336,6 +337,69 @@ public class ListingController {
             @Valid @RequestBody ListingCreateRequest request) {
         ListingResponse created = listingService.create(CurrentUser.get(), request);
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.created(created));
+    }
+
+    @Operation(summary = "Create a listing WITH its product image in one request",
+            description = """
+                    Multipart variant of the JSON create (same path, selected by \
+                    Content-Type) — the event-service create-with-banner shape. \
+                    Two parts:
+                    - `listing` — JSON body matching the plain create request.
+                    - `image` — optional product image (JPEG/PNG/WEBP — GIF is \
+                    not accepted; max 10 MB, magic-byte verified).
+
+                    An invalid image refuses the WHOLE create — no imageless \
+                    half-created listing is ever left behind. The plain JSON \
+                    create remains available for clients without an image.""",
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    content = @Content(
+                            mediaType = MediaType.MULTIPART_FORM_DATA_VALUE,
+                            schema = @Schema(implementation = CreateListingMultipartRequest.class),
+                            encoding = {
+                                    @Encoding(name = "listing", contentType = MediaType.APPLICATION_JSON_VALUE),
+                                    @Encoding(name = "image", contentType = "image/png, image/jpeg, image/webp")
+                            })))
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Listing created (with image when supplied — imageUrl is populated)",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "created", value = EXAMPLE_CREATED_201))),
+            @ApiResponse(responseCode = "400", description = "Validation failed, bad image (unsupported_image_type / image_too_large / image_required), or SUPER_ADMIN without merchantId",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "unsupported-image", value = """
+                                    {
+                                      "code": "unsupported_image_type",
+                                      "message": "Only JPEG, PNG and WEBP images are accepted",
+                                      "data": null
+                                    }"""),
+                            @ExampleObject(name = "merchant-id-required",
+                                    value = EXAMPLE_MERCHANT_ID_REQUIRED_400)})),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid bearer token"),
+            @ApiResponse(responseCode = "403", description = "Caller is not MERCHANT_ADMIN/SUPER_ADMIN, or has no merchant scope"),
+            @ApiResponse(responseCode = "422", description = "MERCHANT_ADMIN sent a foreign merchantId",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "merchant-scope-mismatch",
+                                    value = EXAMPLE_SCOPE_MISMATCH_422)))
+    })
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResult<ListingResponse>> createWithImage(
+            @Valid @RequestPart("listing") ListingCreateRequest listing,
+            @RequestPart(value = "image", required = false) MultipartFile image) {
+        ListingResponse created = listingService.create(CurrentUser.get(), listing, image);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.created(created));
+    }
+
+    // Schema-only helper so springdoc renders a usable multipart form in
+    // Swagger UI (separate JSON text field + file picker). Not used at runtime
+    // (same pattern as event-service's CreateEventMultipartRequest).
+    @Schema(name = "CreateListingMultipartRequest")
+    @SuppressWarnings("unused")
+    private static class CreateListingMultipartRequest {
+        @Schema(description = "Listing JSON payload", implementation = ListingCreateRequest.class)
+        public ListingCreateRequest listing;
+
+        @Schema(type = "string", format = "binary",
+                description = "Optional product image (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB).")
+        public MultipartFile image;
     }
 
     @Operation(summary = "Update a listing",

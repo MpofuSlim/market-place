@@ -87,6 +87,19 @@ public class ListingService {
 
     @Transactional
     public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request) {
+        return create(caller, request, null);
+    }
+
+    /**
+     * Create with an optional inline image (the multipart variant — the
+     * event-service one-shot create-with-banner shape). {@code image} null =
+     * no image part sent; a PRESENT-but-invalid image refuses the WHOLE
+     * create — validation runs before the insert so a bad file never leaves
+     * an imageless half-created listing behind.
+     */
+    @Transactional
+    public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request,
+                                  MultipartFile image) {
         UUID merchantId = resolveCreateMerchantId(caller, request);
         validateRanges(request.priceCents(), request.stockQty());
         // Row-volume abuse guard. ARCHIVED rows still count: listings are never
@@ -112,12 +125,18 @@ public class ListingService {
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
+        if (image != null) {
+            // Deliberately validates an explicitly-sent-but-empty part too
+            // (image_required) — only an ABSENT part means "no image".
+            applyImage(listing, image);
+        }
         listingRepository.save(listing);
         auditService.record(AuditEventType.LISTING_CREATED, caller.uuid(), listing.getId().toString(),
                 Map.of("merchantId", merchantId.toString(),
                         "priceCents", listing.getPriceCents(),
                         "stockQty", listing.getStockQty(),
-                        "status", listing.getStatus().name()));
+                        "status", listing.getStatus().name(),
+                        "hasImage", listing.hasImage()));
         metrics.listingCreated();
         return ListingResponse.from(listing);
     }
