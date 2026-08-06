@@ -8,12 +8,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -32,10 +35,15 @@ class OrderFlowIT extends PostgresTestContainer {
             {
               "title": "Solar Lantern 20W",
               "description": "Portable solar lantern with 12h battery",
-              "category": "electronics",
+              "categoryCode": "electronics",
               "priceCents": 1550,
               "stockQty": 10
             }""";
+
+    /** Real PNG signature + filler — the publish gate requires a primary
+     *  image before a listing may go ACTIVE. */
+    private static final byte[] PNG_BYTES =
+            {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 8, 7};
 
     @Value("${jwt.secret}")
     private String jwtSecret;
@@ -70,6 +78,12 @@ class OrderFlowIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andReturn().getResponse().getContentAsString();
         String listingId = JsonPath.read(createdListing, "$.data.id");
+
+        // Publish gate: activation needs a primary image first.
+        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+                        .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk());
 
         mockMvc.perform(patch("/marketplace/listings/{id}/status", listingId)
                         .header("Authorization", "Bearer " + merchantToken)

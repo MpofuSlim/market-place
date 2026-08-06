@@ -10,6 +10,7 @@ import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
 import com.innbucks.marketplaceservice.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Encoding;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
@@ -36,6 +37,7 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -55,7 +57,9 @@ import java.util.UUID;
                 + "a merchantId claim (owner's call: merchant-side administration is MERCHANT_ADMIN-only; "
                 + "shop staff roles are deliberately excluded) or a SUPER_ADMIN token (fleet oversight: "
                 + "any merchant's listings, on-behalf creation via the request merchantId field); "
-                + "merchant scope is never taken from the request body except that one admin case.")
+                + "merchant scope is never taken from the request body except that one admin case. "
+                + "Listings carry a GALLERY of up to 10 images — exactly one PRIMARY (required to "
+                + "publish) plus up to 9 additional.")
 @RestController
 @RequestMapping("/marketplace/listings")
 @RequiredArgsConstructor
@@ -76,14 +80,21 @@ public class ListingController {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                 "title": "Wireless Bluetooth Speaker",
                 "description": "Portable speaker with 12h battery life.",
-                "category": "electronics",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
                 "priceCents": 2599,
                 "currency": "USD",
                 "stockQty": 120,
                 "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
                 "createdAt": "2026-08-05T09:15:00Z",
                 "updatedAt": "2026-08-05T09:15:00Z",
-                "imageUrl": null
+                "imageUrl": null,
+                "imageUrls": []
               }
             }""";
 
@@ -96,19 +107,26 @@ public class ListingController {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                 "title": "Wireless Bluetooth Speaker",
                 "description": "Portable speaker with 12h battery life.",
-                "category": "electronics",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
                 "priceCents": 2399,
                 "currency": "USD",
                 "stockQty": 150,
                 "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
                 "createdAt": "2026-08-05T09:15:00Z",
                 "updatedAt": "2026-08-05T09:20:00Z",
-                "imageUrl": null
+                "imageUrl": null,
+                "imageUrls": []
               }
             }""";
 
-    /** Same record after PUT /{id}/image landed the product photo (the GETs
-     *  and the status change below then show the populated imageUrl). */
+    /** Same record after PUT /{id}/image landed the primary product photo (the
+     *  GETs and the status change below then show the populated gallery). */
     private static final String EXAMPLE_IMAGE_200 = """
             {
               "code": "OK",
@@ -118,14 +136,86 @@ public class ListingController {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                 "title": "Wireless Bluetooth Speaker",
                 "description": "Portable speaker with 12h battery life.",
-                "category": "electronics",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
                 "priceCents": 2399,
                 "currency": "USD",
                 "stockQty": 150,
                 "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
                 "createdAt": "2026-08-05T09:15:00Z",
                 "updatedAt": "2026-08-05T09:22:00Z",
-                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
+                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                "imageUrls": [
+                  "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                ]
+              }
+            }""";
+
+    /** Same record after POST /{id}/images appended a second (non-primary)
+     *  photo — the primary stays first in imageUrls. */
+    private static final String EXAMPLE_IMAGE_ADDED_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Wireless Bluetooth Speaker",
+                "description": "Portable speaker with 12h battery life.",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 2399,
+                "currency": "USD",
+                "stockQty": 150,
+                "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-08-05T09:15:00Z",
+                "updatedAt": "2026-08-05T09:23:00Z",
+                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                "imageUrls": [
+                  "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d",
+                  "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+                ]
+              }
+            }""";
+
+    /** Same record after DELETE /{id}/images/{primaryImageId}: the second
+     *  photo was auto-promoted to primary (lowest position survivor). */
+    private static final String EXAMPLE_IMAGE_PROMOTED_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Wireless Bluetooth Speaker",
+                "description": "Portable speaker with 12h battery life.",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 2399,
+                "currency": "USD",
+                "stockQty": 150,
+                "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-08-05T09:15:00Z",
+                "updatedAt": "2026-08-05T09:24:00Z",
+                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                "imageUrls": [
+                  "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+                ]
               }
             }""";
 
@@ -138,14 +228,21 @@ public class ListingController {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                 "title": "Wireless Bluetooth Speaker",
                 "description": "Portable speaker with 12h battery life.",
-                "category": "electronics",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
                 "priceCents": 2399,
                 "currency": "USD",
                 "stockQty": 150,
                 "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
                 "createdAt": "2026-08-05T09:15:00Z",
-                "updatedAt": "2026-08-05T09:23:00Z",
-                "imageUrl": null
+                "updatedAt": "2026-08-05T09:25:00Z",
+                "imageUrl": null,
+                "imageUrls": []
               }
             }""";
 
@@ -158,14 +255,23 @@ public class ListingController {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                 "title": "Wireless Bluetooth Speaker",
                 "description": "Portable speaker with 12h battery life.",
-                "category": "electronics",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
                 "priceCents": 2399,
                 "currency": "USD",
                 "stockQty": 150,
                 "status": "ACTIVE",
+                "ratingAvg": null,
+                "reviewCount": 0,
                 "createdAt": "2026-08-05T09:15:00Z",
-                "updatedAt": "2026-08-05T09:25:00Z",
-                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
+                "updatedAt": "2026-08-05T09:26:00Z",
+                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                "imageUrls": [
+                  "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                ]
               }
             }""";
 
@@ -180,14 +286,23 @@ public class ListingController {
                     "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                     "title": "Wireless Bluetooth Speaker",
                     "description": "Portable speaker with 12h battery life.",
-                    "category": "electronics",
+                    "categoryCode": "tv-audio",
+                    "categoryName": "TV & Audio",
+                    "condition": "NEW",
+                    "city": "Harare",
+                    "area": "Avondale",
                     "priceCents": 2399,
                     "currency": "USD",
                     "stockQty": 150,
                     "status": "ACTIVE",
+                    "ratingAvg": null,
+                    "reviewCount": 0,
                     "createdAt": "2026-08-05T09:15:00Z",
-                    "updatedAt": "2026-08-05T09:25:00Z",
-                    "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
+                    "updatedAt": "2026-08-05T09:26:00Z",
+                    "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                    "imageUrls": [
+                      "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                    ]
                   }
                 ],
                 "page": 0,
@@ -212,6 +327,12 @@ public class ListingController {
               "message": "Title must not be empty after sanitization"
             }""";
 
+    private static final String EXAMPLE_UNKNOWN_CATEGORY_400 = """
+            {
+              "code": "unknown_category",
+              "message": "categoryCode is not part of the marketplace taxonomy"
+            }""";
+
     private static final String EXAMPLE_MALFORMED_400 = """
             {
               "code": "MALFORMED_REQUEST",
@@ -222,6 +343,12 @@ public class ListingController {
             {
               "code": "invalid_listing_id",
               "message": "Listing id must be a UUID"
+            }""";
+
+    private static final String EXAMPLE_INVALID_IMAGE_ID_400 = """
+            {
+              "code": "invalid_image_id",
+              "message": "Image id must be a UUID"
             }""";
 
     private static final String EXAMPLE_401 = """
@@ -256,10 +383,22 @@ public class ListingController {
               "message": "Listing not found"
             }""";
 
+    private static final String EXAMPLE_IMAGE_NOT_FOUND_404 = """
+            {
+              "code": "image_not_found",
+              "message": "No such image for this listing"
+            }""";
+
     private static final String EXAMPLE_LIMIT_409 = """
             {
               "code": "listing_limit_reached",
               "message": "Merchant listing limit reached"
+            }""";
+
+    private static final String EXAMPLE_IMAGE_LIMIT_409 = """
+            {
+              "code": "image_limit_reached",
+              "message": "A listing can have at most 10 images"
             }""";
 
     private static final String EXAMPLE_MERCHANT_ID_REQUIRED_400 = """
@@ -272,6 +411,12 @@ public class ListingController {
             {
               "code": "merchant_scope_mismatch",
               "message": "merchantId in the request does not match the caller's merchant scope"
+            }""";
+
+    private static final String EXAMPLE_PRIMARY_IMAGE_REQUIRED_422 = """
+            {
+              "code": "primary_image_required",
+              "message": "A primary image is required before a listing can be published"
             }""";
 
     private static final String EXAMPLE_INVALID_MERCHANT_FILTER_400 = """
@@ -298,11 +443,20 @@ public class ListingController {
               "message": "That image is too large. Please use one under 10 MB."
             }""";
 
+    private static final String EXAMPLE_TOO_MANY_IMAGES_400 = """
+            {
+              "code": "too_many_images",
+              "message": "At most 9 additional images are allowed (10 in total with the primary)"
+            }""";
+
     @Operation(summary = "Create a listing",
             description = "Creates a DRAFT listing owned by the caller's merchant (merchantId JWT claim) — "
                     + "merchants NEVER send a merchantId; scope is automatic from the token. "
-                    + "Currency is always the cell currency; HTML in title/description/category is "
-                    + "stripped server-side. Publish it via PATCH /marketplace/listings/{id}/status. "
+                    + "Currency is always the cell currency; HTML in free-text fields is stripped "
+                    + "server-side. categoryCode must come from GET /marketplace/categories (omitted "
+                    + "defaults to 'other'); condition defaults to NEW; city/area are optional. "
+                    + "Publish it via PATCH /marketplace/listings/{id}/status — note that going "
+                    + "ACTIVE requires a primary image first. "
                     + "SUPER_ADMIN only: creates ON BEHALF of a merchant and MUST send the request "
                     + "merchantId field (admins carry no merchant claim); a MERCHANT_ADMIN sending a "
                     + "merchantId different from their own claim is refused with 422.",
@@ -316,7 +470,10 @@ public class ListingController {
                                                     {
                                                       "title": "Wireless Bluetooth Speaker",
                                                       "description": "Portable speaker with 12h battery life.",
-                                                      "category": "electronics",
+                                                      "categoryCode": "tv-audio",
+                                                      "condition": "NEW",
+                                                      "city": "Harare",
+                                                      "area": "Avondale",
                                                       "priceCents": 2599,
                                                       "stockQty": 120
                                                     }"""),
@@ -326,7 +483,10 @@ public class ListingController {
                                                     {
                                                       "title": "Wireless Bluetooth Speaker",
                                                       "description": "Portable speaker with 12h battery life.",
-                                                      "category": "electronics",
+                                                      "categoryCode": "tv-audio",
+                                                      "condition": "NEW",
+                                                      "city": "Harare",
+                                                      "area": "Avondale",
                                                       "priceCents": 2599,
                                                       "stockQty": 120,
                                                       "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54"
@@ -336,11 +496,12 @@ public class ListingController {
             @ApiResponse(responseCode = "201", description = "Listing created as DRAFT",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "created", value = EXAMPLE_CREATED_201))),
-            @ApiResponse(responseCode = "400", description = "Validation failed, or SUPER_ADMIN omitted "
-                    + "the target merchantId",
+            @ApiResponse(responseCode = "400", description = "Validation failed, unknown categoryCode, "
+                    + "or SUPER_ADMIN omitted the target merchantId",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "bean-validation", value = EXAMPLE_VALIDATION_400),
                             @ExampleObject(name = "title-empty-after-sanitization", value = EXAMPLE_TITLE_400),
+                            @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
                             @ExampleObject(name = "super-admin-without-merchant-id",
                                     value = EXAMPLE_MERCHANT_ID_REQUIRED_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
@@ -366,58 +527,74 @@ public class ListingController {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.created(created));
     }
 
-    @Operation(summary = "Create a listing WITH its product image in one request",
+    @Operation(summary = "Create a listing WITH its image gallery in one request",
             description = """
                     Multipart variant of the JSON create (same path, selected by \
-                    Content-Type) — the event-service create-with-banner shape. \
-                    Two parts:
+                    Content-Type). Parts:
                     - `listing` — JSON body matching the plain create request.
-                    - `image` — optional product image (JPEG/PNG/WEBP — GIF is \
-                    not accepted; max 10 MB, magic-byte verified).
+                    - `image` — optional; becomes the gallery's PRIMARY image \
+                    (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB each, \
+                    magic-byte verified).
+                    - `images` — optional REPEATED part: up to 9 additional \
+                    gallery images (400 too_many_images beyond that; 10 images \
+                    total). When `image` is omitted, the FIRST `images` entry \
+                    becomes the primary so a created gallery always has one.
 
-                    An invalid image refuses the WHOLE create — no imageless \
-                    half-created listing is ever left behind. The plain JSON \
-                    create remains available for clients without an image.""",
+                    ANY invalid file refuses the WHOLE create — no half-created \
+                    listing is ever left behind. The plain JSON create remains \
+                    available for clients without images.""",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(
                             mediaType = MediaType.MULTIPART_FORM_DATA_VALUE,
                             schema = @Schema(implementation = CreateListingMultipartRequest.class),
                             encoding = {
                                     @Encoding(name = "listing", contentType = MediaType.APPLICATION_JSON_VALUE),
-                                    @Encoding(name = "image", contentType = "image/png, image/jpeg, image/webp")
+                                    @Encoding(name = "image", contentType = "image/png, image/jpeg, image/webp"),
+                                    @Encoding(name = "images", contentType = "image/png, image/jpeg, image/webp")
                             })))
     @ApiResponses({
-            @ApiResponse(responseCode = "201", description = "Listing created (with image when supplied — imageUrl is populated)",
+            @ApiResponse(responseCode = "201", description = "Listing created (with its gallery when "
+                    + "files were supplied — imageUrl serves the primary, imageUrls lists every image "
+                    + "primary-first)",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "created", value = EXAMPLE_CREATED_201))),
-            @ApiResponse(responseCode = "400", description = "Validation failed, bad image (unsupported_image_type / image_too_large / image_required), or SUPER_ADMIN without merchantId",
+            @ApiResponse(responseCode = "400", description = "Validation failed, bad image "
+                    + "(unsupported_image_type / image_too_large / image_required), more than 9 "
+                    + "additional images, unknown categoryCode, or SUPER_ADMIN without merchantId",
                     content = @Content(mediaType = "application/json", examples = {
-                            @ExampleObject(name = "unsupported-image", value = """
-                                    {
-                                      "code": "unsupported_image_type",
-                                      "message": "Only JPEG, PNG and WEBP images are accepted",
-                                      "data": null
-                                    }"""),
+                            @ExampleObject(name = "unsupported-image", value = EXAMPLE_UNSUPPORTED_IMAGE_400),
+                            @ExampleObject(name = "too-many-images", value = EXAMPLE_TOO_MANY_IMAGES_400),
+                            @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
                             @ExampleObject(name = "merchant-id-required",
                                     value = EXAMPLE_MERCHANT_ID_REQUIRED_400)})),
-            @ApiResponse(responseCode = "401", description = "Missing or invalid bearer token"),
-            @ApiResponse(responseCode = "403", description = "Caller is not MERCHANT_ADMIN/SUPER_ADMIN, or has no merchant scope"),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid bearer token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Caller is not MERCHANT_ADMIN/SUPER_ADMIN, "
+                    + "or has no merchant scope",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403)})),
+            @ApiResponse(responseCode = "409", description = "Per-merchant listing cap reached",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "limit-reached", value = EXAMPLE_LIMIT_409))),
             @ApiResponse(responseCode = "422", description = "MERCHANT_ADMIN sent a foreign merchantId",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "merchant-scope-mismatch",
                                     value = EXAMPLE_SCOPE_MISMATCH_422)))
     })
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<ApiResult<ListingResponse>> createWithImage(
+    public ResponseEntity<ApiResult<ListingResponse>> createWithImages(
             @Valid @RequestPart("listing") ListingCreateRequest listing,
-            @RequestPart(value = "image", required = false) MultipartFile image) {
-        ListingResponse created = listingService.create(CurrentUser.get(), listing, image);
+            @RequestPart(value = "image", required = false) MultipartFile image,
+            @RequestPart(value = "images", required = false) List<MultipartFile> images) {
+        ListingResponse created = listingService.create(CurrentUser.get(), listing, image, images);
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.created(created));
     }
 
     // Schema-only helper so springdoc renders a usable multipart form in
-    // Swagger UI (separate JSON text field + file picker). Not used at runtime
-    // (same pattern as event-service's CreateEventMultipartRequest).
+    // Swagger UI (separate JSON text field + file pickers). Not used at
+    // runtime (same pattern as event-service's CreateEventMultipartRequest).
     @Schema(name = "CreateListingMultipartRequest")
     @SuppressWarnings("unused")
     private static class CreateListingMultipartRequest {
@@ -428,28 +605,41 @@ public class ListingController {
                         {
                           "title": "Wireless Bluetooth Speaker",
                           "description": "Portable speaker with 12h battery life.",
-                          "category": "electronics",
+                          "categoryCode": "tv-audio",
+                          "condition": "NEW",
+                          "city": "Harare",
+                          "area": "Avondale",
                           "priceCents": 2599,
                           "stockQty": 120
                         }""")
         public ListingCreateRequest listing;
 
         @Schema(type = "string", format = "binary",
-                description = "Optional product image (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB).")
+                description = "Optional PRIMARY image (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB).")
         public MultipartFile image;
+
+        @ArraySchema(arraySchema = @Schema(description = "Optional repeated part: up to 9 additional "
+                + "gallery images (JPEG/PNG/WEBP, max 10 MB each)."),
+                schema = @Schema(type = "string", format = "binary"))
+        public List<MultipartFile> images;
     }
 
     @Operation(summary = "Update a listing",
-            description = "Full replace of the listing's content (title/description/category/price/stock). "
-                    + "Status and currency are not updatable here. Caller must own the listing.")
+            description = "Full replace of the listing's content (title/description/categoryCode/"
+                    + "condition/city/area/price/stock — omitted categoryCode falls back to 'other' "
+                    + "and omitted condition to NEW, so send current values to keep them). Status and "
+                    + "currency are not updatable here; the gallery has its own endpoints. Caller "
+                    + "must own the listing.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Listing updated",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "updated", value = EXAMPLE_UPDATED_200))),
-            @ApiResponse(responseCode = "400", description = "Validation failed or malformed id",
+            @ApiResponse(responseCode = "400", description = "Validation failed, unknown categoryCode, "
+                    + "or malformed id",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "bean-validation", value = EXAMPLE_VALIDATION_400),
                             @ExampleObject(name = "title-empty-after-sanitization", value = EXAMPLE_TITLE_400),
+                            @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
                             @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
                     content = @Content(mediaType = "application/json",
@@ -475,7 +665,9 @@ public class ListingController {
     @Operation(summary = "Change a listing's status",
             description = "Moves the listing between DRAFT/ACTIVE/INACTIVE/ARCHIVED. Only ACTIVE "
                     + "listings appear in the public catalog and can have stock reserved. "
-                    + "Caller must own the listing.")
+                    + "PUBLISH GATE: a transition TO ACTIVE requires the gallery to have a primary "
+                    + "image — 422 primary_image_required otherwise (drafts may stay imageless; "
+                    + "listings already ACTIVE are unaffected). Caller must own the listing.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Status changed",
                     content = @Content(mediaType = "application/json",
@@ -494,7 +686,12 @@ public class ListingController {
                             @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
             @ApiResponse(responseCode = "404", description = "No listing with that id",
                     content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404)))
+                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404))),
+            @ApiResponse(responseCode = "422", description = "Publish gate: transition to ACTIVE with "
+                    + "no primary image in the gallery",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "primary-image-required",
+                                    value = EXAMPLE_PRIMARY_IMAGE_REQUIRED_422)))
     })
     @PatchMapping("/{id}/status")
     public ApiResult<ListingResponse> changeStatus(
@@ -505,16 +702,17 @@ public class ListingController {
         return ApiResult.ok(listingService.changeStatus(CurrentUser.get(), parseListingId(id), request));
     }
 
-    @Operation(summary = "Upload/replace the listing image",
+    @Operation(summary = "Upload/replace the PRIMARY listing image",
             description = "Multipart single file part named `image` (JPEG/PNG/WEBP — GIF is not "
                     + "accepted; max 10 MB). The declared Content-Type AND the file's magic-byte "
-                    + "signature are both validated (event-service banner discipline). The bytes are "
-                    + "then served publicly at GET /marketplace/catalog/{id}/image — the imageUrl on "
-                    + "the response. Caller must own the listing (SUPER_ADMIN may manage any). "
-                    + "This is deliberately a separate endpoint: the JSON create contract is "
-                    + "published to the FE and stays non-multipart.")
+                    + "signature are both validated (event-service banner discipline). REPLACES the "
+                    + "gallery's primary image in place, or creates it when the gallery has none "
+                    + "(back-compat V2 contract — additional images are untouched). The primary is "
+                    + "served publicly at GET /marketplace/catalog/{id}/image — the imageUrl on the "
+                    + "response. Caller must own the listing (SUPER_ADMIN may manage any).")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Image stored; listing returned with imageUrl",
+            @ApiResponse(responseCode = "200", description = "Primary image stored; listing returned "
+                    + "with imageUrl + imageUrls",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "image-uploaded", value = EXAMPLE_IMAGE_200))),
             @ApiResponse(responseCode = "400", description = "Missing/empty part, unsupported type or "
@@ -534,7 +732,12 @@ public class ListingController {
                             @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
             @ApiResponse(responseCode = "404", description = "No listing with that id",
                     content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404)))
+                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404))),
+            @ApiResponse(responseCode = "409", description = "Gallery already holds 10 images and none "
+                    + "is primary, so a new primary cannot be added — delete one first",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "image-limit-reached",
+                                    value = EXAMPLE_IMAGE_LIMIT_409)))
     })
     @PutMapping(value = "/{id}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResult<ListingResponse> uploadImage(
@@ -549,14 +752,18 @@ public class ListingController {
         return ApiResult.ok(listingService.uploadImage(CurrentUser.get(), parseListingId(id), image));
     }
 
-    @Operation(summary = "Remove the listing image",
-            description = "Clears the stored image bytes and content type; the public image URL then "
-                    + "404s and imageUrl returns to null. Removing an absent image is a no-op 200. "
+    @Operation(summary = "Remove the PRIMARY listing image",
+            description = "Deletes the gallery's primary image. If other images remain, the "
+                    + "lowest-position one is PROMOTED to primary (imageUrl keeps working, pointing "
+                    + "at the new primary); with no survivors the public primary URL 404s and "
+                    + "imageUrl returns to null. Removing an absent primary is a no-op 200. "
                     + "Caller must own the listing (SUPER_ADMIN may manage any).")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Image removed; listing returned with null imageUrl",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "image-deleted", value = EXAMPLE_IMAGE_DELETED_200))),
+            @ApiResponse(responseCode = "200", description = "Primary removed (next image promoted when "
+                    + "one remains); listing returned",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "gallery-empty-after-delete", value = EXAMPLE_IMAGE_DELETED_200),
+                            @ExampleObject(name = "survivor-promoted", value = EXAMPLE_IMAGE_PROMOTED_200)})),
             @ApiResponse(responseCode = "400", description = "Malformed id",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400))),
@@ -578,6 +785,136 @@ public class ListingController {
                     schema = @Schema(type = "string", format = "uuid"))
             @PathVariable("id") String id) {
         return ApiResult.ok(listingService.deleteImage(CurrentUser.get(), parseListingId(id)));
+    }
+
+    @Operation(summary = "Add an image to the listing's gallery",
+            description = "Multipart single file part named `image` (JPEG/PNG/WEBP, max 10 MB, same "
+                    + "magic-byte validation as the primary upload). The image is APPENDED after the "
+                    + "current last position as a non-primary — except into an empty gallery, where "
+                    + "the sole image becomes the primary (a gallery with images always has exactly "
+                    + "one primary). At 10 images the gallery is full: 409 image_limit_reached. "
+                    + "Caller must own the listing (SUPER_ADMIN may manage any).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Image added; listing returned with the "
+                    + "grown imageUrls (primary always first)",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "image-added", value = EXAMPLE_IMAGE_ADDED_200))),
+            @ApiResponse(responseCode = "400", description = "Missing/empty part, unsupported type or "
+                    + "signature, too large, or malformed id",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "image-required", value = EXAMPLE_IMAGE_REQUIRED_400),
+                            @ExampleObject(name = "unsupported-image-type", value = EXAMPLE_UNSUPPORTED_IMAGE_400),
+                            @ExampleObject(name = "image-too-large", value = EXAMPLE_IMAGE_TOO_LARGE_400),
+                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400)})),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Wrong role, no merchant scope, or not the owner",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403),
+                            @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
+            @ApiResponse(responseCode = "404", description = "No listing with that id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404))),
+            @ApiResponse(responseCode = "409", description = "Gallery already holds 10 images",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "image-limit-reached",
+                                    value = EXAMPLE_IMAGE_LIMIT_409)))
+    })
+    @PostMapping(value = "/{id}/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResult<ListingResponse> addImage(
+            @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id,
+            @Parameter(description = "Image file (JPEG/PNG/WEBP, max 10 MB)")
+            @RequestPart(value = "image", required = false) MultipartFile image) {
+        return ApiResult.ok(listingService.addImage(CurrentUser.get(), parseListingId(id), image));
+    }
+
+    @Operation(summary = "Remove one gallery image",
+            description = "Deletes the image with the given id from this listing's gallery (the id "
+                    + "must belong to THIS listing — 404 image_not_found otherwise). Deleting the "
+                    + "PRIMARY promotes the lowest-position survivor to primary, so a non-empty "
+                    + "gallery always keeps one. Caller must own the listing (SUPER_ADMIN may "
+                    + "manage any).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Image removed; listing returned (note the "
+                    + "promotion when the primary was deleted)",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "primary-deleted-survivor-promoted",
+                                    value = EXAMPLE_IMAGE_PROMOTED_200))),
+            @ApiResponse(responseCode = "400", description = "Malformed listing or image id",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400),
+                            @ExampleObject(name = "invalid-image-id", value = EXAMPLE_INVALID_IMAGE_ID_400)})),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Wrong role, no merchant scope, or not the owner",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403),
+                            @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
+            @ApiResponse(responseCode = "404", description = "No listing with that id, or the imageId "
+                    + "is not an image of this listing",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "listing-not-found", value = EXAMPLE_NOT_FOUND_404),
+                            @ExampleObject(name = "image-not-found", value = EXAMPLE_IMAGE_NOT_FOUND_404)}))
+    })
+    @DeleteMapping("/{id}/images/{imageId}")
+    public ApiResult<ListingResponse> deleteGalleryImage(
+            @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id,
+            @Parameter(description = "Gallery image id (from imageUrls)",
+                    example = "5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("imageId") String imageId) {
+        return ApiResult.ok(listingService.deleteGalleryImage(CurrentUser.get(),
+                parseListingId(id), parseImageId(imageId)));
+    }
+
+    @Operation(summary = "Set a gallery image as the PRIMARY",
+            description = "Atomic primary swap: the current primary is demoted and the named image "
+                    + "promoted in one transaction (a partial unique index guarantees one primary per "
+                    + "listing even under races). The imageId must belong to THIS listing — 404 "
+                    + "image_not_found otherwise. Re-marking the current primary is a no-op 200. "
+                    + "Caller must own the listing (SUPER_ADMIN may manage any).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Primary set; listing returned with the "
+                    + "new primary first in imageUrls and imageUrl serving it",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "primary-set", value = EXAMPLE_IMAGE_PROMOTED_200))),
+            @ApiResponse(responseCode = "400", description = "Malformed listing or image id",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400),
+                            @ExampleObject(name = "invalid-image-id", value = EXAMPLE_INVALID_IMAGE_ID_400)})),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Wrong role, no merchant scope, or not the owner",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403),
+                            @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
+            @ApiResponse(responseCode = "404", description = "No listing with that id, or the imageId "
+                    + "is not an image of this listing",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "listing-not-found", value = EXAMPLE_NOT_FOUND_404),
+                            @ExampleObject(name = "image-not-found", value = EXAMPLE_IMAGE_NOT_FOUND_404)}))
+    })
+    @PutMapping("/{id}/images/{imageId}/primary")
+    public ApiResult<ListingResponse> setPrimaryImage(
+            @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id,
+            @Parameter(description = "Gallery image id (from imageUrls)",
+                    example = "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("imageId") String imageId) {
+        return ApiResult.ok(listingService.setPrimaryImage(CurrentUser.get(),
+                parseListingId(id), parseImageId(imageId)));
     }
 
     @Operation(summary = "List my listings",
@@ -623,6 +960,14 @@ public class ListingController {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException ex) {
             throw ApiException.badRequest("invalid_listing_id", "Listing id must be a UUID");
+        }
+    }
+
+    private static UUID parseImageId(String raw) {
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest("invalid_image_id", "Image id must be a UUID");
         }
     }
 

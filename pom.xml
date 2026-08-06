@@ -216,6 +216,14 @@
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
 
+        <!-- Own-SMTP email (SES) for SmtpEmailSender — inactive unless a cell
+             sets spring.mail.host + app.mail.enabled (fleet notify pattern).
+             The notification-API path needs no extra dependency. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
         <!-- MSISDN normalisation to E.164 before storing the buyer contact on
              orders, so marketplace agrees with user-service on one format. -->
         <dependency>
@@ -342,6 +350,17 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- WireMock for the external-HTTP client contract tests (notify/
+             clients + UserNotifyGateway), per the fleet mandate. Shaded
+             standalone classifier so the test deps don't fight the project's
+             Jetty/Jackson versions. -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <version>3.13.2</version>
             <scope>test</scope>
         </dependency>
 

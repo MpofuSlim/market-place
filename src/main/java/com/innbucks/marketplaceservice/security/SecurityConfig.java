@@ -32,6 +32,10 @@ public class SecurityConfig {
                         // Public catalog — browse without an account. Writes on
                         // /marketplace/catalog/** stay authenticated (GET only).
                         .requestMatchers(HttpMethod.GET, "/marketplace/catalog/**").permitAll()
+                        // Public category taxonomy (GET only). Lives OUTSIDE the
+                        // catalog prefix, so it needs its own exact matcher —
+                        // pinned by SecuritySurfaceIT.anonymousCategoryTreeIsPublic.
+                        .requestMatchers(HttpMethod.GET, "/marketplace/categories").permitAll()
                         // S2S surface: gated by X-Internal-Token in the
                         // controllers (InternalTokenAuthorizer), not the user
                         // JWT; the fleet gateway edge-denies the path — "three

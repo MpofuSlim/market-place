@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
@@ -97,6 +98,7 @@ class OrderStateMachineTest {
         private MarketOrderEventRepository eventRepository;
         private AuditService auditService;
         private SimpleMeterRegistry registry;
+        private ApplicationEventPublisher eventPublisher;
         private OrderTransitionService transitions;
 
         @BeforeEach
@@ -105,8 +107,9 @@ class OrderStateMachineTest {
             eventRepository = mock(MarketOrderEventRepository.class);
             auditService = mock(AuditService.class);
             registry = new SimpleMeterRegistry();
+            eventPublisher = mock(ApplicationEventPublisher.class);
             transitions = new OrderTransitionService(orderRepository, eventRepository,
-                    auditService, new MarketplaceMetrics(registry));
+                    auditService, new MarketplaceMetrics(registry), eventPublisher);
             when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         }
 
@@ -152,6 +155,16 @@ class OrderStateMachineTest {
             assertEquals(1.0, registry.get("marketplace.orders")
                     .tag("outcome", "paid").counter().count());
             assertEquals(0.0, illegalCount());
+
+            // The notification seam: PAID (and only PAID) publishes OrderPaid
+            // from the chokepoint, in-tx, for the AFTER_COMMIT listener.
+            ArgumentCaptor<OrderPaid> published = ArgumentCaptor.forClass(OrderPaid.class);
+            verify(eventPublisher).publishEvent(published.capture());
+            assertEquals(order.getId(), published.getValue().orderId());
+            assertEquals(order.getOrderRef(), published.getValue().orderRef());
+            assertEquals(order.getBuyerMsisdn(), published.getValue().buyerMsisdn());
+            assertEquals(order.getTotalCents(), published.getValue().totalCents());
+            assertEquals(order.getCurrency(), published.getValue().currency());
         }
 
         @Test
@@ -194,6 +207,8 @@ class OrderStateMachineTest {
             verify(auditService).record(eq(AuditEventType.ORDER_EXPIRED), eq("system"),
                     eq(order.getId().toString()), anyMap());
             assertEquals(0.0, illegalCount());
+            // Only PAID announces itself to the notification seam.
+            verifyNoInteractions(eventPublisher);
         }
 
         @Test
