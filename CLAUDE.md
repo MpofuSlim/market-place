@@ -63,11 +63,11 @@ never change either casually.
   cross-checks the paid amount against the order total (the 100x guard) —
   a mismatch parks with an audit event, it NEVER confirms.
 * **Loyalty** — points ride InnRewards' generic S2S surfaces.
-* **Notifications** — deferred; when added, copy the fleet's gateway client
-  (contract-tested with WireMock) rather than inventing a new one. The first
-  consumer is already scaffolded: the restock-event foundation
-  (`ListingRestocked` + `favorite/RestockAlertListener`, see the V6 invariant
-  below) logs where the back-in-stock send will go.
+* **Notifications** — LIVE (see the "Notifications" section below). The
+  clients are FAITHFUL COPIES of the ticketing fleet's proven implementations
+  (booking-service / InnRewards), package-renamed with `MKT-` references —
+  never invent a new wire contract; the `notify/` package depends on no fleet
+  module.
 
 ## Security invariants (do not weaken without a called-out reason)
 
@@ -207,15 +207,16 @@ never change either casually.
   (high-volume, low-sensitivity — auditing them would drown the
   tamper-evident chain in noise) and favorite counts are NOT exposed on any
   surface (merchant envy metric later, maybe).
-* **Restock-event FOUNDATION (V6, notifications still deferred)**: when
-  `stock_qty` moves **0 → >0** (merchant stock update, or an order
-  cancel/expiry returning the last held units) the owning tx publishes the
-  in-process `ListingRestocked` event; `favorite/RestockAlertListener`
-  (`AFTER_COMMIT` — never fires for a rollback, never throws) counts
-  favoriters and logs at INFO, metric `marketplace.restock_events`. **Wiring
-  this to the fleet SMS/notification gateway is the deliberate next step** —
-  when that lands, copy the fleet's contract-tested gateway client; there is
-  deliberately NO external HTTP client here today.
+* **Restock events (V6) + LIVE restock alerts**: when `stock_qty` moves
+  **0 → >0** (merchant stock update, or an order cancel/expiry returning the
+  last held units) the owning tx publishes the in-process `ListingRestocked`
+  event; `favorite/RestockAlertListener` (`AFTER_COMMIT` + `@Async`, never
+  fires for a rollback, never throws) now DELIVERS: each favoriter is
+  notified via `UserNotifyGateway` (user-service owns contact + channel),
+  capped per event (default 200, oldest favorite first; overflow logged +
+  metered), gated by `marketplace.notifications.restock-alerts.enabled`
+  (default true). Metrics `marketplace.restock_events` +
+  `marketplace.notifications{type=restock_alert}`.
 * **Reports + moderation queue (V7)**: `POST
   /marketplace/catalog/{listingId}/report` — any AUTHENTICATED user (401
   anonymous — spam control; the catalog permitAll is GET-scoped, pinned by
@@ -260,6 +261,86 @@ with exact diffs in **`docs/fleet-wiring.md`**:
 * Shared secrets (`JWT_SECRET`, `INTERNAL_API_TOKEN`, `REDIS_PASSWORD`,
   `METRICS_SCRAPE_TOKEN`) are provisioned from the cell's secret — rotation
   is a cross-repo operation.
+
+## Notifications (fleet copies — do not invent wire contracts)
+
+The `notify/` package is a FAITHFUL COPY of the ticketing fleet's proven
+notification stack (booking-service clients, InnRewards' standalone-repo
+carry pattern), package-renamed with `MKT-` reference prefixes and "InnBucks
+Marketplace" wording. Every client is pinned by a standalone-WireMock
+contract test — change the copy or the wire shape ONLY in lock-step with the
+fleet originals.
+
+**Channels + env vars (ALL optional — graceful degradation, copied from
+booking):** blank creds = that channel disabled with a boot-time WARN
+(`NotificationClientConfig.logChannelStatus`) and `outcome=disabled` metrics;
+NEVER a crash, and deliberately NEVER boot-required in
+`ProductionSecretsGuard` — a cell without notification creds must still take
+orders.
+
+* **InnBucks notification API** (`EmailNotificationClient` +
+  delegating `SmsNotificationClient`): `POST /auth/third-party` bearer
+  (cached until JWT `exp` −30s, ONE forced refresh-and-replay on 401),
+  `X-Api-Key` on every call; SMS `{message, reference, destinationMsisdn}`,
+  email `{subject, message, reference, destinationEmail}`; GSM-7
+  transliteration (`SmsTextSanitizer`) on SMS bodies + email SUBJECTS
+  (the gateway 400s on `! : / ? " * ;` and non-ASCII); auto `MKT-SMS-` /
+  `MKT-EMAIL-` references, ~46-char reference clamp. Env: `BANK_API_URL/KEY/
+  USERNAME/PASSWORD` — the SAME platform creds booking/payment already use.
+* **WhatsApp gateway** (`WhatsAppNotificationClient`): `POST
+  /api/messages/custom-notification`, lowercase `x-api-key`, 1600-char cap
+  (REFUSED, not truncated). Fallback channel for the buyer order-paid SMS.
+  Env: `WHATSAPP_GATEWAY_URL` / `WHATSAPP_API_KEY`.
+* **Optional own-SMTP email** (`SmtpEmailSender` + local
+  `BrandedEmailRenderer`/`EmailSignature` copies): active only when
+  `MAIL_ENABLED=true` AND `MAIL_HOST` is set; presents "InnBucks
+  Marketplace" as sender name, falls back to the notification API on
+  failure. `management.health.mail.enabled=false` is LOAD-BEARING (an unset
+  MAIL_HOST would otherwise 503 readiness — took user-service out 2026-07-29).
+* **`UserNotifyGateway`** (event-service's OrganizerNotificationGateway
+  pattern): `POST /users/internal/{uuid}/notify` on `lb://user-service`
+  (`@LoadBalanced` builder — never host:port), `X-Internal-Token` from the
+  existing `INTERNAL_API_TOKEN`, body `{subject, message}`; user-service owns
+  per-user channel selection/fallback. Strictly best-effort: failures logged
+  + metered, NEVER thrown.
+
+**Triggers (all `AFTER_COMMIT` + `@Async` on the bounded
+`notificationExecutor`, and NOTHING may escape a listener — an after-commit
+exception would make a dead SMS gateway look like a failed payment confirm;
+copied from the middleware/ticketing discipline):**
+
+* **Buyer ORDER PAID** — `OrderTransitionService` publishes `OrderPaid` from
+  the transition chokepoint (only PAID; a future confirm path cannot forget);
+  `notify/OrderPaidNotificationListener` sends the SMS
+  (`"Your InnBucks Marketplace order MKT-XXXX (USD 25.99) is confirmed. Ref
+  MKT-XXXX"`), WhatsApp fallback when SMS fails and WhatsApp is configured.
+  Metric `marketplace.notifications{type=order_paid,outcome=sent|fallback|
+  failed|disabled}`.
+* **RESTOCK ALERTS** — see the V6 invariant above.
+* **MERCHANT NEW-PAID-ORDER** — `notify/MerchantOrderNotifier` groups the
+  order's lines by listing `merchant_id` and notifies each merchant's admin
+  users via `UserNotifyGateway` with THAT merchant's lines + subtotal.
+  **DISABLED BY DEFAULT** (`marketplace.notifications.merchant-orders
+  .enabled=false`): user-service has NO internal merchantId→admin-users
+  lookup (verified 2026-08-06 — `/users/internal/merchants/assigned` returns
+  merchant ids by role, not users), so the shipped `MerchantAdminResolver
+  .Unavailable` resolves nobody. Enabling needs a SMALL user-service internal
+  endpoint (users/uuids by merchantId, three-files-must-agree) + a real
+  contract-tested resolver bean; the marketplace side (grouping, composing,
+  fan-out) is complete and unit-tested.
+
+**Copy discipline:** every template lives in `OrderNotificationComposer` and
+MUST round-trip `SmsTextSanitizer` unchanged (`Ref MKT-...` and `" - "`,
+never `Ref:` or an em-dash) — `OrderNotificationComposerTest` fails the build
+otherwise. Money renders in MAJOR units for humans; storage/wire stays cents.
+Never log a full MSISDN (`MsisdnMasking`) or a message body.
+
+**Cell provisioning: NOTHING NEW.** `BANK_API_*`, `WHATSAPP_*` and `MAIL_*`
+already live in the shared cell ConfigMap/Secret for booking/payment, and the
+marketplace k8s Deployment `envFrom`s both — the channels light up on the
+existing values. `NotificationFlowIT` is the proof the AFTER_COMMIT + async
+wiring fires on a real PAID transition / restock (mock `@Primary` notify
+beans, real Postgres + security chain).
 
 ## Persistence gotchas
 

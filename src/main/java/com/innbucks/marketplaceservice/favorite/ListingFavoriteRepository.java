@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 public interface ListingFavoriteRepository extends JpaRepository<ListingFavorite, FavoriteId> {
@@ -51,7 +52,18 @@ public interface ListingFavoriteRepository extends JpaRepository<ListingFavorite
             countQuery = "select count(f) from ListingFavorite f where f.id.buyerUuid = :buyerUuid")
     Page<Listing> findFavoriteListings(@Param("buyerUuid") UUID buyerUuid, Pageable pageable);
 
-    /** Favoriter count for the restock-alert foundation (log-only today).
-     *  Deliberately NOT exposed on any public surface. */
+    /** Favoriter count for the restock-alert listener (drives the overflow
+     *  metric against the recipient cap). Deliberately NOT exposed on any
+     *  public surface. */
     long countByIdListingId(UUID listingId);
+
+    /**
+     * The buyer uuids to alert when a favorited listing restocks,
+     * OLDEST-favorite first — under the per-event recipient cap the buyers who
+     * waited longest win the slots. Callers pass an unsorted pageable sized to
+     * the cap; the ordering lives in the query.
+     */
+    @Query("select f.id.buyerUuid from ListingFavorite f "
+            + "where f.id.listingId = :listingId order by f.createdAt asc")
+    List<UUID> findFavoriterUuids(@Param("listingId") UUID listingId, Pageable pageable);
 }

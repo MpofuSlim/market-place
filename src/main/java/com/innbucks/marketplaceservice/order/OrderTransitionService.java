@@ -8,6 +8,7 @@ import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.security.CurrentUser;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,6 +52,7 @@ public class OrderTransitionService {
     private final MarketOrderEventRepository eventRepository;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
+    private final ApplicationEventPublisher eventPublisher;
 
     /** Caller-path transition: refuses an illegal move with 409. */
     @Transactional(propagation = Propagation.MANDATORY)
@@ -105,6 +107,14 @@ public class OrderTransitionService {
         journal(saved.getId(), from, to, detail);
         metrics.orderOutcome(to.name().toLowerCase(Locale.ROOT));
         audit(saved, from, to);
+        // Notification seam (fleet convention — the middleware's LedgerService
+        // publishes at ITS chokepoint for the same reason): PAID is announced
+        // from the one place every PAID transition must pass through, so a
+        // future confirm path cannot forget it. Published IN the transaction;
+        // the AFTER_COMMIT listener never fires for a rolled-back confirm.
+        if (to == OrderStatus.PAID) {
+            eventPublisher.publishEvent(OrderPaid.of(saved));
+        }
         log.info("order {} -> {} id={} ref={}", from, to, saved.getId(), saved.getOrderRef());
         return saved;
     }

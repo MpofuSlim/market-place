@@ -141,6 +141,34 @@ public class MarketplaceMetrics {
         restockEvents.increment();
     }
 
+    /**
+     * Notification delivery outcomes on one tagged series,
+     * {@code marketplace.notifications{type,outcome}}. Types are trigger names
+     * ({@code order_paid}, {@code restock_alert}, {@code merchant_order},
+     * {@code user_notify}); outcomes are the bounded vocabulary
+     * {@code sent|fallback|failed|disabled|overflow|accepted|no_recipients} —
+     * never per-message values. {@code failed} rising means buyers are moving
+     * money blind; {@code overflow} means a restock event exceeded the
+     * recipient cap.
+     */
+    public void notificationOutcome(String type, String outcome) {
+        notificationOutcome(type, outcome, 1);
+    }
+
+    /** Amount variant — e.g. the restock overflow counts every recipient the
+     *  cap skipped, not one per event. */
+    public void notificationOutcome(String type, String outcome, double amount) {
+        if (amount <= 0) {
+            return;
+        }
+        Counter.builder("marketplace.notifications")
+                .description("Marketplace notification sends by trigger type and outcome")
+                .tag("type", type == null ? "unknown" : type)
+                .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment(amount);
+    }
+
     public void illegalTransition() {
         illegalTransitions.increment();
     }

@@ -76,14 +76,67 @@ marketplace:
     hmac-secret: ${AUDIT_HMAC_SECRET:change-me-audit-hmac-secret-change-me-audit}
     # Newest-window row budget per nightly integrity walk.
     verify-limit: ${MARKETPLACE_AUDIT_VERIFY_LIMIT:5000}
+  notifications:
+    restock-alerts:
+      # Back-in-stock alerts to favoriters via user-service's internal notify
+      # endpoint (AFTER_COMMIT + async, never-throws).
+      enabled: ${MARKETPLACE_RESTOCK_ALERTS_ENABLED:true}
+      # Per-event recipient cap (oldest favorites win); overflow is logged +
+      # metered marketplace.notifications{type=restock_alert,outcome=overflow}.
+      max-recipients-per-event: ${MARKETPLACE_RESTOCK_ALERTS_MAX_RECIPIENTS:200}
+    merchant-orders:
+      # Merchant new-paid-order alerts. OFF by default: user-service has no
+      # merchantId -> admin-users internal lookup yet (see CLAUDE.md
+      # "Notifications" + notify/MerchantAdminResolver). Flip on only once
+      # that endpoint + a real resolver bean exist.
+      enabled: ${MARKETPLACE_MERCHANT_ORDER_ALERTS_ENABLED:false}
 
 innbucks:
   country: ${INNBUCKS_COUNTRY:ZW}
   currency: ${INNBUCKS_CURRENCY:USD}
   # Shared S2S secret presented as X-Internal-Token on /marketplace/internal/**
-  # by the payments service. Constant-time compared in the controller; the
-  # fleet gateway edge-denies the path ("three files must agree").
+  # by the payments service — and BY us on user-service's
+  # /users/internal/{uuid}/notify (UserNotifyGateway). Constant-time compared
+  # in the controller; the fleet gateway edge-denies the path ("three files
+  # must agree").
   internal-api-token: ${INTERNAL_API_TOKEN:change-me-internal-token-change-me-internal-token}
+
+# user-service, resolved by NAME through Eureka (lb via the @LoadBalanced
+# builder) — never a hardcoded host:port. Consumed by UserNotifyGateway for
+# the S2S notify endpoint (restock alerts, merchant order alerts).
+user-service:
+  base-url: http://user-service
+  connect-timeout-ms: ${USER_SERVICE_CONNECT_TIMEOUT_MS:2000}
+  read-timeout-ms: ${USER_SERVICE_READ_TIMEOUT_MS:5000}
+
+# External WhatsApp notification gateway — the FALLBACK channel for buyer
+# order-paid alerts (third-party service, not in Eureka: explicit base-url).
+# Same WHATSAPP_* env vars the rest of the fleet reads; blank api-key =
+# channel disabled (boot-time WARN, graceful degradation — never a crash).
+whatsapp:
+  base-url: ${WHATSAPP_GATEWAY_URL:http://localhost:8089}
+  api-key: ${WHATSAPP_API_KEY:}
+  connect-timeout-ms: ${WHATSAPP_CONNECT_TIMEOUT_MS:2000}
+  read-timeout-ms: ${WHATSAPP_READ_TIMEOUT_MS:10000}
+
+# InnBucks public notification API (buyer SMS; email available). Same API
+# Gateway + BANK_API_* credentials as the platform payment rail (POST
+# /auth/third-party for the bearer, X-Api-Key header). Blank credentials =
+# channel disabled (boot-time WARN, outcome=disabled metrics) — deliberately
+# NOT boot-required in ProductionSecretsGuard.
+innbucks-notify:
+  base-url: ${BANK_API_URL:https://staging.innbucks.co.zw}
+  api-key: ${BANK_API_KEY:}
+  username: ${BANK_API_USERNAME:}
+  password: ${BANK_API_PASSWORD:}
+  connect-timeout-ms: ${BANK_API_CONNECT_TIMEOUT_MS:3000}
+  read-timeout-ms: ${BANK_API_READ_TIMEOUT_MS:20000}
+  token-ttl: ${BANK_API_TOKEN_TTL:PT8M}
+  # Branded HTML emails ON by default (the gateway renders the message field as
+  # HTML). NOTIFY_HTML_ENABLED=false rolls back to plain text. LOGO_URL blank =
+  # crisp CSS-drawn logo (preferred over a hosted PNG that can proxy faintly).
+  html-enabled: ${NOTIFY_HTML_ENABLED:true}
+  logo-url: ${NOTIFY_LOGO_URL:}
 
 springdoc:
   swagger-ui:
@@ -166,3 +219,49 @@ springdoc:
     enabled: true
   swagger-ui:
     enabled: false
+
+---
+# -- Email transport (Amazon SES over SMTP) -----------------------------------
+# The InnBucks notification API composes the From header itself, so mail sent
+# through it arrives as "Online Banking" whatever product it belongs to.
+# Sending our own SMTP message is the only way marketplace mail can say
+# "InnBucks Marketplace" (SmtpEmailSender).
+#
+# Its own YAML document (no on-profile) so it applies to every profile without
+# colliding with the top-level spring:/marketplace: keys above — a duplicate
+# key in one document is a parse error.
+#
+# Inactive by default twice over: Spring only auto-configures a JavaMailSender
+# when spring.mail.host is set, and SmtpEmailSender also requires
+# app.mail.enabled=true. With both unset, delivery is unchanged (notification
+# API), so merging this is a no-op until a cell provisions SES credentials.
+spring:
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+# Mail must NEVER gate readiness. The probe hits the AGGREGATE /actuator/health,
+# and Boot's MailHealthIndicator opens a real connection to spring.mail.host —
+# which is empty on a cell that has not provisioned SES, so the component
+# reports DOWN, the aggregate 503s and the pod never becomes ready (this took
+# user-service out on 2026-07-29). Even with SES configured this is the wrong
+# signal: email delivery is best-effort with a notification-API fallback, so an
+# unreachable SMTP host must not pull the service out of rotation.
+management:
+  health:
+    mail:
+      enabled: false
+app:
+  mail:
+    enabled: ${MAIL_ENABLED:false}
+    # Must be an SES-verified identity for the region or SES rejects the send.
+    from: ${MAIL_FROM:banking@innbucks.co.zw}
+    sender-name: ${MAIL_SENDER_NAME:InnBucks Marketplace}
