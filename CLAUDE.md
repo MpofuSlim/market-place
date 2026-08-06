@@ -106,19 +106,69 @@ never change either casually.
 * **Input hygiene**: Bean Validation on every DTO; jsoup-sanitized free text
   on listing write paths (stored-XSS defense); pagination hard-capped;
   MSISDNs normalised to E.164 (libphonenumber) before storage.
-* **Listing images** (event-service banner design, V2): BYTEA bytes +
-  content-type columns, `@Basic(fetch = LAZY)` so list endpoints never pull
-  bytes. Upload (`PUT /marketplace/listings/{id}/image`, multipart part
-  `image`) validates the allow-listed content type AND the magic-byte
-  signature — jpeg/png/webp only, GIF deliberately rejected — with a 10 MB
-  cap enforced twice (servlet `spring.servlet.multipart.max-file-size` and
-  in-code; `GlobalExceptionHandler` maps the container's rejection to the
-  same 400 `image_too_large`). Bytes are served ONLY via the public
-  `GET /marketplace/catalog/{id}/image` with the stored Content-Type +
+* **Listing image GALLERY** (V3 — replaced V2's single-image columns): up to
+  **10 images per listing** in the `listing_image` table (BYTEA + content
+  type per row), **exactly ONE primary whenever any images exist** — a
+  partial unique index (`ON listing_image(listing_id) WHERE is_primary`) is
+  the DB backstop; app-side, primary swaps run as ORDERED bulk statements
+  (demote THEN mark; delete THEN promote) so the index never sees two
+  primaries mid-transaction. The invariant is preserved by construction:
+  the first uploaded file of a create becomes primary, adding to an empty
+  gallery promotes the sole image, and deleting the primary promotes the
+  lowest-position survivor. Metadata reads (list endpoints, response
+  assembly) go through a **bytes-free interface projection**
+  (`ListingImageRepository.ImageMeta`) — never the entity — and a page of
+  listings resolves its galleries with ONE grouped `listing_id IN (...)`
+  query (`ListingViewAssembler`), never per-row. Endpoints:
+  `PUT /{id}/image` (replace-or-create primary, back-compat V2 contract),
+  `DELETE /{id}/image` (delete primary + promotion), `POST /{id}/images`
+  (append; 409 `image_limit_reached` at 10), `DELETE /{id}/images/{imageId}`
+  (remove one, promotion if primary), `PUT /{id}/images/{imageId}/primary`
+  (atomic swap). Multipart create takes parts `listing` + `image` (primary)
+  + repeated `images` (max 9 additional → 400 `too_many_images`). Every file
+  validates the allow-listed content type AND the magic-byte signature —
+  jpeg/png/webp only, GIF deliberately rejected — 10 MB cap enforced twice
+  (servlet `spring.servlet.multipart.max-file-size` and in-code;
+  `GlobalExceptionHandler` maps the container's rejection to the same 400
+  `image_too_large`). Bytes are served ONLY via the public
+  `GET /marketplace/catalog/{id}/image` (primary, unchanged contract) and
+  `GET /marketplace/catalog/{id}/images/{imageId}` (any image; the
+  (listingId, imageId) pair must match), both with the stored Content-Type +
   `X-Content-Type-Options: nosniff` + 1h public cache — status-independent
-  by design (DRAFT owners need the preview; UUIDs are unguessable). The
-  JSON listing-create contract stays non-multipart (published FE contract) —
-  a deliberate deviation from event-service's multipart create.
+  by design (DRAFT owners need the preview; UUIDs are unguessable).
+  `ListingResponse.imageUrl` (primary, null when none) stays for
+  back-compat; `imageUrls` lists the whole gallery primary-first. The JSON
+  listing-create contract stays non-multipart (published FE contract).
+* **PUBLISH GATE** (owner decision, 2026-08-06): a status transition **TO
+  ACTIVE requires a primary image** — 422 `primary_image_required`
+  otherwise. Exactly one image is MANDATORY for a live listing; DRAFTs may
+  stay imageless. The guard sits on the transition only (from != ACTIVE,
+  to == ACTIVE), so listings that were already ACTIVE before V3 keep
+  working and deactivation is never blocked.
+* **Category taxonomy + condition + location** (V4): `listing.category`
+  (free text) was replaced by `category_code` — a FK onto the
+  migration-seeded two-level `category` table (10 top-level codes, ~36
+  children; extend via a NEW migration, never at runtime — there is no
+  admin CRUD). Requests carry `categoryCode` (optional → defaults `other`;
+  normalized trim+lowercase; unknown → 400 `unknown_category`); responses
+  carry `categoryCode` + resolved `categoryName`. `condition` is an
+  enum column (`NEW`/`USED_LIKE_NEW`/`USED_GOOD`/`USED_FAIR`, default NEW,
+  CHECK-constrained). `city`/`area` are optional jsoup-sanitized free text
+  (blank→null). Public `GET /marketplace/categories` serves the tree
+  (permitAll via a DEDICATED SecurityConfig matcher — the path is outside
+  `/marketplace/catalog/**`; 1h public cache). Geo/radius search is future
+  work — city is an exact lower(city) match only.
+* **Catalog browse = conditional Criteria predicates, NEVER a null bind**:
+  with four optional filters (q, category — a parent code expands to its
+  children, condition, city) the browse uses a JPA `Specification` built
+  by APPENDING a predicate per PRESENT filter. An absent filter contributes
+  no predicate and therefore no bind — the rule the old
+  one-query-per-combination repository methods existed for. Do NOT regress
+  to a `(:q is null or lower(...))` nullable-param query: Postgres infers
+  `bytea` for an untyped null bind and dies with "function lower(bytea)
+  does not exist" at runtime (found by SecuritySurfaceIT in CI; invisible
+  to mocked-repo tests). CatalogServiceTest pins the predicate structure;
+  SecuritySurfaceIT + CatalogTaxonomyBrowseIT prove it against real SQL.
 * **Error shape**: everything renders as the fleet `ApiResult` envelope via
   `GlobalExceptionHandler`; server.error includes nothing; unhandled → generic
   500, internals stay in logs.

@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.catalog.dto;
 
+import com.innbucks.marketplaceservice.catalog.ItemCondition;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -26,10 +27,27 @@ public record ListingUpdateRequest(
         @Size(max = 4000)
         String description,
 
-        @Schema(description = "Category tag used for exact-match catalog filtering. HTML is stripped server-side.",
-                example = "electronics", maxLength = 64)
-        @Size(max = 64)
-        String category,
+        @Schema(description = "Curated taxonomy code (GET /marketplace/categories lists valid values). "
+                + "Omitted/blank defaults to 'other'; an unknown code is refused with 400 unknown_category.",
+                example = "tv-audio", maxLength = 40, nullable = true)
+        @Size(max = 40)
+        String categoryCode,
+
+        @Schema(description = "Item condition. Omitted defaults to NEW (full replace — send the "
+                + "current value to keep it).",
+                example = "USED_GOOD", nullable = true)
+        ItemCondition condition,
+
+        @Schema(description = "Seller's city (optional; HTML is stripped server-side).",
+                example = "Harare", maxLength = 80, nullable = true)
+        @Size(max = 80)
+        String city,
+
+        @Schema(description = "Neighbourhood/area within the city (optional; HTML is stripped "
+                + "server-side).",
+                example = "Avondale", maxLength = 120, nullable = true)
+        @Size(max = 120)
+        String area,
 
         @Schema(description = "Unit price in MINOR units (cents). Currency is always the cell currency.",
                 example = "2399", minimum = "1", maximum = "100000000")

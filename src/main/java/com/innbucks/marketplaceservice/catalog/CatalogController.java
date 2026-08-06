@@ -33,7 +33,8 @@ import java.util.UUID;
  */
 @Tag(name = "Public Catalog",
         description = "Unauthenticated browse/read of ACTIVE listings. All prices are minor units "
-                + "(cents) in the cell currency; timestamps are UTC instants.")
+                + "(cents) in the cell currency; timestamps are UTC instants. Listings carry an "
+                + "image gallery: imageUrl serves the primary, imageUrls every image primary-first.")
 @RestController
 @RequestMapping("/marketplace/catalog")
 @RequiredArgsConstructor
@@ -52,14 +53,21 @@ public class CatalogController {
                     "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                     "title": "Wireless Bluetooth Speaker",
                     "description": "Portable speaker with 12h battery life.",
-                    "category": "electronics",
+                    "categoryCode": "tv-audio",
+                    "categoryName": "TV & Audio",
+                    "condition": "NEW",
+                    "city": "Harare",
+                    "area": "Avondale",
                     "priceCents": 2399,
                     "currency": "USD",
                     "stockQty": 150,
                     "status": "ACTIVE",
                     "createdAt": "2026-08-05T09:15:00Z",
-                    "updatedAt": "2026-08-05T09:25:00Z",
-                    "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
+                    "updatedAt": "2026-08-05T09:26:00Z",
+                    "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                    "imageUrls": [
+                      "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                    ]
                   }
                 ],
                 "page": 0,
@@ -78,14 +86,21 @@ public class CatalogController {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                 "title": "Wireless Bluetooth Speaker",
                 "description": "Portable speaker with 12h battery life.",
-                "category": "electronics",
+                "categoryCode": "tv-audio",
+                "categoryName": "TV & Audio",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
                 "priceCents": 2399,
                 "currency": "USD",
                 "stockQty": 150,
                 "status": "ACTIVE",
                 "createdAt": "2026-08-05T09:15:00Z",
-                "updatedAt": "2026-08-05T09:25:00Z",
-                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image"
+                "updatedAt": "2026-08-05T09:26:00Z",
+                "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
+                "imageUrls": [
+                  "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                ]
               }
             }""";
 
@@ -107,31 +122,56 @@ public class CatalogController {
               "message": "Listing id must be a UUID"
             }""";
 
+    private static final String EXAMPLE_INVALID_IMAGE_ID_400 = """
+            {
+              "code": "invalid_image_id",
+              "message": "Image id must be a UUID"
+            }""";
+
+    private static final String EXAMPLE_INVALID_CONDITION_400 = """
+            {
+              "code": "invalid_condition",
+              "message": "condition must be one of NEW, USED_LIKE_NEW, USED_GOOD, USED_FAIR"
+            }""";
+
     @Operation(summary = "Browse the catalog",
-            description = "ACTIVE listings only, newest first. Optional case-insensitive title "
-                    + "'contains' filter (q) and exact category filter. Page size is clamped to 50 "
-                    + "(never an error).")
+            description = "ACTIVE listings only, newest first. Optional filters, all combinable: "
+                    + "case-insensitive title 'contains' (q); category by taxonomy code — a PARENT "
+                    + "code (e.g. electronics) also matches listings in its children (e.g. tv-audio); "
+                    + "condition (NEW/USED_LIKE_NEW/USED_GOOD/USED_FAIR); city (exact, "
+                    + "case-insensitive — geo/radius search is future work). Page size is clamped "
+                    + "to 50 (never an error).")
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of ACTIVE listings "
                     + "(an out-of-range page simply returns empty items)",
                     content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "browse", value = EXAMPLE_BROWSE_200)))
+                            examples = @ExampleObject(name = "browse", value = EXAMPLE_BROWSE_200))),
+            @ApiResponse(responseCode = "400", description = "condition outside the enum",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "invalid-condition",
+                                    value = EXAMPLE_INVALID_CONDITION_400)))
     })
     @GetMapping
     public ApiResult<ListingPageResponse> browse(
             @Parameter(description = "Case-insensitive title 'contains' filter",
                     example = "speaker")
             @RequestParam(value = "q", required = false) String q,
-            @Parameter(description = "Exact category filter", example = "electronics")
+            @Parameter(description = "Taxonomy code filter (see GET /marketplace/categories). "
+                    + "A parent code expands to itself + its children.", example = "electronics")
             @RequestParam(value = "category", required = false) String category,
+            @Parameter(description = "Condition filter", example = "NEW",
+                    schema = @Schema(implementation = ItemCondition.class))
+            @RequestParam(value = "condition", required = false) String condition,
+            @Parameter(description = "Exact city filter (case-insensitive)", example = "Harare")
+            @RequestParam(value = "city", required = false) String city,
             @Parameter(description = "Zero-based page index",
                     schema = @Schema(type = "integer", defaultValue = "0"))
             @RequestParam(value = "page", defaultValue = "0") String page,
             @Parameter(description = "Page size (clamped to 50)",
                     schema = @Schema(type = "integer", defaultValue = "20"))
             @RequestParam(value = "size", defaultValue = "20") String size) {
-        return ApiResult.ok(catalogService.browse(q, category,
+        return ApiResult.ok(catalogService.browse(q, category, condition, city,
                 intParam(page, 0), intParam(size, 20)));
     }
 
@@ -158,11 +198,11 @@ public class CatalogController {
         return ApiResult.ok(catalogService.getById(parseListingId(id)));
     }
 
-    @Operation(summary = "Get a listing's image",
-            description = "Returns the raw bytes of the listing image with its original Content-Type. "
-                    + "Served for ANY listing status (a DRAFT owner needs the preview; ids are "
-                    + "unguessable UUIDs) — 404 only when the listing is unknown or has no image, "
-                    + "indistinguishably.")
+    @Operation(summary = "Get a listing's PRIMARY image",
+            description = "Returns the raw bytes of the gallery's PRIMARY image with its original "
+                    + "Content-Type (the unchanged pre-gallery contract). Served for ANY listing "
+                    + "status (a DRAFT owner needs the preview; ids are unguessable UUIDs) — 404 "
+                    + "only when the listing is unknown or has no primary image, indistinguishably.")
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
@@ -172,7 +212,7 @@ public class CatalogController {
             @ApiResponse(responseCode = "400", description = "Malformed id",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400))),
-            @ApiResponse(responseCode = "404", description = "Unknown listing id, or no image uploaded",
+            @ApiResponse(responseCode = "404", description = "Unknown listing id, or no primary image",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "image-not-found",
                                     value = EXAMPLE_IMAGE_NOT_FOUND_404)))
@@ -182,7 +222,43 @@ public class CatalogController {
             @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     schema = @Schema(type = "string", format = "uuid"))
             @PathVariable("id") String id) {
-        CatalogService.ListingImage image = catalogService.getImage(parseListingId(id));
+        return imageResponse(catalogService.getImage(parseListingId(id)));
+    }
+
+    @Operation(summary = "Get one gallery image",
+            description = "Returns the raw bytes of ONE image of the listing's gallery (the URLs in "
+                    + "imageUrls point here). The (listingId, imageId) pair must match — an imageId "
+                    + "can never be fetched through another listing's URL. Same status-independent "
+                    + "serving and indistinguishable 404 as the primary-image endpoint.")
+    @SecurityRequirements({})
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
+                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h)",
+                    content = @Content(mediaType = "image/png",
+                            schema = @Schema(type = "string", format = "binary"))),
+            @ApiResponse(responseCode = "400", description = "Malformed listing or image id",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400),
+                            @ExampleObject(name = "invalid-image-id", value = EXAMPLE_INVALID_IMAGE_ID_400)})),
+            @ApiResponse(responseCode = "404", description = "Unknown listing id, or the imageId is "
+                    + "not an image of this listing",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "image-not-found",
+                                    value = EXAMPLE_IMAGE_NOT_FOUND_404)))
+    })
+    @GetMapping("/{id}/images/{imageId}")
+    public ResponseEntity<byte[]> getImageById(
+            @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id,
+            @Parameter(description = "Gallery image id (from imageUrls)",
+                    example = "5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("imageId") String imageId) {
+        return imageResponse(catalogService.getImageById(parseListingId(id), parseImageId(imageId)));
+    }
+
+    private static ResponseEntity<byte[]> imageResponse(CatalogService.ListingImageView image) {
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(image.contentType()))
                 // OWASP A03: stop the browser MIME-sniffing the stored bytes into
@@ -201,6 +277,14 @@ public class CatalogController {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException ex) {
             throw ApiException.badRequest("invalid_listing_id", "Listing id must be a UUID");
+        }
+    }
+
+    private static UUID parseImageId(String raw) {
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest("invalid_image_id", "Image id must be a UUID");
         }
     }
 

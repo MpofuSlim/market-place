@@ -29,7 +29,7 @@ class SecuritySurfaceIT extends PostgresTestContainer {
             {
               "title": "Wireless Bluetooth Speaker",
               "description": "Portable speaker with 12h battery life.",
-              "category": "electronics",
+              "categoryCode": "electronics",
               "priceCents": 2599,
               "stockQty": 120
             }""";
@@ -91,6 +91,17 @@ class SecuritySurfaceIT extends PostgresTestContainer {
         mockMvc.perform(get("/marketplace/catalog/{id}/image", UUID.randomUUID()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("image_not_found"));
+    }
+
+    @Test
+    void anonymousCategoryTreeIsPublic() throws Exception {
+        // /marketplace/categories sits OUTSIDE the /marketplace/catalog/**
+        // permitAll prefix — this pins SecurityConfig's dedicated GET matcher
+        // for the exact path (without it the tree would 401 anonymously).
+        mockMvc.perform(get("/marketplace/categories"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data[?(@.code == 'electronics')]").exists());
     }
 
     @Test

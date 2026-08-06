@@ -16,10 +16,16 @@ public enum AuditEventType {
     LISTING_UPDATED,
     /** A listing moved between DRAFT/ACTIVE/INACTIVE/ARCHIVED. */
     LISTING_STATUS_CHANGED,
-    /** A listing's image was uploaded or replaced (bytes + content type). */
+    /** A listing's PRIMARY image was uploaded or replaced in place. */
     LISTING_IMAGE_UPDATED,
-    /** A listing's image was removed (both image columns cleared). */
+    /** A non-primary image was appended to a listing's gallery (or the sole
+     *  image of a previously-empty gallery, which becomes primary). */
+    LISTING_IMAGE_ADDED,
+    /** A gallery image row was removed (metadata records whether it was the
+     *  primary — a survivor is auto-promoted in that case). */
     LISTING_IMAGE_DELETED,
+    /** A different gallery image was promoted to primary (atomic swap). */
+    LISTING_IMAGE_PRIMARY_CHANGED,
     /** A buyer created an order — stock was reserved and a payable total minted. */
     ORDER_CREATED,
     /** An order was confirmed as paid by the platform payments service — the

@@ -1,11 +1,9 @@
 package com.innbucks.marketplaceservice.catalog;
 
-import jakarta.persistence.Basic;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
@@ -13,7 +11,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import lombok.ToString;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -54,8 +51,26 @@ public class Listing {
     @Column(name = "description", length = 4000)
     private String description;
 
-    @Column(name = "category", length = 64)
-    private String category;
+    /** FK onto the V4 curated {@code category} taxonomy — validated against
+     *  the table on every write (400 {@code unknown_category}); defaults to
+     *  {@code other}. Replaced the V1 free-text category column. */
+    @Builder.Default
+    @Column(name = "category_code", nullable = false, length = 40)
+    private String categoryCode = "other";
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "condition", nullable = false, length = 20)
+    private ItemCondition condition = ItemCondition.NEW;
+
+    /** Optional location, jsoup-sanitized like every other free-text field.
+     *  The browse ?city= filter matches lower(city) exactly; geo/radius
+     *  search is future work. */
+    @Column(name = "city", length = 80)
+    private String city;
+
+    @Column(name = "area", length = 120)
+    private String area;
 
     @Column(name = "price_cents", nullable = false)
     private long priceCents;
@@ -70,18 +85,10 @@ public class Listing {
     @Column(name = "status", nullable = false, length = 16)
     private ListingStatus status;
 
-    // Listing image bytes. Declared as BYTEA — Postgres has no length cap that
-    // would truncate real-world images, unlike the default Hibernate varbinary
-    // mapping. Lazy-loaded so list endpoints don't pull bytes into memory;
-    // clients fetch the bytes via GET /marketplace/catalog/{id}/image using
-    // the imageUrl on the response. (Event-service banner design.)
-    @Basic(fetch = FetchType.LAZY)
-    @Column(name = "image_bytes", columnDefinition = "BYTEA")
-    @ToString.Exclude
-    private byte[] imageBytes;
-
-    @Column(name = "image_content_type", length = 64)
-    private String imageContentType;
+    // Listing images live in the V3 listing_image table and are deliberately
+    // NOT mapped as a collection here: metadata reads ride ListingImageRepository's
+    // bytes-free projection, so no list endpoint can accidentally initialize a
+    // byte-laden collection. See ListingImage.
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -98,15 +105,4 @@ public class Listing {
     @Version
     @Column(name = "version", nullable = false)
     private Long version;
-
-    /**
-     * Image presence WITHOUT touching the lazy {@link #imageBytes}: the
-     * content type is only ever written alongside the bytes (and cleared with
-     * them), so its presence is the marker. Used by
-     * {@code ListingResponse.from} to derive {@code imageUrl} on list
-     * endpoints without loading megabytes per row.
-     */
-    public boolean hasImage() {
-        return imageContentType != null && !imageContentType.isBlank();
-    }
 }

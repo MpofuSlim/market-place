@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.catalog;
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
+import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
 import com.innbucks.marketplaceservice.catalog.dto.ListingCreateRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
@@ -12,6 +13,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -28,14 +30,18 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -44,7 +50,10 @@ import static org.mockito.Mockito.when;
  * from the JWT (missing/malformed = 403 {@code merchant_scope_missing}),
  * ownership is enforced on every row touch (403 {@code listing_not_owned}),
  * the per-merchant row cap holds, all free text passes the jsoup sanitizer
- * before storage, and the stored currency is ALWAYS the cell currency.
+ * before storage, the stored currency is ALWAYS the cell currency, the
+ * category code is validated against the taxonomy table, and the V3 gallery
+ * invariant (one primary whenever any images exist; publish gate on ACTIVE)
+ * is preserved by every image mutation.
  */
 class ListingServiceTest {
 
@@ -58,6 +67,8 @@ class ListingServiceTest {
             MERCHANT_ID.toString(), SHOP_ID.toString(), null, "ZW");
 
     private ListingRepository listingRepository;
+    private ListingImageRepository listingImageRepository;
+    private CategoryRepository categoryRepository;
     private AuditService auditService;
     private SimpleMeterRegistry registry;
     private ListingService service;
@@ -65,22 +76,36 @@ class ListingServiceTest {
     @BeforeEach
     void setUp() {
         listingRepository = mock(ListingRepository.class);
+        listingImageRepository = mock(ListingImageRepository.class);
+        categoryRepository = mock(CategoryRepository.class);
         auditService = mock(AuditService.class);
         registry = new SimpleMeterRegistry();
-        service = new ListingService(listingRepository, auditService,
-                new MarketplaceMetrics(registry), "USD", MAX_PER_MERCHANT);
+        // Taxonomy accepts everything unless a test narrows it — the
+        // unknown-category test re-stubs the specific code to false.
+        when(categoryRepository.existsById(anyString())).thenReturn(true);
+        service = new ListingService(listingRepository, listingImageRepository,
+                categoryRepository,
+                new ListingViewAssembler(listingImageRepository, categoryRepository),
+                auditService, new MarketplaceMetrics(registry), "USD", MAX_PER_MERCHANT);
     }
 
     private static ListingCreateRequest createReq(String title, String description,
-                                                  String category) {
-        return new ListingCreateRequest(title, description, category, 2599L, 120, null);
+                                                  String categoryCode) {
+        return new ListingCreateRequest(title, description, categoryCode,
+                null, null, null, 2599L, 120, null);
+    }
+
+    private static ListingUpdateRequest updateReq(String title, String description,
+                                                  String categoryCode, long priceCents, int stockQty) {
+        return new ListingUpdateRequest(title, description, categoryCode,
+                null, null, null, priceCents, stockQty);
     }
 
     private static Listing owned(UUID listingId) {
         Instant now = Instant.now();
         return Listing.builder()
                 .id(listingId).merchantId(MERCHANT_ID).title("Old title")
-                .description("Old description").category("old")
+                .description("Old description").categoryCode("other")
                 .priceCents(1000).currency("USD").stockQty(10)
                 .status(ListingStatus.DRAFT).createdAt(now).updatedAt(now)
                 .build();
@@ -91,16 +116,29 @@ class ListingServiceTest {
                 Set.of("MERCHANT_ADMIN"), merchantClaim, null, null, "ZW");
     }
 
+    /** ImageMeta test double (the bytes-free projection interface). */
+    private static ImageMeta meta(UUID id, UUID listingId, boolean primary, int position) {
+        return new ImageMeta() {
+            @Override public UUID getId() { return id; }
+            @Override public UUID getListingId() { return listingId; }
+            @Override public String getContentType() { return "image/png"; }
+            @Override public boolean isPrimaryImage() { return primary; }
+            @Override public int getPosition() { return position; }
+        };
+    }
+
     // ------------------------------------------------------------------
-    // Create: scope, sanitization, currency
+    // Create: scope, sanitization, currency, taxonomy, condition, location
     // ------------------------------------------------------------------
 
     @Test
     void createSanitizesFreeTextAppliesJwtScopeAndCellCurrency() {
-        service.create(MERCHANT, createReq(
+        service.create(MERCHANT, new ListingCreateRequest(
                 "  <b>Solar Lantern</b> 20W  ",
                 "Portable <i>bright</i> lantern",
-                "<u>home</u>"));
+                "home-garden", ItemCondition.USED_GOOD,
+                "  <b>Harare</b> ", "Avondale <script>x</script>",
+                2599L, 120, null));
 
         ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
         verify(listingRepository).save(saved.capture());
@@ -108,7 +146,12 @@ class ListingServiceTest {
         // HTML stripped, entities plain, whitespace trimmed.
         assertEquals("Solar Lantern 20W", listing.getTitle());
         assertEquals("Portable bright lantern", listing.getDescription());
-        assertEquals("home", listing.getCategory());
+        assertEquals("home-garden", listing.getCategoryCode());
+        assertEquals(ItemCondition.USED_GOOD, listing.getCondition());
+        // Location free text passes the same sanitizer (script bodies are
+        // data nodes and vanish entirely).
+        assertEquals("Harare", listing.getCity());
+        assertEquals("Avondale", listing.getArea());
         // Scope from the JWT claims, never a request body.
         assertEquals(MERCHANT_ID, listing.getMerchantId());
         assertEquals(SHOP_ID, listing.getShopId());
@@ -121,6 +164,40 @@ class ListingServiceTest {
         verify(auditService).record(eq(AuditEventType.LISTING_CREATED),
                 eq(MERCHANT.uuid()), eq(listing.getId().toString()), anyMap());
         assertEquals(1.0, registry.get("marketplace.listings.created").counter().count());
+    }
+
+    @Test
+    void createDefaultsCategoryToOtherAndConditionToNew() {
+        service.create(MERCHANT, createReq("Solar Lantern", null, null));
+
+        ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository).save(saved.capture());
+        assertEquals("other", saved.getValue().getCategoryCode());
+        assertEquals(ItemCondition.NEW, saved.getValue().getCondition());
+        assertNull(saved.getValue().getCity());
+        assertNull(saved.getValue().getArea());
+    }
+
+    @Test
+    void createNormalisesTheCategoryCodeBeforeValidation() {
+        service.create(MERCHANT, createReq("Solar Lantern", null, "  Home-Garden  "));
+
+        verify(categoryRepository).existsById("home-garden");
+        ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository).save(saved.capture());
+        assertEquals("home-garden", saved.getValue().getCategoryCode());
+    }
+
+    @Test
+    void createWithUnknownCategoryCodeIs400UnknownCategory() {
+        when(categoryRepository.existsById("not-a-category")).thenReturn(false);
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.create(MERCHANT, createReq("Solar Lantern", null, "not-a-category")));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("unknown_category", ex.code());
+        verify(listingRepository, never()).save(any());
     }
 
     @Test
@@ -140,7 +217,6 @@ class ListingServiceTest {
         ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
         verify(listingRepository).save(saved.capture());
         assertNull(saved.getValue().getDescription());
-        assertNull(saved.getValue().getCategory());
     }
 
     @Test
@@ -176,7 +252,7 @@ class ListingServiceTest {
         ApiException ex = assertThrows(ApiException.class,
                 () -> service.update(callerWithMerchantClaim("not-a-uuid"),
                         UUID.randomUUID(),
-                        new ListingUpdateRequest("Title", null, null, 1000L, 5)));
+                        updateReq("Title", null, null, 1000L, 5)));
 
         assertEquals(HttpStatus.FORBIDDEN, ex.status());
         assertEquals("merchant_scope_missing", ex.code());
@@ -184,36 +260,85 @@ class ListingServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // Per-merchant cap
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
-    // Create with inline image (the multipart one-shot variant)
+    // Create with an inline gallery (the multipart one-shot variant)
     // ------------------------------------------------------------------
 
     @Test
-    void createWithInlineImageStoresBytesInTheSameInsert() {
-        service.create(MERCHANT, createReq("Solar Lantern", "desc", "home"),
-                new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
+    void createWithInlineImageStoresThePrimaryRowInTheSameTransaction() {
+        service.create(MERCHANT, createReq("Solar Lantern", "desc", "home-garden"),
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes()), null);
 
-        ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
-        verify(listingRepository).save(saved.capture());
-        assertArrayEquals(pngBytes(), saved.getValue().getImageBytes());
-        assertEquals("image/png", saved.getValue().getImageContentType());
-        assertTrue(saved.getValue().hasImage());
+        verify(listingRepository).save(any(Listing.class));
+        ArgumentCaptor<ListingImage> savedImage = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository).save(savedImage.capture());
+        assertArrayEquals(pngBytes(), savedImage.getValue().getImageBytes());
+        assertEquals("image/png", savedImage.getValue().getContentType());
+        assertTrue(savedImage.getValue().isPrimaryImage());
+        assertEquals(0, savedImage.getValue().getPosition());
     }
 
     @Test
-    void createWithAnInvalidImageRefusesTheWholeCreate() {
-        // Atomicity: a bad file must never leave an imageless half-created
-        // listing behind — validation runs BEFORE the insert.
+    void createWithPrimaryAndAdditionalImagesMarksOnlyTheFirstPrimary() {
+        service.create(MERCHANT, createReq("Solar Lantern", "desc", null),
+                new MockMultipartFile("image", "main.png", "image/png", pngBytes()),
+                List.of(new MockMultipartFile("images", "a.png", "image/png", pngBytes()),
+                        new MockMultipartFile("images", "b.png", "image/png", pngBytes())));
+
+        ArgumentCaptor<ListingImage> savedImages = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository, times(3)).save(savedImages.capture());
+        List<ListingImage> images = savedImages.getAllValues();
+        assertTrue(images.get(0).isPrimaryImage());
+        assertFalse(images.get(1).isPrimaryImage());
+        assertFalse(images.get(2).isPrimaryImage());
+        assertEquals(List.of(0, 1, 2),
+                images.stream().map(ListingImage::getPosition).toList());
+    }
+
+    @Test
+    void createWithoutAnExplicitPrimaryPromotesTheFirstAdditionalImage() {
+        // The gallery invariant: whenever images exist, one is primary — a
+        // create that produced a primary-less gallery could never publish.
+        service.create(MERCHANT, createReq("Solar Lantern", "desc", null), null,
+                List.of(new MockMultipartFile("images", "a.png", "image/png", pngBytes()),
+                        new MockMultipartFile("images", "b.png", "image/png", pngBytes())));
+
+        ArgumentCaptor<ListingImage> savedImages = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository, times(2)).save(savedImages.capture());
+        assertTrue(savedImages.getAllValues().get(0).isPrimaryImage());
+        assertFalse(savedImages.getAllValues().get(1).isPrimaryImage());
+    }
+
+    @Test
+    void createWithMoreThanNineAdditionalImagesIs400TooManyImages() {
+        List<MultipartFile> tenExtras = java.util.stream.IntStream.range(0, 10)
+                .<MultipartFile>mapToObj(i -> new MockMultipartFile(
+                        "images", "x" + i + ".png", "image/png", pngBytes()))
+                .toList();
+
         ApiException ex = assertThrows(ApiException.class,
-                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", "home"),
-                        new MockMultipartFile("image", "fake.png", "image/png",
-                                "not-an-image".getBytes())));
+                () -> service.create(MERCHANT, createReq("Solar Lantern", null, null),
+                        new MockMultipartFile("image", "main.png", "image/png", pngBytes()),
+                        tenExtras));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("too_many_images", ex.code());
+        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
+    }
+
+    @Test
+    void createWithAnInvalidAdditionalImageRefusesTheWholeCreate() {
+        // Atomicity: a bad file ANYWHERE in the gallery must never leave a
+        // half-created listing behind — validation runs BEFORE the insert.
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", null),
+                        new MockMultipartFile("image", "main.png", "image/png", pngBytes()),
+                        List.of(new MockMultipartFile("images", "fake.png", "image/png",
+                                "not-an-image".getBytes()))));
 
         assertEquals("unsupported_image_type", ex.code());
         verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
@@ -221,12 +346,16 @@ class ListingServiceTest {
         // Only an ABSENT part means "no image" — a sent-but-empty part is a
         // client bug and refuses the create.
         ApiException ex = assertThrows(ApiException.class,
-                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", "home"),
-                        new MockMultipartFile("image", "empty.png", "image/png", new byte[0])));
+                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", null),
+                        new MockMultipartFile("image", "empty.png", "image/png", new byte[0]), null));
 
         assertEquals("image_required", ex.code());
         verify(listingRepository, never()).save(any());
     }
+
+    // ------------------------------------------------------------------
+    // Per-merchant cap
+    // ------------------------------------------------------------------
 
     @Test
     void createAtThePerMerchantCapConflicts() {
@@ -264,7 +393,7 @@ class ListingServiceTest {
 
         ApiException ex = assertThrows(ApiException.class,
                 () -> service.update(MERCHANT, listingId,
-                        new ListingUpdateRequest("New title", null, null, 1000L, 5)));
+                        updateReq("New title", null, null, 1000L, 5)));
 
         assertEquals(HttpStatus.FORBIDDEN, ex.status());
         assertEquals("listing_not_owned", ex.code());
@@ -278,7 +407,7 @@ class ListingServiceTest {
 
         ApiException ex = assertThrows(ApiException.class,
                 () -> service.update(MERCHANT, listingId,
-                        new ListingUpdateRequest("New title", null, null, 1000L, 5)));
+                        updateReq("New title", null, null, 1000L, 5)));
 
         assertEquals(HttpStatus.NOT_FOUND, ex.status());
         assertEquals("listing_not_found", ex.code());
@@ -312,11 +441,15 @@ class ListingServiceTest {
 
         service.update(MERCHANT, listingId, new ListingUpdateRequest(
                 "Nice <img src=x onerror=alert(1)>lamp",
-                "Now <b>brighter</b>", "garden", 2399L, 150));
+                "Now <b>brighter</b>", "garden-outdoor", ItemCondition.USED_FAIR,
+                "Bulawayo", null, 2399L, 150));
 
         assertEquals("Nice lamp", listing.getTitle());
         assertEquals("Now brighter", listing.getDescription());
-        assertEquals("garden", listing.getCategory());
+        assertEquals("garden-outdoor", listing.getCategoryCode());
+        assertEquals(ItemCondition.USED_FAIR, listing.getCondition());
+        assertEquals("Bulawayo", listing.getCity());
+        assertNull(listing.getArea());
         assertEquals(2399L, listing.getPriceCents());
         assertEquals(150, listing.getStockQty());
         // Server-owned fields survive a full-replace update untouched.
@@ -329,10 +462,31 @@ class ListingServiceTest {
     }
 
     @Test
+    void updateWithUnknownCategoryCodeIs400AndTouchesNothing() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = owned(listingId);
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(listing));
+        when(categoryRepository.existsById("bogus")).thenReturn(false);
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.update(MERCHANT, listingId,
+                        updateReq("New title", null, "bogus", 1000L, 5)));
+
+        assertEquals("unknown_category", ex.code());
+        assertEquals("other", listing.getCategoryCode());
+        verify(listingRepository, never()).save(any());
+    }
+
+    // ------------------------------------------------------------------
+    // Status change + the publish gate
+    // ------------------------------------------------------------------
+
+    @Test
     void changeStatusAppliesAndAuditsFromAndTo() {
         UUID listingId = UUID.randomUUID();
         Listing listing = owned(listingId);
         when(listingRepository.findById(listingId)).thenReturn(Optional.of(listing));
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(listingId)).thenReturn(true);
 
         service.changeStatus(MERCHANT, listingId,
                 new ListingStatusRequest(ListingStatus.ACTIVE));
@@ -346,6 +500,40 @@ class ListingServiceTest {
         assertEquals("ACTIVE", meta.getValue().get("to"));
     }
 
+    @Test
+    void publishGate_activatingWithoutAPrimaryImageIs422() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = owned(listingId);
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(listing));
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(listingId)).thenReturn(false);
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.changeStatus(MERCHANT, listingId,
+                        new ListingStatusRequest(ListingStatus.ACTIVE)));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("primary_image_required", ex.code());
+        assertEquals(ListingStatus.DRAFT, listing.getStatus()); // untouched
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    void publishGate_onlyGuardsTheTransitionToActive() {
+        // Deactivating (and any non-ACTIVE target) needs no image; an
+        // already-ACTIVE listing re-sent ACTIVE is not a transition and is
+        // untouched by the gate — pre-V3 ACTIVE rows keep working.
+        UUID listingId = UUID.randomUUID();
+        Listing active = owned(listingId);
+        active.setStatus(ListingStatus.ACTIVE);
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(active));
+
+        service.changeStatus(MERCHANT, listingId, new ListingStatusRequest(ListingStatus.ACTIVE));
+        service.changeStatus(MERCHANT, listingId, new ListingStatusRequest(ListingStatus.INACTIVE));
+
+        assertEquals(ListingStatus.INACTIVE, active.getStatus());
+        verify(listingImageRepository, never()).existsByListingIdAndPrimaryImageTrue(any());
+    }
+
     // ------------------------------------------------------------------
     // Server-side range re-checks (defense against non-HTTP callers)
     // ------------------------------------------------------------------
@@ -353,9 +541,10 @@ class ListingServiceTest {
     @Test
     void priceOutOfRangeIsRejected() {
         ApiException zero = assertThrows(ApiException.class, () -> service.create(MERCHANT,
-                new ListingCreateRequest("Solar Lantern", null, null, 0L, 10, null)));
+                new ListingCreateRequest("Solar Lantern", null, null, null, null, null, 0L, 10, null)));
         ApiException over = assertThrows(ApiException.class, () -> service.create(MERCHANT,
-                new ListingCreateRequest("Solar Lantern", null, null, 100_000_001L, 10, null)));
+                new ListingCreateRequest("Solar Lantern", null, null, null, null, null,
+                        100_000_001L, 10, null)));
 
         assertEquals(HttpStatus.BAD_REQUEST, zero.status());
         assertEquals("price_out_of_range", zero.code());
@@ -366,9 +555,10 @@ class ListingServiceTest {
     @Test
     void stockOutOfRangeIsRejected() {
         ApiException negative = assertThrows(ApiException.class, () -> service.create(MERCHANT,
-                new ListingCreateRequest("Solar Lantern", null, null, 1000L, -1, null)));
+                new ListingCreateRequest("Solar Lantern", null, null, null, null, null, 1000L, -1, null)));
         ApiException over = assertThrows(ApiException.class, () -> service.create(MERCHANT,
-                new ListingCreateRequest("Solar Lantern", null, null, 1000L, 1_000_001, null)));
+                new ListingCreateRequest("Solar Lantern", null, null, null, null, null,
+                        1000L, 1_000_001, null)));
 
         assertEquals(HttpStatus.BAD_REQUEST, negative.status());
         assertEquals("stock_out_of_range", negative.code());
@@ -428,7 +618,7 @@ class ListingServiceTest {
     @Test
     void superAdminCreatesOnBehalfOfTheNamedMerchant() {
         service.create(SUPER_ADMIN, new ListingCreateRequest(
-                "Solar Lantern", null, null, 2599L, 120, MERCHANT_ID));
+                "Solar Lantern", null, null, null, null, null, 2599L, 120, MERCHANT_ID));
 
         ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
         verify(listingRepository).save(saved.capture());
@@ -443,7 +633,8 @@ class ListingServiceTest {
     void merchantAdminSendingAForeignMerchantIdIs422ScopeMismatch() {
         ApiException ex = assertThrows(ApiException.class,
                 () -> service.create(MERCHANT, new ListingCreateRequest(
-                        "Solar Lantern", null, null, 2599L, 120, UUID.randomUUID())));
+                        "Solar Lantern", null, null, null, null, null,
+                        2599L, 120, UUID.randomUUID())));
 
         assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
         assertEquals("merchant_scope_mismatch", ex.code());
@@ -453,7 +644,7 @@ class ListingServiceTest {
     @Test
     void merchantAdminSendingTheirOwnMerchantIdIsAccepted() {
         service.create(MERCHANT, new ListingCreateRequest(
-                "Solar Lantern", null, null, 2599L, 120, MERCHANT_ID));
+                "Solar Lantern", null, null, null, null, null, 2599L, 120, MERCHANT_ID));
 
         ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
         verify(listingRepository).save(saved.capture());
@@ -466,7 +657,7 @@ class ListingServiceTest {
         when(listingRepository.findById(listingId)).thenReturn(Optional.of(owned(listingId)));
 
         service.update(SUPER_ADMIN, listingId,
-                new ListingUpdateRequest("New title", null, null, 1000L, 5));
+                updateReq("New title", null, null, 1000L, 5));
 
         ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
         verify(listingRepository).save(saved.capture());
@@ -480,6 +671,7 @@ class ListingServiceTest {
         UUID listingId = UUID.randomUUID();
         Listing listing = owned(listingId);
         when(listingRepository.findById(listingId)).thenReturn(Optional.of(listing));
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(listingId)).thenReturn(true);
 
         service.changeStatus(SUPER_ADMIN, listingId,
                 new ListingStatusRequest(ListingStatus.ACTIVE));
@@ -510,8 +702,8 @@ class ListingServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // Listing image: upload validation (event-service banner discipline),
-    // delete, ownership
+    // Gallery: primary upload/replace, add, delete, promote, swap —
+    // validation keeps event-service's banner discipline
     // ------------------------------------------------------------------
 
     /** Real PNG magic bytes (89 50 4E 47 0D 0A 1A 0A) + filler. */
@@ -531,30 +723,65 @@ class ListingServiceTest {
     }
 
     @Test
-    void uploadStoresBytesAndContentTypeAndExposesTheImageUrl() {
+    void uploadCreatesThePrimaryWhenTheGalleryIsEmpty() {
         UUID listingId = UUID.randomUUID();
-        Listing listing = stubOwned(listingId);
+        stubOwned(listingId);
+        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.empty());
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
 
         var response = service.uploadImage(MERCHANT, listingId,
                 new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
 
-        assertArrayEquals(pngBytes(), listing.getImageBytes());
-        assertEquals("image/png", listing.getImageContentType());
-        assertEquals("/marketplace/catalog/" + listingId + "/image", response.imageUrl());
-        verify(listingRepository).save(listing);
+        ArgumentCaptor<ListingImage> saved = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository).save(saved.capture());
+        assertArrayEquals(pngBytes(), saved.getValue().getImageBytes());
+        assertEquals("image/png", saved.getValue().getContentType());
+        assertTrue(saved.getValue().isPrimaryImage());
+        assertEquals(0, saved.getValue().getPosition());
         verify(auditService).record(eq(AuditEventType.LISTING_IMAGE_UPDATED),
                 eq(MERCHANT.uuid()), eq(listingId.toString()), anyMap());
+        assertEquals(response.id(), listingId);
+    }
+
+    @Test
+    void uploadReplacesTheExistingPrimaryInPlaceKeepingItsId() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID imageId = UUID.randomUUID();
+        ListingImage existing = ListingImage.builder()
+                .id(imageId).listingId(listingId)
+                .imageBytes(new byte[]{9, 9, 9}).contentType("image/jpeg")
+                .primaryImage(true).position(0).createdAt(Instant.now())
+                .isNew(false)
+                .build();
+        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.of(existing));
+
+        service.uploadImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
+
+        // Same row, new bytes/content type — cached per-image URLs stay valid.
+        assertEquals(imageId, existing.getId());
+        assertArrayEquals(pngBytes(), existing.getImageBytes());
+        assertEquals("image/png", existing.getContentType());
+        verify(listingImageRepository).save(existing);
     }
 
     @Test
     void uploadDeclaredContentTypeIsNormalisedToLowercase() {
         UUID listingId = UUID.randomUUID();
-        Listing listing = stubOwned(listingId);
+        stubOwned(listingId);
+        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.empty());
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
 
         service.uploadImage(MERCHANT, listingId,
                 new MockMultipartFile("image", "photo.PNG", "IMAGE/PNG", pngBytes()));
 
-        assertEquals("image/png", listing.getImageContentType());
+        ArgumentCaptor<ListingImage> saved = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository).save(saved.capture());
+        assertEquals("image/png", saved.getValue().getContentType());
     }
 
     @Test
@@ -571,7 +798,7 @@ class ListingServiceTest {
         assertEquals(HttpStatus.BAD_REQUEST, absent.status());
         assertEquals("image_required", absent.code());
         assertEquals("image_required", empty.code());
-        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
@@ -585,7 +812,7 @@ class ListingServiceTest {
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("unsupported_image_type", ex.code());
-        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
@@ -602,7 +829,7 @@ class ListingServiceTest {
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("unsupported_image_type", ex.code());
-        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
@@ -621,11 +848,11 @@ class ListingServiceTest {
 
         assertEquals("unsupported_image_type", declared.code());
         assertEquals("unsupported_image_type", smuggled.code());
-        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
-    void uploadOverTheTenMegabyteCapIs400ImageTooLarge() throws Exception {
+    void uploadOverTheTenMegabyteCapIs400ImageTooLarge() {
         UUID listingId = UUID.randomUUID();
         stubOwned(listingId);
         // Mocked file so the boundary is exercised without allocating 10 MB.
@@ -638,13 +865,16 @@ class ListingServiceTest {
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("image_too_large", ex.code());
-        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
     void uploadExactlyAtTheTenMegabyteCapPassesTheSizeGate() throws Exception {
         UUID listingId = UUID.randomUUID();
-        Listing listing = stubOwned(listingId);
+        stubOwned(listingId);
+        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.empty());
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
         MultipartFile atCap = mock(MultipartFile.class);
         when(atCap.isEmpty()).thenReturn(false);
         when(atCap.getSize()).thenReturn(ListingService.MAX_IMAGE_BYTES);
@@ -653,8 +883,7 @@ class ListingServiceTest {
 
         service.uploadImage(MERCHANT, listingId, atCap);
 
-        assertEquals("image/png", listing.getImageContentType());
-        verify(listingRepository).save(listing);
+        verify(listingImageRepository).save(any(ListingImage.class));
     }
 
     @Test
@@ -670,37 +899,209 @@ class ListingServiceTest {
 
         assertEquals(HttpStatus.FORBIDDEN, ex.status());
         assertEquals("listing_not_owned", ex.code());
-        assertNull(foreign.getImageBytes());
+        verify(listingImageRepository, never()).save(any());
     }
 
     @Test
     void superAdminUploadsAndDeletesAnyMerchantsImage() {
         UUID listingId = UUID.randomUUID();
-        Listing listing = stubOwned(listingId);
+        stubOwned(listingId);
+        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.empty());
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
 
         service.uploadImage(SUPER_ADMIN, listingId,
                 new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
-        assertEquals("image/png", listing.getImageContentType());
+        verify(listingImageRepository).save(any(ListingImage.class));
 
+        UUID imageId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.of(meta(imageId, listingId, true, 0)));
         service.deleteImage(SUPER_ADMIN, listingId);
-        assertNull(listing.getImageBytes());
-        assertNull(listing.getImageContentType());
+        verify(listingImageRepository).deleteImageRow(imageId);
     }
 
     @Test
-    void deleteImageClearsBothColumnsAndAudits() {
+    void addImageAppendsNonPrimaryAfterTheLastPosition() {
         UUID listingId = UUID.randomUUID();
-        Listing listing = stubOwned(listingId);
-        listing.setImageBytes(pngBytes());
-        listing.setImageContentType("image/png");
+        stubOwned(listingId);
+        when(listingImageRepository.countByListingId(listingId)).thenReturn(3L);
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(2);
+
+        service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "extra.png", "image/png", pngBytes()));
+
+        ArgumentCaptor<ListingImage> saved = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository).save(saved.capture());
+        assertFalse(saved.getValue().isPrimaryImage());
+        assertEquals(3, saved.getValue().getPosition());
+        verify(auditService).record(eq(AuditEventType.LISTING_IMAGE_ADDED),
+                eq(MERCHANT.uuid()), eq(listingId.toString()), anyMap());
+    }
+
+    @Test
+    void addImageIntoAnEmptyGalleryBecomesThePrimary() {
+        // Gallery invariant: images present => one primary. Without this an
+        // imageless listing grown via POST /images could never publish.
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.countByListingId(listingId)).thenReturn(0L);
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
+
+        service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "first.png", "image/png", pngBytes()));
+
+        ArgumentCaptor<ListingImage> saved = ArgumentCaptor.forClass(ListingImage.class);
+        verify(listingImageRepository).save(saved.capture());
+        assertTrue(saved.getValue().isPrimaryImage());
+    }
+
+    @Test
+    void addImageAtTheGalleryCapIs409ImageLimitReached() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.countByListingId(listingId))
+                .thenReturn((long) ListingService.MAX_GALLERY_IMAGES);
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.addImage(MERCHANT, listingId,
+                        new MockMultipartFile("image", "extra.png", "image/png", pngBytes())));
+
+        assertEquals(HttpStatus.CONFLICT, ex.status());
+        assertEquals("image_limit_reached", ex.code());
+        verify(listingImageRepository, never()).save(any());
+    }
+
+    @Test
+    void deleteGalleryImageOfAForeignImageIdIs404ImageNotFound() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID imageId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(imageId, listingId))
+                .thenReturn(Optional.empty());
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.deleteGalleryImage(MERCHANT, listingId, imageId));
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.status());
+        assertEquals("image_not_found", ex.code());
+        verify(listingImageRepository, never()).deleteImageRow(any());
+    }
+
+    @Test
+    void deletingANonPrimaryImageNeverPromotes() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID imageId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(imageId, listingId))
+                .thenReturn(Optional.of(meta(imageId, listingId, false, 2)));
+
+        service.deleteGalleryImage(MERCHANT, listingId, imageId);
+
+        verify(listingImageRepository).deleteImageRow(imageId);
+        verify(listingImageRepository, never())
+                .findFirstByListingIdOrderByPositionAscCreatedAtAsc(any());
+        verify(listingImageRepository, never()).markPrimary(any());
+        verify(auditService).record(eq(AuditEventType.LISTING_IMAGE_DELETED),
+                eq(MERCHANT.uuid()), eq(listingId.toString()), anyMap());
+    }
+
+    @Test
+    void deletingThePrimaryPromotesTheLowestPositionSurvivor() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID primaryId = UUID.randomUUID();
+        UUID survivorId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(primaryId, listingId))
+                .thenReturn(Optional.of(meta(primaryId, listingId, true, 0)));
+        when(listingImageRepository.findFirstByListingIdOrderByPositionAscCreatedAtAsc(listingId))
+                .thenReturn(Optional.of(meta(survivorId, listingId, false, 1)));
+
+        service.deleteGalleryImage(MERCHANT, listingId, primaryId);
+
+        // Delete FIRST, then promote — the partial unique index depends on it.
+        InOrder inOrder = inOrder(listingImageRepository);
+        inOrder.verify(listingImageRepository).deleteImageRow(primaryId);
+        inOrder.verify(listingImageRepository).markPrimary(survivorId);
+    }
+
+    @Test
+    void deletingTheLastImageLeavesTheGalleryEmpty() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID primaryId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(primaryId, listingId))
+                .thenReturn(Optional.of(meta(primaryId, listingId, true, 0)));
+        when(listingImageRepository.findFirstByListingIdOrderByPositionAscCreatedAtAsc(listingId))
+                .thenReturn(Optional.empty());
+
+        service.deleteGalleryImage(MERCHANT, listingId, primaryId);
+
+        verify(listingImageRepository).deleteImageRow(primaryId);
+        verify(listingImageRepository, never()).markPrimary(any());
+    }
+
+    @Test
+    void deletePrimaryEndpointIsANoOpWhenNoPrimaryExists() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.empty());
 
         var response = service.deleteImage(MERCHANT, listingId);
 
-        assertNull(listing.getImageBytes());
-        assertNull(listing.getImageContentType());
         assertNull(response.imageUrl());
-        verify(listingRepository).save(listing);
-        verify(auditService).record(eq(AuditEventType.LISTING_IMAGE_DELETED),
+        verify(listingImageRepository, never()).deleteImageRow(any());
+        verify(auditService, never()).record(eq(AuditEventType.LISTING_IMAGE_DELETED),
+                any(), any(), anyMap());
+    }
+
+    @Test
+    void setPrimarySwapsAtomicallyDemoteThenMark() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID imageId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(imageId, listingId))
+                .thenReturn(Optional.of(meta(imageId, listingId, false, 2)));
+
+        service.setPrimaryImage(MERCHANT, listingId, imageId);
+
+        // Demote FIRST, then mark — two primaries mid-transaction would trip
+        // the partial unique index.
+        InOrder inOrder = inOrder(listingImageRepository);
+        inOrder.verify(listingImageRepository).demotePrimary(listingId);
+        inOrder.verify(listingImageRepository).markPrimary(imageId);
+        verify(auditService).record(eq(AuditEventType.LISTING_IMAGE_PRIMARY_CHANGED),
                 eq(MERCHANT.uuid()), eq(listingId.toString()), anyMap());
+    }
+
+    @Test
+    void setPrimaryOnTheCurrentPrimaryIsANoOp() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID imageId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(imageId, listingId))
+                .thenReturn(Optional.of(meta(imageId, listingId, true, 0)));
+
+        service.setPrimaryImage(MERCHANT, listingId, imageId);
+
+        verify(listingImageRepository, never()).demotePrimary(any());
+        verify(listingImageRepository, never()).markPrimary(any());
+    }
+
+    @Test
+    void setPrimaryOnAForeignImageIdIs404ImageNotFound() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        UUID imageId = UUID.randomUUID();
+        when(listingImageRepository.findMetaByIdAndListingId(imageId, listingId))
+                .thenReturn(Optional.empty());
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.setPrimaryImage(MERCHANT, listingId, imageId));
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.status());
+        assertEquals("image_not_found", ex.code());
+        verify(listingImageRepository, never()).markPrimary(any());
     }
 }
