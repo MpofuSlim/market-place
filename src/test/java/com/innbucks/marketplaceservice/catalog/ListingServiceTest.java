@@ -86,7 +86,9 @@ class ListingServiceTest {
         service = new ListingService(listingRepository, listingImageRepository,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository),
-                auditService, new MarketplaceMetrics(registry), "USD", MAX_PER_MERCHANT);
+                auditService, new MarketplaceMetrics(registry),
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                "USD", MAX_PER_MERCHANT);
     }
 
     private static ListingCreateRequest createReq(String title, String description,

@@ -64,7 +64,10 @@ never change either casually.
   a mismatch parks with an audit event, it NEVER confirms.
 * **Loyalty** — points ride InnRewards' generic S2S surfaces.
 * **Notifications** — deferred; when added, copy the fleet's gateway client
-  (contract-tested with WireMock) rather than inventing a new one.
+  (contract-tested with WireMock) rather than inventing a new one. The first
+  consumer is already scaffolded: the restock-event foundation
+  (`ListingRestocked` + `favorite/RestockAlertListener`, see the V6 invariant
+  below) logs where the back-in-stock send will go.
 
 ## Security invariants (do not weaken without a called-out reason)
 
@@ -169,6 +172,68 @@ never change either casually.
   does not exist" at runtime (found by SecuritySurfaceIT in CI; invisible
   to mocked-repo tests). CatalogServiceTest pins the predicate structure;
   SecuritySurfaceIT + CatalogTaxonomyBrowseIT prove it against real SQL.
+* **Verified-purchase reviews (V5)**: a review may ONLY be created by a
+  CUSTOMER with a **PAID order containing the listing** — the gate queries
+  `market_order` ⋈ `market_order_item` (status pinned to PAID in the JPQL,
+  never a parameter) and stores the qualifying `order_id` on the review as
+  provenance; no paid order → 403 `review_requires_purchase`. One review per
+  buyer per listing (`existsBy` + the V5 unique index as race backstop, both
+  surfacing 409 `review_already_exists` — the insert is `saveAndFlush`ed
+  inside a catch so losing the race is never a 500). ANY listing status is
+  reviewable — a delisted product was still bought. **Aggregates discipline
+  (same as stock):** `listing.rating_sum`/`rating_count` are denormalized and
+  updated ONLY via the atomic bulk UPDATE
+  (`ListingRepository.adjustRatingAggregates`) in the same tx as the review
+  write (create +rating/+1, edit ±delta/0, delete −rating/−1) — never
+  read-modify-write through the entity; `ratingAvg` (1 decimal, null when
+  unrated — never 0.0) + `reviewCount` ride every `ListingResponse` with zero
+  extra queries. Public reads live on the catalog surface (GET-scoped
+  permitAll, no new matcher): `GET /marketplace/catalog/{id}/reviews`
+  (newest first) anonymizes the reviewer — constant `"Verified buyer"` plus
+  the stable handle `Buyer-<4 hex of sha256(buyer_uuid)>`; the raw buyer uuid
+  NEVER leaves the service on that surface. Merchant aggregate:
+  `GET /marketplace/catalog/merchants/{id}/rating` (from the review table,
+  never 404s). Deletes are author-or-SUPER_ADMIN (moderation removal, audited
+  with `adminRemoval`). Audit REVIEW_CREATED/UPDATED/DELETED; metric
+  `marketplace.reviews{outcome=created|rejected_unverified|duplicate}`.
+* **Favorites (V6)**: CUSTOMER-only wishlist; PUT/DELETE
+  `/marketplace/favorites/{listingId}` are IDEMPOTENT (composite-PK
+  `INSERT … ON CONFLICT DO NOTHING` / 0-row DELETE — repeat = 200 no-op, and
+  a repeat add never bumps the favorited-at ordering). Add requires the
+  listing to exist, ANY status; `GET /marketplace/favorites` returns full
+  listing summaries via `ListingViewAssembler`, newest-FAVORITED first,
+  including each listing's CURRENT status so the FE can render "no longer
+  available". **Deliberate choices:** NO audit rows for favorites
+  (high-volume, low-sensitivity — auditing them would drown the
+  tamper-evident chain in noise) and favorite counts are NOT exposed on any
+  surface (merchant envy metric later, maybe).
+* **Restock-event FOUNDATION (V6, notifications still deferred)**: when
+  `stock_qty` moves **0 → >0** (merchant stock update, or an order
+  cancel/expiry returning the last held units) the owning tx publishes the
+  in-process `ListingRestocked` event; `favorite/RestockAlertListener`
+  (`AFTER_COMMIT` — never fires for a rollback, never throws) counts
+  favoriters and logs at INFO, metric `marketplace.restock_events`. **Wiring
+  this to the fleet SMS/notification gateway is the deliberate next step** —
+  when that lands, copy the fleet's contract-tested gateway client; there is
+  deliberately NO external HTTP client here today.
+* **Reports + moderation queue (V7)**: `POST
+  /marketplace/catalog/{listingId}/report` — any AUTHENTICATED user (401
+  anonymous — spam control; the catalog permitAll is GET-scoped, pinned by
+  SecuritySurfaceIT's `anonymousReportPostIsUnauthorized`); bounded `reason`
+  enum + sanitized `detail`; ONE OPEN report per (reporter, listing) — V7
+  partial unique index backstops the check, duplicate → 409
+  `report_already_open`; audit LISTING_REPORTED (reason only, never free
+  text). Moderation is SUPER_ADMIN under `/marketplace/reports` (plain
+  `/marketplace/**` gateway route — NOT an internal surface, no deny route
+  needed): GET queue (?status= filter, default OPEN, OLDEST first — FIFO so
+  the oldest complaint never starves; rows carry a live listing summary
+  batch-loaded, no N+1) and `PATCH /{id}` {action RESOLVE|DISMISS,
+  resolutionNote, deactivateListing}. Resolving with `deactivateListing=true`
+  sets the listing INACTIVE (always allowed — only activation is
+  publish-gated) and audits LISTING_STATUS_CHANGED (`via: moderation`)
+  alongside LISTING_REPORT_RESOLVED; `deactivateListing` on DISMISS is
+  refused (400). Closed reports are terminal (409 `report_not_open`).
+  Metrics `marketplace.reports{reason}`, `marketplace.reports.resolved{action}`.
 * **Error shape**: everything renders as the fleet `ApiResult` envelope via
   `GlobalExceptionHandler`; server.error includes nothing; unhandled → generic
   500, internals stay in logs.

@@ -105,6 +105,60 @@ class SecuritySurfaceIT extends PostgresTestContainer {
     }
 
     @Test
+    void anonymousReportPostIsUnauthorized() throws Exception {
+        // /marketplace/catalog/** is permitAll for GET ONLY — the report POST
+        // under the same prefix must ride anyRequest().authenticated().
+        // Reporting is never anonymous (spam control); a permitAll matcher
+        // accidentally widened to all methods would make this test fail.
+        mockMvc.perform(post("/marketplace/catalog/{id}/report", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"SCAM\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+    }
+
+    @Test
+    void anonymousReviewReadIsPublicUnknownListingIs404NotUnauthorized() throws Exception {
+        // The public review read sits under the GET-scoped catalog permitAll:
+        // an anonymous probe reaches the controller (404 listing_not_found for
+        // an unknown id) — it is never bounced with a 401.
+        mockMvc.perform(get("/marketplace/catalog/{id}/reviews", UUID.randomUUID()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("listing_not_found"));
+    }
+
+    @Test
+    void anonymousMerchantRatingIsPublic() throws Exception {
+        // Unknown/review-less merchant is a 200 {ratingAvg: null, reviewCount: 0},
+        // reachable without a token (public trust signal on the catalog).
+        mockMvc.perform(get("/marketplace/catalog/merchants/{id}/rating", UUID.randomUUID()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("OK"))
+                .andExpect(jsonPath("$.data.reviewCount").value(0));
+    }
+
+    @Test
+    void customerCannotReadModerationQueue() throws Exception {
+        // /marketplace/reports is the SUPER_ADMIN moderation surface — any
+        // other role gets the fleet 403 from method security.
+        String customerToken = TestJwts.customer(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/reports")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void merchantCannotUseCustomerFavorites() throws Exception {
+        // Favorites are a buyer surface: CUSTOMER-only by class-level gate.
+        String merchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/favorites")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
     void customerCannotListAllOrders() throws Exception {
         // GET /marketplace/orders is the SUPER_ADMIN oversight read — a
         // CUSTOMER keeps /mine and must be refused here with the fleet 403.

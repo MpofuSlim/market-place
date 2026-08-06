@@ -13,6 +13,7 @@ import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -96,6 +97,7 @@ public class ListingService {
     private final ListingViewAssembler assembler;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
+    private final ApplicationEventPublisher eventPublisher;
     private final String cellCurrency;
     private final int maxPerMerchant;
 
@@ -105,6 +107,7 @@ public class ListingService {
                           ListingViewAssembler assembler,
                           AuditService auditService,
                           MarketplaceMetrics metrics,
+                          ApplicationEventPublisher eventPublisher,
                           @Value("${innbucks.currency}") String cellCurrency,
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
@@ -113,6 +116,7 @@ public class ListingService {
         this.assembler = assembler;
         this.auditService = auditService;
         this.metrics = metrics;
+        this.eventPublisher = eventPublisher;
         this.cellCurrency = cellCurrency;
         this.maxPerMerchant = maxPerMerchant;
     }
@@ -199,6 +203,7 @@ public class ListingService {
     public ListingResponse update(AuthenticatedUser caller, UUID listingId, ListingUpdateRequest request) {
         validateRanges(request.priceCents(), request.stockQty());
         Listing listing = managedListing(caller, listingId);
+        int previousStock = listing.getStockQty();
         listing.setTitle(requiredTitle(request.title()));
         listing.setDescription(sanitizedOrNull(request.description()));
         listing.setCategoryCode(resolveCategoryCode(request.categoryCode()));
@@ -209,6 +214,12 @@ public class ListingService {
         listing.setStockQty(request.stockQty());
         listing.setUpdatedAt(Instant.now());
         listingRepository.save(listing);
+        // Restock-alert foundation: a merchant refilling an out-of-stock
+        // listing publishes the in-process event; the AFTER_COMMIT listener
+        // (favorite/RestockAlertListener) only fires if this tx commits.
+        if (previousStock == 0 && listing.getStockQty() > 0) {
+            eventPublisher.publishEvent(new ListingRestocked(listing.getId()));
+        }
         auditService.record(AuditEventType.LISTING_UPDATED, caller.uuid(), listing.getId().toString(),
                 Map.of("merchantId", listing.getMerchantId().toString(),
                         "priceCents", listing.getPriceCents(),

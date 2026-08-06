@@ -22,6 +22,7 @@ public class MarketplaceMetrics {
     private final Counter illegalTransitions;
     private final Counter internalTokenRejected;
     private final Counter expiryReleased;
+    private final Counter restockEvents;
     private final Counter auditIntegrityBroken;
     private final Counter auditChainBroken;
 
@@ -53,6 +54,14 @@ public class MarketplaceMetrics {
         this.expiryReleased = Counter.builder("marketplace.orders.expiry_released")
                 .description("PENDING_PAYMENT orders lapsed by the expiry sweep (stock returned)")
                 .baseUnit("orders")
+                .register(registry);
+        // Restock-alert FOUNDATION: a listing's stock moved 0 -> >0 (merchant
+        // update or an order release returning the last held units). Today the
+        // AFTER_COMMIT listener only logs the favoriter count; when the
+        // notification wiring lands, this series becomes its send-volume input.
+        this.restockEvents = Counter.builder("marketplace.restock_events")
+                .description("Listings whose stock moved from 0 to >0 (back-in-stock signal)")
+                .baseUnit("listings")
                 .register(registry);
         // OWASP A09 tamper signal from the audit-log HMAC verifier. The invariant
         // is zero, so ANY increase is page-worthy — someone altered an
@@ -91,6 +100,45 @@ public class MarketplaceMetrics {
 
     public void confirmMismatch() {
         confirmMismatch.increment();
+    }
+
+    /**
+     * Review write outcomes on one tagged series:
+     * outcome={created, rejected_unverified, duplicate}. rejected_unverified
+     * rising means buyers are trying to review products they never bought —
+     * either FE confusion or someone probing the verified-purchase gate.
+     */
+    public void reviewOutcome(String outcome) {
+        Counter.builder("marketplace.reviews")
+                .description("Listing review submissions by outcome")
+                .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment();
+    }
+
+    /** Listing reports by reason (bounded enum vocabulary — never free text,
+     *  which would explode cardinality). */
+    public void reportCreated(String reason) {
+        Counter.builder("marketplace.reports")
+                .description("Listing reports filed, by reason")
+                .tag("reason", reason == null ? "unknown" : reason)
+                .register(registry)
+                .increment();
+    }
+
+    /** Moderation-queue closures by action (RESOLVE/DISMISS). */
+    public void reportResolved(String action) {
+        Counter.builder("marketplace.reports.resolved")
+                .description("Listing reports closed by moderation, by action")
+                .tag("action", action == null ? "unknown" : action)
+                .register(registry)
+                .increment();
+    }
+
+    /** One listing's stock moved 0 -> >0 (fired AFTER the restocking tx
+     *  committed — never counts a rolled-back restock). */
+    public void restockEvent() {
+        restockEvents.increment();
     }
 
     public void illegalTransition() {

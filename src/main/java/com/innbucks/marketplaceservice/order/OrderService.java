@@ -10,6 +10,7 @@ import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
+import com.innbucks.marketplaceservice.catalog.ListingRestocked;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import com.innbucks.marketplaceservice.idempotency.ClaimResult;
 import com.innbucks.marketplaceservice.idempotency.IdempotencyService;
@@ -21,6 +22,7 @@ import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -86,6 +88,7 @@ public class OrderService {
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher eventPublisher;
     private final TransactionTemplate transactionTemplate;
 
     private final int maxItems;
@@ -102,6 +105,7 @@ public class OrderService {
                         AuditService auditService,
                         MarketplaceMetrics metrics,
                         ObjectMapper objectMapper,
+                        ApplicationEventPublisher eventPublisher,
                         PlatformTransactionManager transactionManager,
                         @Value("${marketplace.order.max-items}") int maxItems,
                         @Value("${marketplace.order.max-quantity-per-item}") int maxQuantityPerItem,
@@ -116,6 +120,7 @@ public class OrderService {
         this.auditService = auditService;
         this.metrics = metrics;
         this.objectMapper = objectMapper;
+        this.eventPublisher = eventPublisher;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.maxItems = maxItems;
         this.maxQuantityPerItem = maxQuantityPerItem;
@@ -464,7 +469,15 @@ public class OrderService {
             return;
         }
         for (MarketOrderItem item : itemRepository.findByOrderId(order.getId())) {
+            // Restock-alert foundation: read the pre-release stock so a release
+            // that brings a sold-out listing back publishes ListingRestocked.
+            // The extra SELECT rides the same tx; the AFTER_COMMIT listener
+            // only fires if this cancel/expiry actually commits.
+            Integer before = listingRepository.stockQtyOf(item.getListingId());
             listingRepository.restock(item.getListingId(), item.getQuantity());
+            if (before != null && before == 0 && item.getQuantity() > 0) {
+                eventPublisher.publishEvent(new ListingRestocked(item.getListingId()));
+            }
         }
         order.setStockReleased(true);
         order.setUpdatedAt(Instant.now());

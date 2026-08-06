@@ -41,6 +41,28 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
     @Query("update Listing l set l.stockQty = l.stockQty + :q where l.id = :id")
     int restock(@Param("id") UUID id, @Param("q") int q);
 
+    /**
+     * Atomic review-aggregate maintenance (V5): applied in the SAME transaction
+     * as the listing_review write it mirrors, as a bulk UPDATE — never
+     * read-modify-write through the entity (the stock discipline). Create:
+     * (+rating, +1); edit: (delta, 0); delete: (-rating, -1).
+     */
+    @Modifying
+    @Query("""
+            update Listing l
+               set l.ratingSum = l.ratingSum + :sumDelta,
+                   l.ratingCount = l.ratingCount + :countDelta
+             where l.id = :id
+            """)
+    int adjustRatingAggregates(@Param("id") UUID id,
+                               @Param("sumDelta") long sumDelta,
+                               @Param("countDelta") int countDelta);
+
+    /** Current stock only — used by the restock-alert foundation to detect a
+     *  0 → &gt;0 transition around {@link #restock} without loading the entity. */
+    @Query("select l.stockQty from Listing l where l.id = :id")
+    Integer stockQtyOf(@Param("id") UUID id);
+
     long countByMerchantId(UUID merchantId);
 
     Page<Listing> findByMerchantId(UUID merchantId, Pageable pageable);

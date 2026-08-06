@@ -102,6 +102,7 @@ class OrderServiceTest {
         service = new OrderService(orderRepository, itemRepository, listingRepository,
                 transitions, idempotencyService, auditService,
                 new MarketplaceMetrics(registry), objectMapper,
+                mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(PlatformTransactionManager.class),
                 MAX_ITEMS, MAX_QTY_PER_ITEM, TTL_MINUTES, "ZW", "USD");
         when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));

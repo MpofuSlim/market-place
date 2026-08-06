@@ -67,6 +67,13 @@ public record ListingResponse(
         @Schema(example = "ACTIVE")
         ListingStatus status,
 
+        @Schema(description = "Average verified-purchase rating, one decimal; null when the "
+                + "listing has no reviews yet", example = "5.0", nullable = true)
+        Double ratingAvg,
+
+        @Schema(description = "Number of verified-purchase reviews", example = "1")
+        int reviewCount,
+
         @Schema(description = "UTC instant", example = "2026-08-05T09:15:00Z")
         Instant createdAt,
 
@@ -111,11 +118,24 @@ public record ListingResponse(
                 listing.getCurrency(),
                 listing.getStockQty(),
                 listing.getStatus(),
+                ratingAvg(listing),
+                listing.getRatingCount(),
                 listing.getCreatedAt(),
                 listing.getUpdatedAt(),
                 hasPrimary
                         ? "/marketplace/catalog/" + listing.getId() + "/image"
                         : null,
                 urls);
+    }
+
+    /** One-decimal average from the denormalized V5 aggregates — zero extra
+     *  queries; null (never 0.0) when there are no reviews, so "unrated" is
+     *  distinguishable from "rated terribly". */
+    private static Double ratingAvg(Listing listing) {
+        int count = listing.getRatingCount();
+        if (count <= 0) {
+            return null;
+        }
+        return Math.round(listing.getRatingSum() * 10.0 / count) / 10.0;
     }
 }

@@ -85,6 +85,20 @@ public class Listing {
     @Column(name = "status", nullable = false, length = 16)
     private ListingStatus status;
 
+    /** Denormalized review aggregates (V5): kept in lock-step with
+     *  {@code listing_review} by ATOMIC bulk updates
+     *  ({@link ListingRepository#adjustRatingAggregates}) in the same
+     *  transaction as every review write — never read-modify-write through
+     *  this entity (the stock_qty discipline). Catalog reads derive
+     *  ratingAvg/reviewCount from these two columns with zero extra queries. */
+    @Builder.Default
+    @Column(name = "rating_sum", nullable = false)
+    private long ratingSum = 0;
+
+    @Builder.Default
+    @Column(name = "rating_count", nullable = false)
+    private int ratingCount = 0;
+
     // Listing images live in the V3 listing_image table and are deliberately
     // NOT mapped as a collection here: metadata reads ride ListingImageRepository's
     // bytes-free projection, so no list endpoint can accidentally initialize a

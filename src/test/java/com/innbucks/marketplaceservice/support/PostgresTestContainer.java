@@ -98,12 +98,14 @@ public abstract class PostgresTestContainer {
     void resetDatabaseState() {
         jdbc = new JdbcTemplate(dataSource);
         // One statement so the FKs (market_order_item -> market_order,
-        // listing_image -> listing) never bite; RESTART IDENTITY resets the
-        // BIGSERIAL journals. The migration-seeded category table is
-        // deliberately NOT truncated — it is runtime-read-only reference data.
+        // listing_image/listing_review/listing_favorite/listing_report ->
+        // listing) never bite; RESTART IDENTITY resets the BIGSERIAL journals.
+        // The migration-seeded category table is deliberately NOT truncated —
+        // it is runtime-read-only reference data.
         jdbc.execute("""
                 TRUNCATE TABLE market_order_item, market_order_event, market_order,
-                               listing_image, listing, idempotency_record, audit_events
+                               listing_image, listing_review, listing_favorite,
+                               listing_report, listing, idempotency_record, audit_events
                 RESTART IDENTITY""");
         // Back to the V1 genesis head so each test's audit chain is
         // self-consistent (AuditService links every row to this head).

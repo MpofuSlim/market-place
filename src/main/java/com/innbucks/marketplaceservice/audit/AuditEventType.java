@@ -26,6 +26,21 @@ public enum AuditEventType {
     LISTING_IMAGE_DELETED,
     /** A different gallery image was promoted to primary (atomic swap). */
     LISTING_IMAGE_PRIMARY_CHANGED,
+    /** A verified buyer created a review (eligibility: a PAID order containing
+     *  the listing; metadata records the qualifying orderId). */
+    REVIEW_CREATED,
+    /** A buyer edited their own review (metadata records the rating delta the
+     *  aggregates absorbed). */
+    REVIEW_UPDATED,
+    /** A review was removed — by its author or by SUPER_ADMIN moderation
+     *  (metadata records {@code adminRemoval}). */
+    REVIEW_DELETED,
+    /** An authenticated user reported a listing to the moderation queue
+     *  (metadata carries the reason, never free-text detail). */
+    LISTING_REPORTED,
+    /** SUPER_ADMIN closed a report — resolved or dismissed (metadata records
+     *  the action and whether the listing was deactivated with it). */
+    LISTING_REPORT_RESOLVED,
     /** A buyer created an order — stock was reserved and a payable total minted. */
     ORDER_CREATED,
     /** An order was confirmed as paid by the platform payments service — the
