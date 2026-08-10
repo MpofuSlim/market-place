@@ -32,7 +32,7 @@
         <!-- netty transitive (LoadBalancer/WebFlux DNS paths): four HIGH CVEs
              fixed in 4.2.15.Final+. The netty-bom import pins every netty-*
              artifact so one property bump cascades cleanly. -->
-        <netty.version>4.2.16.Final</netty.version>
+        <netty.version>4.2.17.Final</netty.version>
         <!-- spring-kafka pinned only defensively (not a direct dependency):
              CVE-2026-41731 (HIGH) fixed in 4.1.0. -->
         <spring-kafka.version>4.1.0</spring-kafka.version>
