@@ -42,7 +42,7 @@
         <!-- jjwt centralized to keep JWT verification aligned with the fleet. -->
         <jjwt.version>0.13.0</jjwt.version>
         <logstash.encoder.version>9.0</logstash.encoder.version>
-        <sentry.version>8.51.0</sentry.version>
+        <sentry.version>8.52.0</sentry.version>
         <!-- Jsoup: allowlist HTML sanitization for user-supplied free text
              (OWASP A03 / stored-XSS defense) on listing write paths. -->
         <jsoup.version>1.23.1</jsoup.version>
