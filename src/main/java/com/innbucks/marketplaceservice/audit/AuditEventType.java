@@ -10,6 +10,12 @@ package com.innbucks.marketplaceservice.audit;
  * without an enum-table join.
  */
 public enum AuditEventType {
+    /** A seller trust record was created on a merchant's first listing (V8). */
+    SELLER_REGISTERED,
+    /** A SUPER_ADMIN approved / rejected / suspended / reinstated a seller (V8).
+     *  Metadata carries from, to, the note, and how many live listings a
+     *  suspension took down. */
+    SELLER_STATUS_CHANGED,
     /** A merchant created a listing. */
     LISTING_CREATED,
     /** A merchant updated a listing's content (title/description/price/stock). */

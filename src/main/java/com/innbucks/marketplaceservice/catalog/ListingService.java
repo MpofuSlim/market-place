@@ -12,6 +12,7 @@ import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.SellerService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
@@ -93,6 +94,7 @@ public class ListingService {
 
     private final ListingRepository listingRepository;
     private final ListingImageRepository listingImageRepository;
+    private final SellerService sellerService;
     private final CategoryRepository categoryRepository;
     private final ListingViewAssembler assembler;
     private final AuditService auditService;
@@ -103,6 +105,7 @@ public class ListingService {
 
     public ListingService(ListingRepository listingRepository,
                           ListingImageRepository listingImageRepository,
+                          SellerService sellerService,
                           CategoryRepository categoryRepository,
                           ListingViewAssembler assembler,
                           AuditService auditService,
@@ -112,6 +115,7 @@ public class ListingService {
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
         this.listingImageRepository = listingImageRepository;
+        this.sellerService = sellerService;
         this.categoryRepository = categoryRepository;
         this.assembler = assembler;
         this.auditService = auditService;
@@ -142,6 +146,10 @@ public class ListingService {
     public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request,
                                   MultipartFile primaryImage, List<MultipartFile> additionalImages) {
         UUID merchantId = resolveCreateMerchantId(caller, request);
+        // A merchant becomes a seller by listing, so the trust record is created
+        // here rather than needing an admin to pre-register them. Idempotent,
+        // and it never overwrites a decision already made.
+        sellerService.ensureExists(merchantId);
         validateRanges(request.priceCents(), request.stockQty());
         List<MultipartFile> extras = additionalImages == null
                 ? List.of()
@@ -239,10 +247,20 @@ public class ListingService {
     public ListingResponse changeStatus(AuthenticatedUser caller, UUID listingId, ListingStatusRequest request) {
         Listing listing = managedListing(caller, listingId);
         ListingStatus from = listing.getStatus();
-        if (request.status() == ListingStatus.ACTIVE && from != ListingStatus.ACTIVE
-                && !listingImageRepository.existsByListingIdAndPrimaryImageTrue(listing.getId())) {
-            throw ApiException.unprocessable("primary_image_required",
-                    "A primary image is required before a listing can be published");
+        if (request.status() == ListingStatus.ACTIVE && from != ListingStatus.ACTIVE) {
+            if (!listingImageRepository.existsByListingIdAndPrimaryImageTrue(listing.getId())) {
+                throw ApiException.unprocessable("primary_image_required",
+                        "A primary image is required before a listing can be published");
+            }
+            // Seller-trust gate (V8), on the SAME transition as the image gate:
+            // ACTIVE is the moment goods reach buyers, so it is the meaningful
+            // line. A DRAFT is private, so an unvetted seller drafting costs
+            // nobody anything. Only REJECTED/SUSPENDED are refused here —
+            // PENDING may still trade, just unbadged.
+            if (!sellerService.canPublish(listing.getMerchantId())) {
+                throw ApiException.forbidden("seller_not_permitted",
+                        "This seller may not publish listings");
+            }
         }
         listing.setStatus(request.status());
         listing.setUpdatedAt(Instant.now());

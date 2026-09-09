@@ -2,6 +2,8 @@ package com.innbucks.marketplaceservice.catalog;
 
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
+import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
+import com.innbucks.marketplaceservice.seller.SellerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
@@ -32,18 +34,24 @@ public class ListingViewAssembler {
 
     private final ListingImageRepository listingImageRepository;
     private final CategoryRepository categoryRepository;
+    private final SellerService sellerService;
 
-    /** Single-listing assembly: one image-metadata query + one category read. */
+    /** Single-listing assembly: one image-metadata query + one category read +
+     *  one seller read for the trust badge. */
     public ListingResponse toResponse(Listing listing) {
         List<ImageMeta> images = listingImageRepository
                 .findByListingIdOrderByPrimaryImageDescPositionAscCreatedAtAsc(listing.getId());
         String categoryName = categoryRepository.findById(listing.getCategoryCode())
                 .map(Category::getName)
                 .orElse(null);
-        return ListingResponse.from(listing, images, categoryName);
+        MarketplaceSeller seller = sellerService
+                .findAllByMerchantIds(List.of(listing.getMerchantId()))
+                .get(listing.getMerchantId());
+        return ListingResponse.from(listing, images, categoryName, seller);
     }
 
-    /** Page assembly: exactly two extra queries for the whole page. */
+    /** Page assembly: exactly THREE extra queries for the whole page —
+     *  galleries, category names, and seller badges — regardless of page size. */
     public Page<ListingResponse> toResponsePage(Page<Listing> page) {
         List<UUID> listingIds = page.getContent().stream().map(Listing::getId).toList();
         // groupingBy(LinkedHashMap) keeps the query's within-listing order
@@ -55,6 +63,12 @@ public class ListingViewAssembler {
                         .stream()
                         .collect(Collectors.groupingBy(ImageMeta::getListingId,
                                 LinkedHashMap::new, Collectors.toList()));
+        // Third and last batch: seller trust records for the badge. Distinct
+        // merchant ids so a page of one merchant's listings is a single-key
+        // lookup, not one per row.
+        List<UUID> merchantIds = page.getContent().stream()
+                .map(Listing::getMerchantId).distinct().toList();
+        Map<UUID, MarketplaceSeller> sellersByMerchant = sellerService.findAllByMerchantIds(merchantIds);
         List<String> codes = page.getContent().stream()
                 .map(Listing::getCategoryCode).distinct().toList();
         Map<String, String> categoryNames = codes.isEmpty()
@@ -64,6 +78,7 @@ public class ListingViewAssembler {
         return page.map(listing -> ListingResponse.from(
                 listing,
                 imagesByListing.getOrDefault(listing.getId(), List.of()),
-                categoryNames.get(listing.getCategoryCode())));
+                categoryNames.get(listing.getCategoryCode()),
+                sellersByMerchant.get(listing.getMerchantId())));
     }
 }

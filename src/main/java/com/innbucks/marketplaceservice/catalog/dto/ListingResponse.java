@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.catalog.dto;
 import com.innbucks.marketplaceservice.catalog.ItemCondition;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
+import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -90,7 +91,11 @@ public record ListingResponse(
                 description = "Public per-image URLs for the whole gallery, primary FIRST then "
                         + "append order. Empty when no images have been uploaded."),
                 schema = @Schema(example = "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"))
-        List<String> imageUrls
+        List<String> imageUrls,
+
+        @Schema(description = "Trust information about the seller (V8). Always present; "
+                + "`verified` is false for a seller the platform has not vetted.")
+        SellerBadge seller
 ) {
 
     /**
@@ -99,7 +104,13 @@ public record ListingResponse(
      *               without touching a single image byte
      * @param categoryName resolved display name for {@code categoryCode}
      */
+    /** Back-compat overload: no seller record known to the caller. */
     public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName) {
+        return from(listing, images, categoryName, null);
+    }
+
+    public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
+                                       MarketplaceSeller seller) {
         boolean hasPrimary = images.stream().anyMatch(ImageMeta::isPrimaryImage);
         List<String> urls = images.stream()
                 .map(meta -> "/marketplace/catalog/" + listing.getId() + "/images/" + meta.getId())
@@ -125,7 +136,10 @@ public record ListingResponse(
                 hasPrimary
                         ? "/marketplace/catalog/" + listing.getId() + "/image"
                         : null,
-                urls);
+                urls,
+                seller == null
+                        ? SellerBadge.unknown(listing.getMerchantId())
+                        : SellerBadge.from(seller));
     }
 
     /** One-decimal average from the denormalized V5 aggregates — zero extra
