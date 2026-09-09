@@ -69,6 +69,27 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
 
     Optional<Listing> findByIdAndStatus(UUID id, ListingStatus status);
 
+    /**
+     * Take every live listing of one merchant off sale, in ONE statement
+     * (V8, used by {@code SellerService.suspend}).
+     *
+     * <p>A suspension that left goods on sale would mean nothing, and doing it
+     * row-by-row would be an unbounded loop inside the admin's request for a
+     * merchant with thousands of listings. INACTIVE rather than ARCHIVED: the
+     * seller may be reinstated, and ARCHIVED is the soft-delete resting state.
+     * Returns how many were taken down, which the audit record keeps.
+     */
+    @Modifying
+    @Query("""
+            update Listing l
+               set l.status = com.innbucks.marketplaceservice.catalog.ListingStatus.INACTIVE,
+                   l.updatedAt = :now
+             where l.merchantId = :merchantId
+               and l.status = com.innbucks.marketplaceservice.catalog.ListingStatus.ACTIVE
+            """)
+    int deactivateActiveListingsOf(@Param("merchantId") UUID merchantId,
+                                   @Param("now") java.time.Instant now);
+
     /*
      * Public catalog browse runs through JpaSpecificationExecutor.findAll
      * (CatalogService.browse) with predicates built CONDITIONALLY — a filter

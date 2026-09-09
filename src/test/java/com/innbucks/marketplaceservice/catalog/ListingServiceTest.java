@@ -67,6 +67,7 @@ class ListingServiceTest {
             MERCHANT_ID.toString(), SHOP_ID.toString(), null, "ZW");
 
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.seller.SellerService sellerService;
     private ListingImageRepository listingImageRepository;
     private CategoryRepository categoryRepository;
     private AuditService auditService;
@@ -83,9 +84,15 @@ class ListingServiceTest {
         // Taxonomy accepts everything unless a test narrows it — the
         // unknown-category test re-stubs the specific code to false.
         when(categoryRepository.existsById(anyString())).thenReturn(true);
+        sellerService = mock(com.innbucks.marketplaceservice.seller.SellerService.class);
+        // A merchant with no trust record may publish (SellerService.canPublish
+        // returns true for an absent row), which is the pre-V8 behaviour these
+        // existing cases were written against.
+        when(sellerService.canPublish(any())).thenReturn(true);
         service = new ListingService(listingRepository, listingImageRepository,
+                sellerService,
                 categoryRepository,
-                new ListingViewAssembler(listingImageRepository, categoryRepository),
+                new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService),
                 auditService, new MarketplaceMetrics(registry),
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 "USD", MAX_PER_MERCHANT);

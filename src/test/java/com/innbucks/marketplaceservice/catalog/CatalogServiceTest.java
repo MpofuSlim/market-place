@@ -61,7 +61,8 @@ class CatalogServiceTest {
         categoryRepository = mock(CategoryRepository.class);
         catalogService = new CatalogService(listingRepository, listingImageRepository,
                 categoryRepository,
-                new ListingViewAssembler(listingImageRepository, categoryRepository));
+                new ListingViewAssembler(listingImageRepository, categoryRepository,
+                        mock(com.innbucks.marketplaceservice.seller.SellerService.class)));
     }
 
     @SuppressWarnings("unchecked")
