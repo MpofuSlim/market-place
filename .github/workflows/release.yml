@@ -187,7 +187,7 @@ jobs:
         id: attest
         if: github.event_name != 'pull_request'
         continue-on-error: true
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/marketplace-service
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -195,7 +195,7 @@ jobs:
 
       - name: Attest build provenance (retry on transient OIDC failure)
         if: github.event_name != 'pull_request' && steps.attest.outcome == 'failure'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/marketplace-service
           subject-digest: ${{ steps.push.outputs.digest }}
