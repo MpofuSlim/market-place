@@ -4,6 +4,7 @@ import com.innbucks.marketplaceservice.support.PostgresTestContainer;
 import com.innbucks.marketplaceservice.support.TestJwts;
 import com.jayway.jsonpath.JsonPath;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,6 +13,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -137,8 +139,7 @@ class FavoritesFlowIT extends PostgresTestContainer {
                                  "priceCents":4500,"stockQty":25}"""))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.stockQty").value(25));
-        assertThat(meterRegistry.counter("marketplace.restock_events").count())
-                .isEqualTo(before + 1);
+        awaitRestockCount(before + 1);
 
         // A non-zero -> non-zero update is NOT a restock.
         mockMvc.perform(put("/marketplace/listings/{id}", listingId)
@@ -148,8 +149,7 @@ class FavoritesFlowIT extends PostgresTestContainer {
                                 {"title":"Camp Stove","categoryCode":"camping-hiking",
                                  "priceCents":4500,"stockQty":30}"""))
                 .andExpect(status().isOk());
-        assertThat(meterRegistry.counter("marketplace.restock_events").count())
-                .isEqualTo(before + 1);
+        assertRestockCountStaysAt(before + 1);
     }
 
     @Test
@@ -169,15 +169,50 @@ class FavoritesFlowIT extends PostgresTestContainer {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String orderId = JsonPath.read(createdOrder, "$.data.id");
-        assertThat(meterRegistry.counter("marketplace.restock_events").count())
-                .isEqualTo(before); // reserving to zero is not a restock
+        assertRestockCountStaysAt(before); // reserving to zero is not a restock
 
         mockMvc.perform(post("/marketplace/orders/{id}/cancel", orderId)
                         .header("Authorization", "Bearer " + buyerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CANCELLED"));
-        assertThat(meterRegistry.counter("marketplace.restock_events").count())
-                .isEqualTo(before + 1);
+        awaitRestockCount(before + 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Restock-metric assertions
+    //
+    // RestockAlertListener is @Async("notificationExecutor") on top of
+    // @TransactionalEventListener(AFTER_COMMIT), so the counter is bumped on a
+    // pool thread AFTER the MockMvc call has already returned. Reading the
+    // counter straight after the request is therefore a race the test loses
+    // whenever that thread is scheduled late — which is exactly how this class
+    // failed in CI while passing locally. Poll for the rise instead of
+    // sampling once.
+    // ------------------------------------------------------------------
+
+    /** Waits for the counter to REACH {@code expected} (the event fired). */
+    private void awaitRestockCount(double expected) {
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(20))
+                .untilAsserted(() -> assertThat(restockCount()).isEqualTo(expected));
+    }
+
+    /**
+     * Asserts the counter STAYS at {@code expected} (no event fired). A single
+     * immediate read would pass vacuously — the listener may simply not have
+     * been scheduled yet — so hold the assertion for a window instead.
+     */
+    private void assertRestockCountStaysAt(double expected) {
+        Awaitility.await()
+                .during(Duration.ofMillis(400))
+                .atMost(Duration.ofSeconds(2))
+                .pollInterval(Duration.ofMillis(20))
+                .untilAsserted(() -> assertThat(restockCount()).isEqualTo(expected));
+    }
+
+    private double restockCount() {
+        return meterRegistry.counter("marketplace.restock_events").count();
     }
 
     // ------------------------------------------------------------------

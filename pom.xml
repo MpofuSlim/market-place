@@ -24,15 +24,36 @@
         <java.version>21</java.version>
         <spring.boot.version>4.1.0</spring.boot.version>
         <!-- tomcat-embed-core pinned by the Boot BOM carries known CVEs on the
-             fleet's tracked list; 11.0.24 is the fleet's fix-line. Drop on the
-             next Boot upgrade if the BOM has caught up. -->
-        <tomcat.version>11.0.24</tomcat.version>
+             fleet's tracked list. 11.0.24 was the fix-line until three CRITICALs
+             landed against it (Release Trivy gate, 2026-09-07 — caught before
+             any push, so nothing shipped):
+               CVE-2026-65182  security constraint bypass (improper access control)
+               CVE-2026-65905  auth bypass via limited replay in DIGEST authenticator
+               CVE-2026-68525  unauthorized resource access via FORM auth bypass
+             All three are fixed in 11.0.25, which is what ticketing-system
+             already pins — this bump brings marketplace back in step with the
+             fleet's fix-line. Drop on the next Boot upgrade if the BOM has
+             caught up. -->
+        <tomcat.version>11.0.25</tomcat.version>
         <!-- postgres JDBC: CVE-2026-42198 (HIGH) fixed in 42.7.11+. -->
         <postgresql.version>42.7.13</postgresql.version>
+        <!-- httpcore5 5.4.2 arrives transitively through httpclient5 (the Apache
+             HttpClient backing Spring's RestClient) and so lands in the service
+             image. Two HIGH DoS CVEs, both fixed in 5.4.3:
+               CVE-2026-54399  httpcore5     excessive HTTP headers
+               CVE-2026-54428  httpcore5-h2  oversized HTTP/2 HPACK header
+             Same pin ticketing-system already carries. httpclient5 declares both
+             artifacts explicitly rather than via a BOM, so both are pinned below
+             — httpcore5-h2 is a separate GA that Trivy flags independently. Drop
+             on the next Boot/httpclient5 upgrade once the transitive version
+             reaches 5.4.3. -->
+        <httpcore5.version>5.4.3</httpcore5.version>
         <!-- netty transitive (LoadBalancer/WebFlux DNS paths): four HIGH CVEs
-             fixed in 4.2.15.Final+. The netty-bom import pins every netty-*
-             artifact so one property bump cascades cleanly. -->
-        <netty.version>4.2.16.Final</netty.version>
+             fixed in 4.2.15.Final+, plus CVE-2026-75595 (CRITICAL,
+             io.netty:netty-handler) fixed in 4.2.17.Final. The netty-bom import
+             pins every netty-* artifact so one property bump cascades cleanly.
+             Same pin ticketing-system already carries. -->
+        <netty.version>4.2.17.Final</netty.version>
         <!-- spring-kafka pinned only defensively (not a direct dependency):
              CVE-2026-41731 (HIGH) fixed in 4.1.0. -->
         <spring-kafka.version>4.1.0</spring-kafka.version>
@@ -83,6 +104,20 @@
                 <groupId>org.postgresql</groupId>
                 <artifactId>postgresql</artifactId>
                 <version>${postgresql.version}</version>
+            </dependency>
+            <!-- See the httpcore5.version comment above: two HIGH DoS CVEs in
+                 5.4.2, which reaches the image transitively via httpclient5.
+                 Both artifacts pinned — httpcore5-h2 is a separate GA that
+                 Trivy flags independently. -->
+            <dependency>
+                <groupId>org.apache.httpcomponents.core5</groupId>
+                <artifactId>httpcore5</artifactId>
+                <version>${httpcore5.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.httpcomponents.core5</groupId>
+                <artifactId>httpcore5-h2</artifactId>
+                <version>${httpcore5.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.springframework.kafka</groupId>
