@@ -225,8 +225,12 @@ public class CatalogController {
     public ResponseEntity<byte[]> getImage(
             @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     schema = @Schema(type = "string", format = "uuid"))
-            @PathVariable("id") String id) {
-        return imageResponse(catalogService.getImage(parseListingId(id)));
+            @PathVariable("id") String id,
+            @Parameter(description = "Optional downscale width. One of 120, 240, 480, 960 — "
+                    + "anything else is a 400. Omit for the original. Never upscales, and "
+                    + "WebP is served unresized (no JDK decoder).", example = "240")
+            @RequestParam(value = "w", required = false) Integer w) {
+        return imageResponse(catalogService.getImage(parseListingId(id)), w);
     }
 
     @Operation(summary = "Get one gallery image",
@@ -258,19 +262,28 @@ public class CatalogController {
             @Parameter(description = "Gallery image id (from imageUrls)",
                     example = "5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d",
                     schema = @Schema(type = "string", format = "uuid"))
-            @PathVariable("imageId") String imageId) {
-        return imageResponse(catalogService.getImageById(parseListingId(id), parseImageId(imageId)));
+            @PathVariable("imageId") String imageId,
+            @Parameter(description = "Optional downscale width — see GET /{id}/image.", example = "240")
+            @RequestParam(value = "w", required = false) Integer w) {
+        return imageResponse(
+                catalogService.getImageById(parseListingId(id), parseImageId(imageId)), w);
     }
 
-    private static ResponseEntity<byte[]> imageResponse(CatalogService.ListingImageView image) {
+    private static ResponseEntity<byte[]> imageResponse(CatalogService.ListingImageView image, Integer width) {
+        ImageResizer.Resized out = ImageResizer.resize(image.bytes(), image.contentType(), width);
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(image.contentType()))
+                .contentType(MediaType.parseMediaType(out.contentType()))
+                // Tells a client whether it actually got a smaller copy. A WebP
+                // (no JDK decoder) or an already-narrow image comes back at full
+                // size, and silently doing so would look like the parameter was
+                // ignored.
+                .header("X-Image-Resized", Boolean.toString(out.resized()))
                 // OWASP A03: stop the browser MIME-sniffing the stored bytes into
                 // an executable type (e.g. HTML/JS) regardless of the served
                 // Content-Type — defence-in-depth alongside upload magic-byte checks.
                 .header("X-Content-Type-Options", "nosniff")
                 .cacheControl(CacheControl.maxAge(Duration.ofHours(1)).cachePublic())
-                .body(image.bytes());
+                .body(out.bytes());
     }
 
     /** Manual parse: GlobalExceptionHandler has no MethodArgumentTypeMismatch
