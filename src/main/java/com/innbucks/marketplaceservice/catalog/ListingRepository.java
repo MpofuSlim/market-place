@@ -65,6 +65,12 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
 
     long countByMerchantId(UUID merchantId);
 
+    /** How many of a merchant's listings a shopper can actually see — the
+     *  figure the public seller profile reports. Deliberately NOT
+     *  {@link #countByMerchantId}, which counts DRAFT and ARCHIVED rows the
+     *  buyer surface hides. */
+    long countByMerchantIdAndStatus(UUID merchantId, ListingStatus status);
+
     Page<Listing> findByMerchantId(UUID merchantId, Pageable pageable);
 
     Optional<Listing> findByIdAndStatus(UUID id, ListingStatus status);

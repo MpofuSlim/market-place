@@ -4,10 +4,14 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.catalog.dto.CategoryNode;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
+import com.innbucks.marketplaceservice.catalog.dto.MerchantProfileResponse;
+import com.innbucks.marketplaceservice.review.ReviewService;
+import com.innbucks.marketplaceservice.review.dto.MerchantRatingResponse;
+import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
+import com.innbucks.marketplaceservice.seller.SellerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,15 +49,15 @@ public class CatalogService {
      *  clamped, never errored. */
     static final int MAX_PAGE_SIZE = 50;
 
-    private static final Sort NEWEST_FIRST = Sort.by(Sort.Direction.DESC, "createdAt");
-
     private final ListingRepository listingRepository;
     private final ListingImageRepository listingImageRepository;
     private final CategoryRepository categoryRepository;
     private final ListingViewAssembler assembler;
+    private final SellerService sellerService;
+    private final ReviewService reviewService;
 
     /**
-     * Browse ACTIVE listings with optional filters:
+     * Browse ACTIVE listings with optional filters, all combinable:
      * <ul>
      *   <li>{@code q} — case-insensitive title 'contains' (LIKE wildcards in
      *       the client text are escaped, never act as wildcards);</li>
@@ -63,21 +67,35 @@ public class CatalogService {
      *   <li>{@code condition} — one of {@link ItemCondition} (case-insensitive;
      *       a value outside the enum is a clean 400 {@code invalid_condition},
      *       never a silently unfiltered result);</li>
-     *   <li>{@code city} — exact, case-insensitive.</li>
+     *   <li>{@code city} — exact, case-insensitive;</li>
+     *   <li>{@code merchantId} — one seller's ACTIVE listings ("more from this
+     *       seller"). An unknown id matches nothing, lenient like the rest of
+     *       this public surface — it never confirms whether a merchant
+     *       exists;</li>
+     *   <li>{@code minPriceCents}/{@code maxPriceCents} — inclusive bounds in
+     *       MINOR units, the same unit the response reports;</li>
+     *   <li>{@code inStock} — {@code true} keeps only listings with stock. An
+     *       ACTIVE listing can sit at {@code stockQty = 0}, so without this a
+     *       shopper is shown goods that cannot be bought.</li>
      * </ul>
+     *
+     * <p>Ordered by {@link ListingSort} (default newest-first), always with a
+     * total-order tiebreaker so paging is stable — see that enum.
      */
     @Transactional(readOnly = true)
-    public ListingPageResponse browse(String q, String category, String condition, String city,
-                                      int page, int size) {
-        String titleFilter = blankToNull(q);
+    public ListingPageResponse browse(BrowseQuery request) {
+        String titleFilter = blankToNull(request.q());
         if (titleFilter != null) {
             titleFilter = escapeLike(titleFilter);
         }
-        String categoryFilter = blankToNull(category);
-        ItemCondition conditionFilter = parseCondition(condition);
-        String cityFilter = blankToNull(city);
-        PageRequest pageable = PageRequest.of(Math.max(page, 0),
-                Math.clamp(size, 1, MAX_PAGE_SIZE), NEWEST_FIRST);
+        String categoryFilter = blankToNull(request.category());
+        ItemCondition conditionFilter = parseCondition(request.condition());
+        String cityFilter = blankToNull(request.city());
+        UUID merchantFilter = request.merchantId();
+        PriceRange price = PriceRange.of(request.minPriceCents(), request.maxPriceCents());
+        ListingSort sort = request.sort() == null ? ListingSort.NEWEST : request.sort();
+        PageRequest pageable = PageRequest.of(Math.max(request.page(), 0),
+                Math.clamp(request.size(), 1, MAX_PAGE_SIZE), sort.sort());
 
         // Conditional predicate construction — the no-null-bind rule (see the
         // class comment). Each branch closes over a guaranteed-non-null value.
@@ -100,8 +118,93 @@ public class CatalogService {
             String cityLower = cityFilter.toLowerCase(Locale.ROOT);
             spec = spec.and((root, query, cb) -> cb.equal(cb.lower(root.get("city")), cityLower));
         }
+        if (merchantFilter != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("merchantId"), merchantFilter));
+        }
+        if (price.min() != null) {
+            long min = price.min();
+            spec = spec.and((root, query, cb) ->
+                    cb.greaterThanOrEqualTo(root.get("priceCents"), min));
+        }
+        if (price.max() != null) {
+            long max = price.max();
+            spec = spec.and((root, query, cb) ->
+                    cb.lessThanOrEqualTo(root.get("priceCents"), max));
+        }
+        if (Boolean.TRUE.equals(request.inStock())) {
+            spec = spec.and((root, query, cb) -> cb.greaterThan(root.get("stockQty"), 0));
+        }
         Page<Listing> result = listingRepository.findAll(spec, pageable);
         return ListingPageResponse.from(assembler.toResponsePage(result));
+    }
+
+    /**
+     * Everything the browse endpoint accepts. A record rather than ten
+     * positional arguments, so adding a filter cannot silently shift the
+     * meaning of an existing call site.
+     */
+    public record BrowseQuery(String q, String category, String condition, String city,
+                              UUID merchantId, Long minPriceCents, Long maxPriceCents,
+                              Boolean inStock, ListingSort sort, int page, int size) {
+
+        /** The historical four-filter browse, newest-first. */
+        public static BrowseQuery of(String q, String category, String condition, String city,
+                                     int page, int size) {
+            return new BrowseQuery(q, category, condition, city, null, null, null, null,
+                    ListingSort.NEWEST, page, size);
+        }
+    }
+
+    /**
+     * A validated, inclusive price window in minor units.
+     *
+     * <p>Both bounds are REFUSED rather than clamped when they make no sense:
+     * a negative price cannot match anything, and an inverted range
+     * ({@code min > max}) can only ever return an empty page. Silently
+     * returning that empty page is indistinguishable from "nothing is for
+     * sale in your budget", which sends the client hunting for a data problem
+     * that does not exist.
+     */
+    record PriceRange(Long min, Long max) {
+
+        static PriceRange of(Long min, Long max) {
+            if (min != null && min < 0) {
+                throw ApiException.badRequest("invalid_price", "minPriceCents must be >= 0");
+            }
+            if (max != null && max < 0) {
+                throw ApiException.badRequest("invalid_price", "maxPriceCents must be >= 0");
+            }
+            if (min != null && max != null && min > max) {
+                throw ApiException.badRequest("invalid_price_range",
+                        "minPriceCents (" + min + ") must not exceed maxPriceCents (" + max + ")");
+            }
+            return new PriceRange(min, max);
+        }
+    }
+
+    /**
+     * The public seller header — badge, rating and live listing count in one
+     * read. See {@link MerchantProfileResponse} for why it never 404s and why
+     * the fields the app team asked for beyond these are absent.
+     *
+     * <p>The rating comes from {@link ReviewService#merchantRating} rather than
+     * a second aggregate query here: one merchant average, computed in one
+     * place, so this profile and the sibling {@code /rating} endpoint can never
+     * disagree about the same merchant.
+     */
+    @Transactional(readOnly = true)
+    public MerchantProfileResponse merchantProfile(UUID merchantId) {
+        MarketplaceSeller seller = sellerService.findAllByMerchantIds(List.of(merchantId))
+                .get(merchantId);
+        MerchantRatingResponse rating = reviewService.merchantRating(merchantId);
+        return new MerchantProfileResponse(
+                merchantId,
+                seller == null ? null : seller.getDisplayName(),
+                seller != null && seller.getStatus().isVerified(),
+                seller == null ? null : seller.getCreatedAt(),
+                rating.ratingAvg(),
+                rating.reviewCount(),
+                listingRepository.countByMerchantIdAndStatus(merchantId, ListingStatus.ACTIVE));
     }
 
     @Transactional(readOnly = true)
