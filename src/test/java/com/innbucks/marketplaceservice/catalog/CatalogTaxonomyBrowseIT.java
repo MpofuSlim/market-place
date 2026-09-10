@@ -47,19 +47,26 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
     private String jwtSecret;
 
     private String merchantToken;
+    private UUID merchantId;
 
     @BeforeEach
     void mintTokens() {
-        merchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        merchantId = UUID.randomUUID();
+        merchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), merchantId, jwtSecret);
     }
 
     /** Creates an ACTIVE listing (image uploaded to satisfy the publish gate). */
     private String activeListing(String title, String categoryCode, String condition,
                                  String city) throws Exception {
+        return activeListing(title, categoryCode, condition, city, 1500, 5, merchantToken);
+    }
+
+    private String activeListing(String title, String categoryCode, String condition, String city,
+                                 int priceCents, int stockQty, String token) throws Exception {
         String conditionField = condition == null ? "" : "\"condition\": \"%s\",".formatted(condition);
         String cityField = city == null ? "" : "\"city\": \"%s\",".formatted(city);
         String body = mockMvc.perform(post("/marketplace/listings")
-                        .header("Authorization", "Bearer " + merchantToken)
+                        .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -67,18 +74,23 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
                                   "categoryCode": "%s",
                                   %s
                                   %s
-                                  "priceCents": 1500,
-                                  "stockQty": 5
-                                }""".formatted(title, categoryCode, conditionField, cityField)))
+                                  "priceCents": %d,
+                                  "stockQty": %d
+                                }""".formatted(title, categoryCode, conditionField, cityField,
+                                priceCents, stockQty)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String id = JsonPath.read(body, "$.data.id");
+        return activate(id, token);
+    }
+
+    private String activate(String id, String token) throws Exception {
         mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", id)
                         .file(new MockMultipartFile("image", "p.png", "image/png", PNG_BYTES))
-                        .header("Authorization", "Bearer " + merchantToken))
+                        .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
         mockMvc.perform(patch("/marketplace/listings/{id}/status", id)
-                        .header("Authorization", "Bearer " + merchantToken)
+                        .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"ACTIVE\"}"))
                 .andExpect(status().isOk());
@@ -162,6 +174,139 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
         mockMvc.perform(get("/marketplace/catalog").param("condition", "MINT"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("invalid_condition"));
+    }
+
+    @Test
+    void browseSortsByPriceAndFiltersOnAPriceWindow() throws Exception {
+        String cheap = activeListing("Lantern A", "other", null, null, 1000, 5, merchantToken);
+        String mid = activeListing("Lantern B", "other", null, null, 3000, 5, merchantToken);
+        String dear = activeListing("Lantern C", "other", null, null, 9000, 5, merchantToken);
+
+        mockMvc.perform(get("/marketplace/catalog").param("sort", "price_asc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(cheap))
+                .andExpect(jsonPath("$.data.items[2].id").value(dear));
+
+        mockMvc.perform(get("/marketplace/catalog").param("sort", "price_desc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(dear))
+                .andExpect(jsonPath("$.data.items[2].id").value(cheap));
+
+        // Both bounds are INCLUSIVE, in minor units — the same unit the
+        // response reports.
+        mockMvc.perform(get("/marketplace/catalog")
+                        .param("minPriceCents", "1000").param("maxPriceCents", "3000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(cheap)).exists())
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(mid)).exists());
+
+        // One bound alone contributes only its own comparison.
+        mockMvc.perform(get("/marketplace/catalog").param("minPriceCents", "5000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(dear));
+
+        // An inverted window is refused rather than returning an empty page
+        // that reads as "nothing is for sale in your budget".
+        mockMvc.perform(get("/marketplace/catalog")
+                        .param("minPriceCents", "5000").param("maxPriceCents", "1000"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_price_range"));
+
+        mockMvc.perform(get("/marketplace/catalog").param("sort", "cheapest"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_sort"));
+    }
+
+    @Test
+    void browseHidesZeroStockListingsOnlyWhenAsked() throws Exception {
+        String inStock = activeListing("Kettle", "other", null, null, 2000, 4, merchantToken);
+        String soldOut = activeListing("Toaster", "other", null, null, 2500, 0, merchantToken);
+
+        // An ACTIVE listing may sit at stockQty 0 — by default it is still
+        // shown, which is the historical behaviour.
+        mockMvc.perform(get("/marketplace/catalog"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(2));
+
+        mockMvc.perform(get("/marketplace/catalog").param("inStock", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(inStock));
+
+        // false means "don't filter", never "show me the sold-out ones".
+        mockMvc.perform(get("/marketplace/catalog").param("inStock", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(soldOut)).exists());
+
+        mockMvc.perform(get("/marketplace/catalog").param("inStock", "yes"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_boolean"));
+    }
+
+    @Test
+    void browseFiltersToOneSellerAndRefusesAnUnknownParameter() throws Exception {
+        UUID otherMerchant = UUID.randomUUID();
+        String otherToken = TestJwts.merchantAdmin(UUID.randomUUID(), otherMerchant, jwtSecret);
+        String mine = activeListing("Solar Panel", "other", null, null, 8000, 2, merchantToken);
+        activeListing("Solar Inverter", "other", null, null, 12000, 2, otherToken);
+
+        mockMvc.perform(get("/marketplace/catalog")
+                        .param("merchantId", merchantId.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(mine));
+
+        // Unknown seller: a lenient empty page, never a 404 confirming which
+        // merchant ids exist.
+        mockMvc.perform(get("/marketplace/catalog")
+                        .param("merchantId", UUID.randomUUID().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(0));
+
+        mockMvc.perform(get("/marketplace/catalog").param("merchantId", "not-a-uuid"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_merchant_id"));
+
+        // The refusal that stops a filter being silently dropped: a misspelt
+        // parameter is a 400 naming it, not a confident 200 with the bound
+        // ignored.
+        mockMvc.perform(get("/marketplace/catalog").param("minPrice", "5000"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("unknown_parameter"))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("minPrice")));
+    }
+
+    @Test
+    void theSellerProfileAnswersForKnownAndUnknownMerchantsAlike() throws Exception {
+        activeListing("Blender", "other", null, null, 3500, 3, merchantToken);
+        activeListing("Mixer", "other", null, null, 4500, 3, merchantToken);
+
+        mockMvc.perform(get("/marketplace/catalog/merchants/{id}", merchantId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.merchantId").value(merchantId.toString()))
+                .andExpect(jsonPath("$.data.activeListingCount").value(2))
+                // Unrated is null, never 0.0 — which would read as a terrible
+                // seller rather than a new one.
+                .andExpect(jsonPath("$.data.ratingAvg").doesNotExist())
+                .andExpect(jsonPath("$.data.reviewCount").value(0))
+                // The seller record is created by the first listing, and a
+                // PENDING seller is not vetted.
+                .andExpect(jsonPath("$.data.verified").value(false));
+
+        // Never a 404: an unknown merchant is a zeroed profile, so the public
+        // catalogue is not an oracle for which merchant ids exist.
+        mockMvc.perform(get("/marketplace/catalog/merchants/{id}", UUID.randomUUID()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeListingCount").value(0))
+                .andExpect(jsonPath("$.data.displayName").doesNotExist());
+
+        mockMvc.perform(get("/marketplace/catalog/merchants/{id}", "not-a-uuid"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_merchant_id"));
     }
 
     @Test

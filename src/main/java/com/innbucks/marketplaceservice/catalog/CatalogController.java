@@ -4,6 +4,8 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
+import com.innbucks.marketplaceservice.catalog.dto.MerchantProfileResponse;
+import com.innbucks.marketplaceservice.catalog.util.QueryParams;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -13,6 +15,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
@@ -24,6 +27,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -138,23 +143,65 @@ public class CatalogController {
               "message": "condition must be one of NEW, USED_LIKE_NEW, USED_GOOD, USED_FAIR"
             }""";
 
+    private static final String EXAMPLE_INVALID_SORT_400 = """
+            {
+              "code": "invalid_sort",
+              "message": "sort must be one of newest, price_asc, price_desc"
+            }""";
+
+    private static final String EXAMPLE_INVALID_PRICE_RANGE_400 = """
+            {
+              "code": "invalid_price_range",
+              "message": "minPriceCents (5000) must not exceed maxPriceCents (1000)"
+            }""";
+
+    private static final String EXAMPLE_UNKNOWN_PARAMETER_400 = """
+            {
+              "code": "unknown_parameter",
+              "message": "Unknown query parameter 'minPrice'. Supported parameters: category, city, \
+            condition, inStock, maxPriceCents, merchantId, minPriceCents, page, q, size, sort"
+            }""";
+
+    /**
+     * Everything browse understands. A parameter outside this set is a 400
+     * rather than a silently dropped filter — see
+     * {@link com.innbucks.marketplaceservice.catalog.util.QueryParams}. Keep it
+     * in lock-step with the {@code @RequestParam} names below; the Swagger
+     * example above prints the same set.
+     */
+    static final Set<String> BROWSE_PARAMS = Set.of(
+            "q", "category", "condition", "city", "merchantId",
+            "minPriceCents", "maxPriceCents", "inStock", "sort", "page", "size");
+
     @Operation(summary = "Browse the catalog",
-            description = "ACTIVE listings only, newest first. Optional filters, all combinable: "
-                    + "case-insensitive title 'contains' (q); category by taxonomy code — a PARENT "
-                    + "code (e.g. electronics) also matches listings in its children (e.g. tv-audio); "
-                    + "condition (NEW/USED_LIKE_NEW/USED_GOOD/USED_FAIR); city (exact, "
-                    + "case-insensitive — geo/radius search is future work). Page size is clamped "
-                    + "to 50 (never an error).")
+            description = "ACTIVE listings only. Optional filters, all combinable: case-insensitive "
+                    + "title 'contains' (q); category by taxonomy code — a PARENT code (e.g. "
+                    + "electronics) also matches listings in its children (e.g. tv-audio); condition "
+                    + "(NEW/USED_LIKE_NEW/USED_GOOD/USED_FAIR); city (exact, case-insensitive — "
+                    + "geo/radius search is future work); merchantId ('more from this seller'); an "
+                    + "inclusive minPriceCents/maxPriceCents window in MINOR units; and inStock=true "
+                    + "to hide listings sitting at zero stock. Ordering is `sort` — newest (default), "
+                    + "price_asc or price_desc — each with a stable tiebreaker so paging never "
+                    + "repeats or skips a row. Page size is clamped to 50 (never an error). "
+                    + "**An unrecognised query parameter is refused with 400 `unknown_parameter`** "
+                    + "rather than ignored, so a filter can never be silently dropped.")
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of ACTIVE listings "
                     + "(an out-of-range page simply returns empty items)",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "browse", value = EXAMPLE_BROWSE_200))),
-            @ApiResponse(responseCode = "400", description = "condition outside the enum",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "invalid-condition",
-                                    value = EXAMPLE_INVALID_CONDITION_400)))
+            @ApiResponse(responseCode = "400", description = "condition outside the enum, an "
+                    + "unrecognised sort, an inverted/negative price window, a malformed merchantId, "
+                    + "or a query parameter this endpoint does not support",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "invalid-condition",
+                                    value = EXAMPLE_INVALID_CONDITION_400),
+                            @ExampleObject(name = "invalid-sort", value = EXAMPLE_INVALID_SORT_400),
+                            @ExampleObject(name = "invalid-price-range",
+                                    value = EXAMPLE_INVALID_PRICE_RANGE_400),
+                            @ExampleObject(name = "unknown-parameter",
+                                    value = EXAMPLE_UNKNOWN_PARAMETER_400)}))
     })
     @GetMapping
     public ApiResult<ListingPageResponse> browse(
@@ -169,14 +216,93 @@ public class CatalogController {
             @RequestParam(value = "condition", required = false) String condition,
             @Parameter(description = "Exact city filter (case-insensitive)", example = "Harare")
             @RequestParam(value = "city", required = false) String city,
+            @Parameter(description = "Seller filter — the merchantId carried on every listing. "
+                    + "Powers 'more from this seller'.",
+                    example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @RequestParam(value = "merchantId", required = false) String merchantId,
+            @Parameter(description = "Inclusive lower price bound, MINOR units (cents)",
+                    example = "1000", schema = @Schema(type = "integer", format = "int64"))
+            @RequestParam(value = "minPriceCents", required = false) String minPriceCents,
+            @Parameter(description = "Inclusive upper price bound, MINOR units (cents)",
+                    example = "5000", schema = @Schema(type = "integer", format = "int64"))
+            @RequestParam(value = "maxPriceCents", required = false) String maxPriceCents,
+            @Parameter(description = "true keeps only listings with stock left. An ACTIVE listing "
+                    + "may sit at stockQty 0.", example = "true",
+                    schema = @Schema(type = "boolean"))
+            @RequestParam(value = "inStock", required = false) String inStock,
+            @Parameter(description = "Ordering: newest (default), price_asc or price_desc",
+                    example = "price_asc", schema = @Schema(implementation = ListingSort.class))
+            @RequestParam(value = "sort", required = false) String sort,
             @Parameter(description = "Zero-based page index",
                     schema = @Schema(type = "integer", defaultValue = "0"))
             @RequestParam(value = "page", defaultValue = "0") String page,
             @Parameter(description = "Page size (clamped to 50)",
                     schema = @Schema(type = "integer", defaultValue = "20"))
-            @RequestParam(value = "size", defaultValue = "20") String size) {
-        return ApiResult.ok(catalogService.browse(q, category, condition, city,
-                intParam(page, 0), intParam(size, 20)));
+            @RequestParam(value = "size", defaultValue = "20") String size,
+            HttpServletRequest httpRequest) {
+        QueryParams.rejectUnknown(httpRequest, BROWSE_PARAMS);
+        CatalogService.BrowseQuery query = new CatalogService.BrowseQuery(
+                q, category, condition, city, parseMerchantId(merchantId),
+                longParam("minPriceCents", minPriceCents), longParam("maxPriceCents", maxPriceCents),
+                booleanParam("inStock", inStock), ListingSort.parse(sort),
+                intParam(page, 0), intParam(size, 20));
+        return ApiResult.ok(catalogService.browse(query));
+    }
+
+    private static final String EXAMPLE_MERCHANT_PROFILE_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "displayName": "Rudo Traders",
+                "verified": true,
+                "since": "2026-04-01T09:15:00Z",
+                "ratingAvg": 5.0,
+                "reviewCount": 1,
+                "activeListingCount": 1
+              }
+            }""";
+
+    private static final String EXAMPLE_INVALID_MERCHANT_ID_400 = """
+            {
+              "code": "invalid_merchant_id",
+              "message": "merchantId must be a UUID"
+            }""";
+
+    @Operation(summary = "Get one seller's public profile",
+            description = "Badge, aggregate rating and live listing count for one merchant — the "
+                    + "seller header, in a single call. Pair it with "
+                    + "`GET /marketplace/catalog?merchantId=<id>` for 'more from this seller'. "
+                    + "**Never 404s:** an unknown merchant answers with a nameless, unverified "
+                    + "profile and zeroes, so this endpoint is not an oracle for which merchant ids "
+                    + "exist. A null ratingAvg means unrated — render it as such, never as 0. "
+                    + "Logo, response time and return policy are deliberately absent: the platform "
+                    + "stores none of them and will not invent them.")
+    @SecurityRequirements({})
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The seller profile (zeroed for an "
+                    + "unknown merchant)",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "profile",
+                                    value = EXAMPLE_MERCHANT_PROFILE_200))),
+            @ApiResponse(responseCode = "400", description = "Malformed merchant id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "invalid-merchant-id",
+                                    value = EXAMPLE_INVALID_MERCHANT_ID_400)))
+    })
+    @GetMapping("/merchants/{merchantId}")
+    public ApiResult<MerchantProfileResponse> merchantProfile(
+            @Parameter(description = "Fleet merchant id — the merchantId on any of their listings",
+                    example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("merchantId") String merchantId) {
+        UUID id = parseMerchantId(merchantId);
+        if (id == null) {
+            throw ApiException.badRequest("invalid_merchant_id", "merchantId must be a UUID");
+        }
+        return ApiResult.ok(catalogService.merchantProfile(id));
     }
 
     @Operation(summary = "Get one listing",
@@ -305,11 +431,62 @@ public class CatalogController {
         }
     }
 
+    /**
+     * Pagination is FORGIVING — garbage falls back to the default, the
+     * long-standing contract on this surface and harmless because a wrong page
+     * index only ever shows the wrong slice of the same result set.
+     */
     private static int intParam(String raw, int fallback) {
         try {
             return Integer.parseInt(raw);
         } catch (NumberFormatException ex) {
             return fallback;
+        }
+    }
+
+    /**
+     * Filters are NOT forgiving. Falling back to "no filter" on an unparseable
+     * bound is the same failure the unknown-parameter refusal exists to
+     * prevent: the client believes it capped the price, the response is a
+     * confident 200 listing goods outside the budget, and nothing says the
+     * bound was dropped. Refuse instead, naming the parameter.
+     */
+    private static Long longParam(String name, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException ex) {
+            throw ApiException.badRequest("invalid_price",
+                    name + " must be a whole number of cents");
+        }
+    }
+
+    /** Same discipline as {@link #longParam}: only the two literals, never a
+     *  {@code Boolean.parseBoolean} that reads every typo as {@code false}. */
+    private static Boolean booleanParam(String name, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String value = raw.trim().toLowerCase(Locale.ROOT);
+        if ("true".equals(value)) {
+            return Boolean.TRUE;
+        }
+        if ("false".equals(value)) {
+            return Boolean.FALSE;
+        }
+        throw ApiException.badRequest("invalid_boolean", name + " must be true or false");
+    }
+
+    private static UUID parseMerchantId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw.trim());
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest("invalid_merchant_id", "merchantId must be a UUID");
         }
     }
 }

@@ -182,6 +182,53 @@ never change either casually.
   does not exist" at runtime (found by SecuritySurfaceIT in CI; invisible
   to mocked-repo tests). CatalogServiceTest pins the predicate structure;
   SecuritySurfaceIT + CatalogTaxonomyBrowseIT prove it against real SQL.
+  Browse takes a `BrowseQuery` RECORD, not positional arguments, so adding a
+  filter cannot silently shift the meaning of an existing call site.
+* **Browse sort, price window, in-stock and seller filter**: `sort` is
+  `newest` (default) / `price_asc` / `price_desc`; `minPriceCents` +
+  `maxPriceCents` are an INCLUSIVE window in minor units; `inStock=true`
+  hides listings sitting at `stockQty = 0` (an ACTIVE listing legitimately
+  can); `merchantId` is "more from this seller".
+  * **Every ordering ends with the same total-order tiebreaker**
+    (`createdAt DESC, id`). A sort on a non-unique column is only a PARTIAL
+    order, and Postgres may return tied rows in a different sequence per
+    query — so paging a catalogue where many items share a price silently
+    repeats some listings and skips others. The bug is invisible on page 1
+    and reads as "the catalogue is broken". `id` last makes it total.
+  * **`inStock=false` means "don't filter", never "show me the sold-out
+    ones"** — hence `Boolean` and a `Boolean.TRUE.equals` check, not a
+    primitive.
+  * **An inverted or negative price window is a 400, not an empty page.**
+    An empty page is indistinguishable from "nothing is for sale in your
+    budget" and sends the client hunting for a data problem that does not
+    exist.
+* **An unrecognised query parameter on BROWSE is a 400
+  `unknown_parameter`** (`catalog/util/QueryParams.rejectUnknown`), naming
+  both the offender and the full supported set. Spring silently ignores an
+  unbound parameter, which on a FILTERED endpoint is the worst default: a
+  filter the client believes it applied contributes nothing and the response
+  is a confidently wrong result set with a 200 on it. Keep
+  `CatalogController.BROWSE_PARAMS` in lock-step with the `@RequestParam`
+  names. **Deliberately browse-only** — on an unfiltered endpoint a stray
+  parameter can get nothing wrong, and refusing there would break callers
+  for no benefit. Same reasoning drives the FILTER parsers refusing garbage
+  (`invalid_price`, `invalid_boolean`, `invalid_merchant_id`, `invalid_sort`)
+  while PAGINATION keeps its forgiving fallback: a wrong page index only
+  shows the wrong slice of the same result set.
+* **`GET /marketplace/catalog/merchants/{id}` is the public seller header** —
+  badge + aggregate rating + ACTIVE listing count in ONE call, where the app
+  previously needed three round trips and a client-side join (and so rendered
+  a bare UUID). The rating comes from `ReviewService.merchantRating`, not a
+  second aggregate query, so this and the sibling `/rating` endpoint can never
+  disagree. **It never 404s** — an unknown merchant is a zeroed, nameless
+  profile, because a 404 would make the public catalogue an oracle for which
+  merchant ids exist. `activeListingCount` uses
+  `countByMerchantIdAndStatus(..., ACTIVE)`, NOT `countByMerchantId`, which
+  includes DRAFT and ARCHIVED rows the buyer surface hides. **Logo, response
+  time and return policy were requested and are deliberately absent**: this
+  service stores none of them and neither does any other in the fleet, so a
+  fabricated "responds within 24h" would be a promise the platform has no
+  basis to make.
 * **Verified-purchase reviews (V5)**: a review may ONLY be created by a
   CUSTOMER with a **PAID order containing the listing** — the gate queries
   `market_order` ⋈ `market_order_item` (status pinned to PAID in the JPQL,
