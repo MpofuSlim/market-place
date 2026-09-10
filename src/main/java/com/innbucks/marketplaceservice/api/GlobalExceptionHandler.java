@@ -23,10 +23,17 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    /**
+     * {@code details} is null for almost every refusal, and {@link ApiResult} is
+     * {@code @JsonInclude(NON_NULL)}, so those still render as the two-field
+     * {@code {code, message}} body they always have. Only a refusal that
+     * deliberately attaches a payload (order creation's per-line rejections)
+     * gains a {@code data}.
+     */
     @ExceptionHandler(ApiException.class)
-    public ResponseEntity<ApiResult<Void>> apiException(ApiException ex) {
+    public ResponseEntity<ApiResult<Object>> apiException(ApiException ex) {
         return ResponseEntity.status(ex.status())
-                .body(ApiResult.error(ex.code(), ex.getMessage()));
+                .body(new ApiResult<>(ex.code(), ex.getMessage(), ex.details()));
     }
 
     /**

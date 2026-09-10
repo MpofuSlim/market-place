@@ -18,6 +18,8 @@ import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.dto.ConfirmPaymentRequest;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
 import com.innbucks.marketplaceservice.order.dto.InternalOrderView;
+import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
+import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import lombok.extern.slf4j.Slf4j;
@@ -201,17 +203,36 @@ public class OrderService {
 
         Map<UUID, Listing> listings = listingRepository.findAllById(seen).stream()
                 .collect(Collectors.toMap(Listing::getId, l -> l));
+
+        // Collect EVERY failing line rather than aborting at the first. A cart
+        // with two problems otherwise costs the customer two round-trips, and
+        // the second problem only appears once they have fixed the first. The
+        // order is still refused as a WHOLE — a partially-fulfilled order is
+        // never minted, and that is deliberate.
+        List<OrderLineRejection> rejections = new ArrayList<>(0);
         for (CreateOrderRequest.Item item : items) {
             Listing listing = listings.get(item.listingId());
-            // One code for missing / not ACTIVE / foreign currency: the client
-            // remedy is identical (drop the line), and it leaks nothing more
-            // than the public catalog already shows.
+            // One reason for missing / not ACTIVE / foreign currency: the
+            // client remedy is identical (drop the line), and it leaks nothing
+            // more than the public catalog already shows.
             if (listing == null
                     || listing.getStatus() != ListingStatus.ACTIVE
                     || !currency.equals(listing.getCurrency())) {
-                throw ApiException.unprocessable("listing_unavailable",
-                        "Listing " + item.listingId() + " is not available");
+                rejections.add(OrderLineRejection.unavailable(item.listingId(), item.quantity()));
+            } else if (listing.getStockQty() < item.quantity()) {
+                // ADVISORY ONLY: reserveStock below is still the authoritative
+                // guard — it is the atomic UPDATE a concurrent buyer cannot
+                // slip past, and this read can be stale the instant it is
+                // taken. The pre-check exists so the COMMON case reports every
+                // short line at once instead of one per attempt; a line that
+                // passes here and loses the race still gets the 409 below.
+                rejections.add(OrderLineRejection.insufficientStock(item.listingId(),
+                        listing.getTitle(), item.quantity(), listing.getStockQty(),
+                        listing.getPriceCents()));
             }
+        }
+        if (!rejections.isEmpty()) {
+            throw refusalFor(rejections).withDetails(OrderRejectionDetails.of(rejections));
         }
 
         // Totals SERVER-SIDE from the listing rows, overflow-checked. Computed
@@ -265,6 +286,38 @@ public class OrderService {
         log.info("order created id={} ref={} lines={} totalCents={}",
                 order.getId(), order.getOrderRef(), lines.size(), totalCents);
         return toResponse(order, lines);
+    }
+
+    /**
+     * The refusal a rejected order reports at the TOP level, chosen to be
+     * byte-identical to what the old abort-at-first-failure code produced —
+     * only the {@code details} payload is new, so no existing client sees a
+     * changed status, code or message.
+     *
+     * <p>Reproducing that exactly means reproducing two incidental orderings:
+     * <ul>
+     *   <li><b>Availability beat stock</b>, whatever their positions: every
+     *       line's availability was checked before any stock was touched, so
+     *       an unavailable line always threw first.</li>
+     *   <li><b>Within stock failures, the smallest listing id won</b> — not the
+     *       first in request order. {@code reserveStock} iterates sorted by id
+     *       (deadlock avoidance), and it was the thrower.</li>
+     * </ul>
+     * The {@code rejections} list itself stays in REQUEST order, which is what
+     * a client renders.
+     */
+    private static ApiException refusalFor(List<OrderLineRejection> rejections) {
+        return rejections.stream()
+                .filter(r -> OrderLineRejection.REASON_UNAVAILABLE.equals(r.reason()))
+                .findFirst()
+                .map(r -> ApiException.unprocessable("listing_unavailable",
+                        "Listing " + r.listingId() + " is not available"))
+                .orElseGet(() -> rejections.stream()
+                        .min(Comparator.comparing(OrderLineRejection::listingId))
+                        .map(r -> ApiException.conflict("insufficient_stock",
+                                "Insufficient stock for listing " + r.listingId()))
+                        .orElseThrow(() -> new IllegalStateException(
+                                "refusalFor called with no rejections")));
     }
 
     /**

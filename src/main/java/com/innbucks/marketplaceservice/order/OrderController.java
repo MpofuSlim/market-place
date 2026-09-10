@@ -64,7 +64,15 @@ public class OrderController {
                     + "(`expiresAt`), the buyer cancels, or the payments service confirms. "
                     + "**The payer is the caller:** when the token carries a `phoneNumber` claim (every "
                     + "CUSTOMER login does) it is used and `buyerMsisdn` is ignored; the body field is read "
-                    + "only for a token without a phone. 400 `invalid_msisdn` when neither yields a number.",
+                    + "only for a token without a phone. 400 `invalid_msisdn` when neither yields a number. "
+                    + "\n\n**A refused order names EVERY failing line, not just the first.** When a listing "
+                    + "has gone off sale or run short, the 422/409 body carries `data.rejections` with one "
+                    + "entry per bad line (`reason`, a customer-safe `message`, `requestedQty`, and "
+                    + "`availableQty`/`unitPriceCents` where they mean something) — so a cart with two "
+                    + "problems is corrected once instead of over two round-trips. The top-level `code` and "
+                    + "`message` still name the first offender exactly as before, so existing clients are "
+                    + "unaffected. The order is refused as a whole either way: a partially-fulfilled order "
+                    + "is never created.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = CreateOrderRequest.class),
@@ -141,19 +149,65 @@ public class OrderController {
                                     {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}
                                     """))),
             @ApiResponse(responseCode = "409", description = "Not enough stock, or the same key is "
-                    + "still executing",
+                    + "still executing. A stock refusal carries `data.rejections` — EVERY short line, "
+                    + "not just the first.",
                     content = @Content(mediaType = "application/json", examples = {
-                            @ExampleObject(name = "Insufficient stock", value = """
-                                    {"code":"insufficient_stock","message":"Insufficient stock for listing 9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d"}
+                            @ExampleObject(name = "Insufficient stock (every short line listed)", value = """
+                                    {
+                                      "code": "insufficient_stock",
+                                      "message": "Insufficient stock for listing 5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                            "reason": "INSUFFICIENT_STOCK",
+                                            "message": "Only 3 left of Solar Lantern 20W",
+                                            "requestedQty": 5,
+                                            "availableQty": 3,
+                                            "unitPriceCents": 1550
+                                          },
+                                          {
+                                            "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
+                                            "reason": "INSUFFICIENT_STOCK",
+                                            "message": "USB-C Charging Cable 2m is sold out",
+                                            "requestedQty": 1,
+                                            "availableQty": 0,
+                                            "unitPriceCents": 450
+                                          }
+                                        ]
+                                      }
+                                    }
                                     """),
                             @ExampleObject(name = "Concurrent duplicate", value = """
                                     {"code":"request_in_flight","message":"A request with this Idempotency-Key is already in flight"}
                                     """)})),
             @ApiResponse(responseCode = "422", description = "Listing unavailable, or the key was "
-                    + "reused with a different body",
+                    + "reused with a different body. An unavailability refusal carries "
+                    + "`data.rejections` — EVERY failing line, whatever the mix of reasons.",
                     content = @Content(mediaType = "application/json", examples = {
-                            @ExampleObject(name = "Listing unavailable", value = """
-                                    {"code":"listing_unavailable","message":"Listing 9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d is not available"}
+                            @ExampleObject(name = "Listing unavailable (mixed reasons, all listed)", value = """
+                                    {
+                                      "code": "listing_unavailable",
+                                      "message": "Listing 9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d is not available",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                            "reason": "LISTING_UNAVAILABLE",
+                                            "message": "Listing 9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d is not available",
+                                            "requestedQty": 2
+                                          },
+                                          {
+                                            "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
+                                            "reason": "INSUFFICIENT_STOCK",
+                                            "message": "Only 1 left of USB-C Charging Cable 2m",
+                                            "requestedQty": 4,
+                                            "availableQty": 1,
+                                            "unitPriceCents": 450
+                                          }
+                                        ]
+                                      }
+                                    }
                                     """),
                             @ExampleObject(name = "Key reused with different body", value = """
                                     {"code":"idempotency_key_reuse","message":"Idempotency-Key was already used with a different request body"}
