@@ -61,7 +61,10 @@ public class OrderController {
                     + "client). The **Idempotency-Key header is required** and is namespaced per buyer: "
                     + "retrying with the same key replays the original response; reusing the key with a "
                     + "different body is refused. The order holds its stock until the payment TTL lapses "
-                    + "(`expiresAt`), the buyer cancels, or the payments service confirms.",
+                    + "(`expiresAt`), the buyer cancels, or the payments service confirms. "
+                    + "**The payer is the caller:** when the token carries a `phoneNumber` claim (every "
+                    + "CUSTOMER login does) it is used and `buyerMsisdn` is ignored; the body field is read "
+                    + "only for a token without a phone. 400 `invalid_msisdn` when neither yields a number.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = CreateOrderRequest.class),

@@ -97,6 +97,16 @@ never change either casually.
   replays return the ORIGINAL stored status/body; same key + different body
   → 422; fresh claim in flight → 409; stale claim (>60s) taken over. DB
   backstop: partial unique index on `market_order.idempotency_key`.
+* **The payer is the CALLER**: `OrderService.resolveBuyerMsisdn` takes the
+  order's `buyerMsisdn` from the JWT's `phoneNumber` claim whenever the token
+  carries one (every real CUSTOMER login does) and reads the body field ONLY
+  for a phone-less token. This number is what payment-service treats as the
+  payer, and on the EcoCash rail it is the phone that receives the PIN prompt —
+  read from the body alone, any authenticated buyer could push a "pay $X"
+  prompt to any number they typed. `buyerMsisdn` stays on the DTO (optional,
+  back-compat) but is never authoritative for a customer. Same fix, same
+  reasoning as payment-service's deprecated `ShopCheckoutRequest.msisdn`.
+  `OrderServiceTest` pins all four combinations.
 * **Stock is reserved atomically** (`UPDATE listing SET stock_qty = stock_qty
   - :q WHERE id = :id AND stock_qty >= :q` — check the update count), and
   released exactly once (`market_order.stock_released` double-release guard).
