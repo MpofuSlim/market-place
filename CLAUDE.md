@@ -107,6 +107,23 @@ never change either casually.
   back-compat) but is never authoritative for a customer. Same fix, same
   reasoning as payment-service's deprecated `ShopCheckoutRequest.msisdn`.
   `OrderServiceTest` pins all four combinations.
+* **A refused order names EVERY failing line.** `OrderService.createOrderTx`
+  collects unavailable AND short-stocked lines into `OrderLineRejection`s and
+  throws once with all of them in `ApiException.details` → the envelope's
+  `data.rejections`. It used to abort at the first bad line, so a cart with two
+  problems cost the customer two round-trips and the second problem only
+  appeared after they fixed the first. **The top-level status/code/message are
+  deliberately byte-identical to the old first-failure behaviour** (`refusalFor`
+  reproduces both incidental orderings: availability beat stock whatever the
+  positions, and among stock failures the SMALLEST listing id won, because
+  `reserveStock` iterates id-sorted and was the thrower) — so this is purely
+  additive and no existing client sees a change. The stock pre-check is
+  **advisory**: `reserveStock`'s atomic UPDATE is still the authoritative guard,
+  and a line that passes the pre-check but loses the race still gets the plain
+  409 with no `details`. `ApiException.details` is null everywhere else and
+  `ApiResult` is `@JsonInclude(NON_NULL)`, so every other error body is
+  unchanged. Reasons are STRINGS with constants on `OrderLineRejection`, never
+  an enum — a client meeting an unrecognised one must render it, not choke.
 * **Stock is reserved atomically** (`UPDATE listing SET stock_qty = stock_qty
   - :q WHERE id = :id AND stock_qty >= :q` — check the update count), and
   released exactly once (`market_order.stock_released` double-release guard).

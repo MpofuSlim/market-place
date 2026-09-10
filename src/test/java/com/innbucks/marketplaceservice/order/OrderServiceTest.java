@@ -15,6 +15,8 @@ import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.dto.ConfirmPaymentRequest;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
 import com.innbucks.marketplaceservice.order.dto.InternalOrderView;
+import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
+import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -36,6 +38,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -350,6 +353,180 @@ class OrderServiceTest {
         verify(listingRepository, never()).restock(eq(id3), anyInt());
         verify(orderRepository, never()).save(any());
         verify(idempotencyService).release(KEY_HASH);
+    }
+
+    // ------------------------------------------------------------------
+    // Creation: a refused order names EVERY failing line
+    //
+    // The order is still refused as a whole; what changed is that the customer
+    // sees one complete correction instead of discovering the second problem
+    // after fixing the first. The top-level status/code/message must stay
+    // byte-identical to the old abort-at-first-failure behaviour, so these
+    // tests pin BOTH halves.
+    // ------------------------------------------------------------------
+
+    private static Listing listingWithStock(UUID id, long priceCents, String title, int stockQty) {
+        Listing l = listing(id, priceCents, title);
+        l.setStockQty(stockQty);
+        return l;
+    }
+
+    private static List<OrderLineRejection> rejectionsOf(ApiException ex) {
+        assertNotNull(ex.details(), "a line-level refusal must carry details");
+        assertInstanceOf(OrderRejectionDetails.class, ex.details());
+        return ((OrderRejectionDetails) ex.details()).rejections();
+    }
+
+    @Test
+    void everyUnavailableLineIsReported_notJustTheFirst() {
+        UUID id1 = new UUID(0, 1);
+        UUID id2 = new UUID(0, 2);
+        Listing gone = listing(id1, 1000, "Gone");
+        gone.setStatus(ListingStatus.INACTIVE);
+        Listing archived = listing(id2, 2000, "Archived");
+        archived.setStatus(ListingStatus.ARCHIVED);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(gone, archived));
+
+        ApiException ex = createFails(req("0771234567", item(id1, 2), item(id2, 1)));
+
+        // Top level: exactly what the first-failure version said.
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("listing_unavailable", ex.code());
+        assertEquals("Listing " + id1 + " is not available", ex.getMessage());
+
+        List<OrderLineRejection> rejections = rejectionsOf(ex);
+        assertEquals(2, rejections.size(), "both bad lines, not just the first");
+        assertEquals(id1, rejections.get(0).listingId());
+        assertEquals(id2, rejections.get(1).listingId());
+        rejections.forEach(r -> {
+            assertEquals(OrderLineRejection.REASON_UNAVAILABLE, r.reason());
+            // Nothing is known about a listing that is off sale — inventing a
+            // price or a quantity here would be worse than omitting them.
+            assertNull(r.availableQty());
+            assertNull(r.unitPriceCents());
+        });
+        verify(listingRepository, never()).reserveStock(any(), anyInt());
+        verify(idempotencyService).release(KEY_HASH);
+    }
+
+    @Test
+    void shortStockedLineCarriesItsAvailableQtyAndCurrentPrice() {
+        UUID id = new UUID(0, 1);
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(listingWithStock(id, 1550, "Solar Lantern 20W", 3)));
+
+        ApiException ex = createFails(req("0771234567", item(id, 5)));
+
+        assertEquals(HttpStatus.CONFLICT, ex.status());
+        assertEquals("insufficient_stock", ex.code());
+
+        OrderLineRejection only = rejectionsOf(ex).get(0);
+        assertEquals(OrderLineRejection.REASON_INSUFFICIENT_STOCK, only.reason());
+        assertEquals(5, only.requestedQty());
+        assertEquals(3, only.availableQty());
+        // The current price rides along so the app can show the corrected line
+        // without a second fetch.
+        assertEquals(1550L, only.unitPriceCents());
+        // Named, so the customer reads something they can act on.
+        assertEquals("Only 3 left of Solar Lantern 20W", only.message());
+
+        // The pre-check refused before any stock was touched.
+        verify(listingRepository, never()).reserveStock(any(), anyInt());
+    }
+
+    @Test
+    void soldOutLineSaysSoldOut() {
+        UUID id = new UUID(0, 1);
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(listingWithStock(id, 450, "USB-C Charging Cable 2m", 0)));
+
+        ApiException ex = createFails(req("0771234567", item(id, 1)));
+
+        OrderLineRejection only = rejectionsOf(ex).get(0);
+        assertEquals(0, only.availableQty());
+        assertEquals("USB-C Charging Cable 2m is sold out", only.message());
+    }
+
+    @Test
+    void amongStockFailuresTheTopLevelNamesTheSmallestListingId() {
+        // Byte-compatibility detail: reserveStock iterates SORTED BY LISTING ID
+        // (deadlock avoidance) and was the thrower, so the id it named was the
+        // smallest failing one — NOT the first in request order. The rejections
+        // list still reads in request order, which is what a client renders.
+        UUID low = new UUID(0, 1);
+        UUID high = new UUID(0, 9);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(
+                listingWithStock(low, 100, "Low", 0), listingWithStock(high, 200, "High", 0)));
+
+        ApiException ex = createFails(req("0771234567", item(high, 1), item(low, 1)));
+
+        assertEquals(HttpStatus.CONFLICT, ex.status());
+        assertEquals("Insufficient stock for listing " + low, ex.getMessage());
+
+        List<OrderLineRejection> rejections = rejectionsOf(ex);
+        assertEquals(List.of(high, low),
+                rejections.stream().map(OrderLineRejection::listingId).toList(),
+                "rejections stay in REQUEST order");
+    }
+
+    @Test
+    void unavailabilityBeatsShortStockAtTheTopLevel_butBothAreReported() {
+        // The old code checked availability for every line before touching any
+        // stock, so an unavailable line always threw first regardless of
+        // position. That precedence is preserved.
+        UUID shortId = new UUID(0, 1);
+        UUID goneId = new UUID(0, 9);
+        Listing gone = listing(goneId, 2000, "Gone");
+        gone.setStatus(ListingStatus.INACTIVE);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(
+                listingWithStock(shortId, 450, "USB-C Charging Cable 2m", 1), gone));
+
+        ApiException ex = createFails(req("0771234567", item(shortId, 4), item(goneId, 2)));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("listing_unavailable", ex.code());
+        assertEquals("Listing " + goneId + " is not available", ex.getMessage());
+
+        List<OrderLineRejection> rejections = rejectionsOf(ex);
+        assertEquals(2, rejections.size());
+        assertEquals(OrderLineRejection.REASON_INSUFFICIENT_STOCK, rejections.get(0).reason());
+        assertEquals(1, rejections.get(0).availableQty());
+        assertEquals(OrderLineRejection.REASON_UNAVAILABLE, rejections.get(1).reason());
+    }
+
+    @Test
+    void aLineThatLosesTheReserveRaceStillGetsThePlain409WithNoDetails() {
+        // The pre-check is ADVISORY — stock read there can be stale. When a
+        // concurrent buyer takes the last unit between the read and the atomic
+        // UPDATE, the authoritative guard still refuses, and that refusal is
+        // the unchanged single-line 409: we genuinely do not know what else
+        // moved, so inventing a per-line report would be fiction.
+        UUID id = new UUID(0, 1);
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(listingWithStock(id, 100, "Contested", 10)));
+        when(listingRepository.reserveStock(id, 1)).thenReturn(0);
+
+        ApiException ex = createFails(req("0771234567", item(id, 1)));
+
+        assertEquals(HttpStatus.CONFLICT, ex.status());
+        assertEquals("insufficient_stock", ex.code());
+        assertNull(ex.details(), "a lost race reports no per-line detail");
+        verify(listingRepository).reserveStock(id, 1);
+    }
+
+    @Test
+    void anAcceptableOrderStillReachesReserveStock() {
+        // The pre-check must not become a second gate: stock that is sufficient
+        // at read time proceeds to the atomic reservation exactly as before.
+        UUID id = new UUID(0, 1);
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(listingWithStock(id, 100, "Plenty", 10)));
+        when(listingRepository.reserveStock(id, 10)).thenReturn(1);
+
+        OrderResponse resp = service.createOrder(BUYER, req("0771234567", item(id, 10)), RAW_KEY);
+
+        assertEquals(1000L, resp.totalCents());
+        verify(listingRepository).reserveStock(id, 10);
     }
 
     // ------------------------------------------------------------------
