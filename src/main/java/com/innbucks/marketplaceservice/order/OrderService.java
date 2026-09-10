@@ -197,7 +197,7 @@ public class OrderService {
                         "Listing " + item.listingId() + " appears more than once in the order");
             }
         }
-        String buyerMsisdn = normalizeMsisdn(request.buyerMsisdn());
+        String buyerMsisdn = normalizeMsisdn(resolveBuyerMsisdn(buyer, request));
 
         Map<UUID, Listing> listings = listingRepository.findAllById(seen).stream()
                 .collect(Collectors.toMap(Listing::getId, l -> l));
@@ -507,7 +507,30 @@ public class OrderService {
         throw new IllegalStateException("Could not allocate a unique order ref");
     }
 
+    /**
+     * The payer's number is the CALLER's number. The JWT's {@code phoneNumber}
+     * claim wins whenever the token carries one; the body's {@code buyerMsisdn}
+     * is read only for a token without a phone (staff-shaped or legacy).
+     *
+     * <p>Why the claim must win: this value is handed to the payments service
+     * as the payer, and on the EcoCash rail it is the phone that receives the
+     * PIN prompt. Read from the body alone, any authenticated buyer could have
+     * a "pay $X" prompt pushed to any number they typed. The same defect was
+     * fixed on payment-service's shop-checkout, whose {@code msisdn} field is
+     * now deprecated and ignored for exactly this reason.
+     */
+    private static String resolveBuyerMsisdn(AuthenticatedUser buyer, CreateOrderRequest request) {
+        if (buyer.phone() != null && !buyer.phone().isBlank()) {
+            return buyer.phone();
+        }
+        return request.buyerMsisdn();
+    }
+
     private String normalizeMsisdn(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw ApiException.badRequest("invalid_msisdn",
+                    "No buyer phone number: the token carries none and buyerMsisdn was not supplied");
+        }
         try {
             Phonenumber.PhoneNumber parsed = PHONE_UTIL.parse(raw, country);
             if (!PHONE_UTIL.isValidNumber(parsed)) {

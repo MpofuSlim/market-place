@@ -3,7 +3,6 @@ package com.innbucks.marketplaceservice.order.dto;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -22,9 +21,11 @@ import java.util.UUID;
         + "totals are computed server-side from the listing rows.")
 public record CreateOrderRequest(
 
-        @Schema(description = "Buyer contact number; normalised to E.164 before storage "
-                + "(default region = the deployment country)", example = "+263771234567")
-        @NotBlank
+        @Schema(description = "Buyer contact number, used ONLY when the caller's token carries no "
+                + "phoneNumber claim. A CUSTOMER token's own phone always wins — the payer is the "
+                + "caller, and on the EcoCash rail this number receives the PIN prompt. Normalised "
+                + "to E.164 (default region = the deployment country).",
+                example = "+263771234567", nullable = true)
         @Size(max = 32)
         String buyerMsisdn,
 

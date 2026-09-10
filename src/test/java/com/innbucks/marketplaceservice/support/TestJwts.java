@@ -54,6 +54,7 @@ public final class TestJwts {
         private List<String> roles = List.of();
         private UUID merchantId;
         private UUID shopId;
+        private String phoneNumber;
         // Default: valid for 1 hour from now.
         private long ttlMillis = 3_600_000L;
 
@@ -81,6 +82,13 @@ public final class TestJwts {
             return this;
         }
 
+        /** The phoneNumber claim every real CUSTOMER login carries; the order
+         *  flow takes the payer from it in preference to the request body. */
+        public Builder phoneNumber(String phoneNumber) {
+            this.phoneNumber = phoneNumber;
+            return this;
+        }
+
         /** Issued and already expired — for expired-token tests. */
         public Builder expired() {
             this.ttlMillis = -60_000L;
@@ -99,6 +107,9 @@ public final class TestJwts {
             }
             if (shopId != null) {
                 builder.claim("shopId", shopId.toString());
+            }
+            if (phoneNumber != null) {
+                builder.claim("phoneNumber", phoneNumber);
             }
             long now = System.currentTimeMillis();
             return builder

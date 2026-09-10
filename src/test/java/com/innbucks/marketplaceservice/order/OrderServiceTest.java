@@ -376,6 +376,61 @@ class OrderServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // Creation: the payer is the CALLER — JWT phone beats the body
+    // ------------------------------------------------------------------
+
+    /** A real CUSTOMER login: same uuid as BUYER (so the same idempotency
+     *  namespace), but the token carries the phoneNumber claim. */
+    private static final AuthenticatedUser BUYER_WITH_PHONE = new AuthenticatedUser(
+            BUYER_UUID.toString(), Set.of("CUSTOMER"), null, null, "+263779999999", "ZW");
+
+    private MarketOrder createdBy(AuthenticatedUser buyer, CreateOrderRequest request) {
+        UUID id = new UUID(0, 1);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(listing(id, 1000, "Thing")));
+        when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(1);
+        service.createOrder(buyer, request, RAW_KEY);
+        ArgumentCaptor<MarketOrder> saved = ArgumentCaptor.forClass(MarketOrder.class);
+        verify(orderRepository).save(saved.capture());
+        return saved.getValue();
+    }
+
+    @Test
+    void jwtPhoneWinsOverTheBodyMsisdn() {
+        // The body names a DIFFERENT number. On the EcoCash rail this is the
+        // phone that gets the PIN prompt, so the caller's own number must win
+        // — otherwise any buyer could push prompts to any number they typed.
+        MarketOrder order = createdBy(BUYER_WITH_PHONE, req("0771234567", item(new UUID(0, 1), 1)));
+
+        assertEquals("+263779999999", order.getBuyerMsisdn());
+    }
+
+    @Test
+    void jwtPhoneIsUsedWhenTheBodyOmitsMsisdn() {
+        MarketOrder order = createdBy(BUYER_WITH_PHONE, req(null, item(new UUID(0, 1), 1)));
+
+        assertEquals("+263779999999", order.getBuyerMsisdn());
+    }
+
+    @Test
+    void bodyMsisdnIsUsedOnlyWhenTheTokenHasNoPhone() {
+        // A phone-less token (legacy / staff-shaped): the body is the only
+        // source, normalised to E.164 as before.
+        MarketOrder order = createdBy(BUYER, req("0771234567", item(new UUID(0, 1), 1)));
+
+        assertEquals("+263771234567", order.getBuyerMsisdn());
+    }
+
+    @Test
+    void noPhoneAnywhereRejectsInvalidMsisdnBeforeTouchingStock() {
+        ApiException ex = createFails(req(null, item(new UUID(0, 1), 1)));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("invalid_msisdn", ex.code());
+        verify(listingRepository, never()).reserveStock(any(), anyInt());
+        verify(idempotencyService).release(KEY_HASH);
+    }
+
+    // ------------------------------------------------------------------
     // Creation: idempotency claim mapping
     // ------------------------------------------------------------------
 
