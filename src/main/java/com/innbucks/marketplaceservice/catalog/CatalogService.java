@@ -5,6 +5,7 @@ import com.innbucks.marketplaceservice.catalog.dto.CategoryNode;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.catalog.dto.MerchantProfileResponse;
+import com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService;
 import com.innbucks.marketplaceservice.review.ReviewService;
 import com.innbucks.marketplaceservice.review.dto.MerchantRatingResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
@@ -55,6 +56,7 @@ public class CatalogService {
     private final ListingViewAssembler assembler;
     private final SellerService sellerService;
     private final ReviewService reviewService;
+    private final SellerFulfilmentStatsService statsService;
 
     /**
      * Browse ACTIVE listings with optional filters, all combinable:
@@ -204,7 +206,10 @@ public class CatalogService {
                 seller == null ? null : seller.getCreatedAt(),
                 rating.ratingAvg(),
                 rating.reviewCount(),
-                listingRepository.countByMerchantIdAndStatus(merchantId, ListingStatus.ACTIVE));
+                listingRepository.countByMerchantIdAndStatus(merchantId, ListingStatus.ACTIVE),
+                // Same never-404 stance as the rest of the profile: an unknown
+                // merchant simply has no history, so the block is absent.
+                statsService.publicStats(merchantId));
     }
 
     @Transactional(readOnly = true)

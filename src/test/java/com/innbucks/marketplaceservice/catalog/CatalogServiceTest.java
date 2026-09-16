@@ -76,7 +76,8 @@ class CatalogServiceTest {
         catalogService = new CatalogService(listingRepository, listingImageRepository,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService),
-                sellerService, reviewService);
+                sellerService, reviewService,
+                mock(com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService.class));
     }
 
     private static CatalogService.BrowseQuery query(String q, String category,

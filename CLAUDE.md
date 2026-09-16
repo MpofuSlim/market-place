@@ -241,11 +241,13 @@ never change either casually.
   profile, because a 404 would make the public catalogue an oracle for which
   merchant ids exist. `activeListingCount` uses
   `countByMerchantIdAndStatus(..., ACTIVE)`, NOT `countByMerchantId`, which
-  includes DRAFT and ARCHIVED rows the buyer surface hides. **Logo, response
-  time and return policy were requested and are deliberately absent**: this
-  service stores none of them and neither does any other in the fleet, so a
-  fabricated "responds within 24h" would be a promise the platform has no
-  basis to make.
+  includes DRAFT and ARCHIVED rows the buyer surface hides. **Logo and return
+  policy were requested and are deliberately absent**: this service stores
+  neither and no other in the fleet does, so a fabricated value would be a
+  promise the platform has no basis to make. The requested RESPONSE TIME is
+  the one that graduated: V9's fulfilment trail made an honest equivalent
+  computable, and the profile now carries it — see the seller-stats bullet
+  below.
 * **Verified-purchase reviews (V5)**: a review may ONLY be created by a
   CUSTOMER with a **PAID order containing the listing** — the gate queries
   `market_order` ⋈ `market_order_item` (status pinned to PAID in the JPQL,
@@ -403,6 +405,33 @@ never change either casually.
   transferred, and the seller who must pack and be paid is the one who was
   selling AT ORDER TIME. (The notifier's old join also silently DROPPED any
   line whose listing could not be read.)
+* **Seller trust stats are COMPUTED, never asserted** (`fulfilment/
+  SellerFulfilmentStatsService`, on the public profile as `fulfilment` and on
+  the seller's own `GET /marketplace/fulfilments/stats`). Three figures, all
+  off real `order_fulfilment` rows: `completedOrders` (delivered parcels),
+  `medianDispatchHours` (median `paid_at → dispatched_at`; MEDIAN so one
+  forgotten parcel cannot poison a same-day seller, ROUNDED UP with a floor
+  of 1 — the platform understates speed, never flatters), and
+  `buyerConfirmedPercent` (share of completed parcels closed by the BUYER —
+  strength-of-evidence, not a score). Discipline that holds it together:
+  * **Silent below the sample floor** (`marketplace.seller-stats.min-sample`,
+    default 5): each figure is null until it rests on enough parcels — "100%
+    confirmed" over two orders is noise wearing a percentage — and the whole
+    block is ABSENT for a seller with no completed parcel, so a new seller
+    renders "new seller", never a zero that reads like a verdict. Mirrors the
+    `ratingAvg`-null-when-unrated stance.
+  * Parcels closed straight from PREPARING (handed over in person) are
+    excluded from the dispatch median — nothing was dispatched — but count as
+    completed; an OPEN DISPATCHED parcel counts toward the median (its
+    dispatch already happened). Rows whose `dispatched_at` precedes `paid_at`
+    (corrected/backfilled clocks) are dropped from the median, never fed in
+    as negative durations. All pinned by `SellerStatsIT` against real SQL
+    (`percentile_cont` + `FILTER` counts are invisible to mocked repos).
+  * The seller's own view wraps the SAME public object plus their private
+    queue counts (`awaitingDispatch`, `inTransit`) — one computation, so "why
+    does my profile say 2 days?" is answered by the very number the shopper
+    sees. A MERCHANT_ADMIN's `merchantId` filter is IGNORED (cannot widen own
+    scope); SUPER_ADMIN must name one (`merchant_id_required`).
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`
