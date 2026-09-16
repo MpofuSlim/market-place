@@ -192,6 +192,25 @@ public class MarketplaceMetrics {
                 .increment(amount);
     }
 
+    /**
+     * Settlement (escrow) outcomes on one tagged series,
+     * {@code marketplace.settlements{outcome}}: vocabulary
+     * {@code opened|released|disputed|refund_recorded|paid_out|illegal_transition}.
+     * {@code disputed} rising is buyers losing trust in sellers;
+     * {@code opened} minus {@code released} over a window is money the
+     * platform is sitting on.
+     */
+    public void settlementOutcome(String outcome, int amount) {
+        if (amount <= 0) {
+            return;
+        }
+        Counter.builder("marketplace.settlements")
+                .description("Merchant settlement parcels by escrow lifecycle outcome")
+                .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment(amount);
+    }
+
     public void illegalTransition() {
         illegalTransitions.increment();
     }

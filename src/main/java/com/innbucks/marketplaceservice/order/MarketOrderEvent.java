@@ -45,6 +45,10 @@ public class MarketOrderEvent {
     /** Fulfilment lifecycle (PREPARING/DISPATCHED/DELIVERED). */
     public static final String KIND_FULFILMENT = "FULFILMENT";
 
+    /** Settlement lifecycle (HELD/RELEASABLE/DISPUTED/PAID_OUT/REFUNDED) —
+     *  the escrow's money-state rows (V10). */
+    public static final String KIND_SETTLEMENT = "SETTLEMENT";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;

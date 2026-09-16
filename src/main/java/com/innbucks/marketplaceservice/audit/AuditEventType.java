@@ -64,6 +64,19 @@ public enum AuditEventType {
      *  records whether the BUYER confirmed receipt or the seller marked it, a
      *  distinction any delivery dispute turns on. */
     FULFILMENT_DELIVERED,
+    /** A buyer disputed a parcel — its settlement froze until an operator
+     *  decides (V10). Metadata carries the bounded reason, NEVER the buyer's
+     *  free-text detail. */
+    SETTLEMENT_DISPUTED,
+    /** An operator resolved a dispute (V10) — metadata's {@code action} says
+     *  which way (RELEASE to the seller / REFUND to the buyer), with the
+     *  money and the refund reference where one was recorded. */
+    SETTLEMENT_DISPUTE_RESOLVED,
+    /** An operator marked one merchant's RELEASABLE settlements paid (V10) —
+     *  ONE event per payout run (one operator decision), carrying the
+     *  merchant, parcel count, total net and the payout reference; the
+     *  per-parcel trail lives in each order's journal. */
+    SETTLEMENT_PAID_OUT,
     /** The 100x guard tripped: payment confirmation carried an amount that did
      *  not equal the order total. The order parked unconfirmed — any occurrence
      *  is a money incident. */

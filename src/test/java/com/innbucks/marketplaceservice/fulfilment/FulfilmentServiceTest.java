@@ -67,6 +67,7 @@ class FulfilmentServiceTest {
     private MarketOrderItemRepository itemRepository;
     private MarketOrderEventRepository eventRepository;
     private AuditService auditService;
+    private com.innbucks.marketplaceservice.settlement.SettlementService settlementService;
     private SimpleMeterRegistry registry;
     private FulfilmentService service;
 
@@ -78,8 +79,9 @@ class FulfilmentServiceTest {
         eventRepository = mock(MarketOrderEventRepository.class);
         auditService = mock(AuditService.class);
         registry = new SimpleMeterRegistry();
+        settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         service = new FulfilmentService(fulfilmentRepository, orderRepository, itemRepository,
-                eventRepository, auditService, new MarketplaceMetrics(registry));
+                eventRepository, settlementService, auditService, new MarketplaceMetrics(registry));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

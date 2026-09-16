@@ -5,6 +5,7 @@ import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.DeliveryConfirmer;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
+import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -81,5 +82,16 @@ public record MerchantFulfilmentResponse(
         DeliveryConfirmer deliveredBy,
 
         @Schema(example = "2026-09-14T11:20:10Z")
-        Instant createdAt) {
+        Instant createdAt,
+
+        @Schema(description = "Where this parcel's money is in the escrow (V10): HELD until "
+                + "delivery, RELEASABLE once earned, DISPUTED while a buyer's dispute is open, "
+                + "PAID_OUT/REFUNDED once closed. Absent for parcels predating the escrow.",
+                example = "HELD", nullable = true)
+        SettlementStatus settlementStatus,
+
+        @Schema(description = "What this parcel pays the seller once released (net of any "
+                + "commission), minor units. Absent with settlementStatus.",
+                example = "4798", nullable = true)
+        Long settlementNetCents) {
 }

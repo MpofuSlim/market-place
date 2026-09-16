@@ -322,4 +322,58 @@ class SecuritySurfaceIT extends PostgresTestContainer {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("merchant_scope_missing"));
     }
+
+    @Test
+    void anonymousSettlementsReadIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/marketplace/settlements"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void customerCannotReadSettlements() throws Exception {
+        // A buyer's half of the escrow is the dispute on their ORDER; the
+        // settlement ledger itself is seller/operator money data.
+        mockMvc.perform(get("/marketplace/settlements")
+                        .header("Authorization", "Bearer " + TestJwts.customer(
+                                UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aMerchantCannotTouchTheOperatorSettlementSurfaces() throws Exception {
+        // The dispute queue, the payout run and the payout report are all
+        // SUPER_ADMIN: a seller must not resolve disputes over their own
+        // money or read every other seller's payables.
+        String merchantToken = TestJwts.merchantAdmin(
+                UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/settlements/disputes")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(post("/marketplace/settlements/pay-out")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"merchantId\":\"%s\",\"payoutReference\":\"PAYOUT-1\"}"
+                                .formatted(UUID.randomUUID())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(get("/marketplace/settlements/payout-report")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void aMerchantCannotDisputeAnOrder() throws Exception {
+        // Disputing rides the buyer's order surface (CUSTOMER-only) — a
+        // seller freezing (or steering) their own settlement is nonsense.
+        mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/dispute",
+                        UUID.randomUUID(), UUID.randomUUID())
+                        .header("Authorization", "Bearer " + TestJwts.merchantAdmin(
+                                UUID.randomUUID(), UUID.randomUUID(), jwtSecret))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"NOT_RECEIVED\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
 }

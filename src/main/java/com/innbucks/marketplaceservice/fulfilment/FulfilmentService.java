@@ -17,6 +17,8 @@ import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
+import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -63,6 +65,7 @@ public class FulfilmentService {
     private final MarketOrderRepository orderRepository;
     private final MarketOrderItemRepository itemRepository;
     private final MarketOrderEventRepository eventRepository;
+    private final SettlementService settlementService;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
 
@@ -236,6 +239,11 @@ public class FulfilmentService {
             p.setDeliveredAt(Instant.now());
             p.setDeliveredBy(by);
         });
+        // The escrow reacts IN the delivering transaction: a buyer's own
+        // confirmation releases the seller's money now; a seller's self-close
+        // starts the grace clock. Delivery and its money consequence commit
+        // or roll back together.
+        settlementService.onParcelDelivered(parcel);
     }
 
     /**
@@ -345,6 +353,9 @@ public class FulfilmentService {
                 .filter(item -> parcel.getMerchantId().equals(item.getMerchantId()))
                 .toList();
         long subtotal = mine.stream().mapToLong(MarketOrderItem::getLineTotalCents).sum();
+        // The parcel's money state rides the seller's view (V10): the queue is
+        // where "when do I get paid for this?" is asked.
+        MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
         return new MerchantFulfilmentResponse(
                 parcel.getId(),
                 order.getId(),
@@ -361,7 +372,9 @@ public class FulfilmentService {
                 parcel.getDispatchedAt(),
                 parcel.getDeliveredAt(),
                 parcel.getDeliveredBy(),
-                parcel.getCreatedAt());
+                parcel.getCreatedAt(),
+                settlement == null ? null : settlement.getStatus(),
+                settlement == null ? null : settlement.getNetCents());
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {

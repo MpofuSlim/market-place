@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.fulfilment.DeliveryConfirmer;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
+import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -52,5 +53,11 @@ public record FulfilmentResponse(
         DeliveryConfirmer deliveredBy,
 
         @Schema(description = "The order's lines that belong to this seller")
-        List<OrderResponse.Line> items) {
+        List<OrderResponse.Line> items,
+
+        @Schema(description = "The buyer's dispute over this parcel, when one exists — its status "
+                + "says whether it is still with the operators (OPEN) or how it ended "
+                + "(RELEASED / REFUNDED). Absent when the parcel was never disputed.",
+                nullable = true)
+        DisputeResponse dispute) {
 }

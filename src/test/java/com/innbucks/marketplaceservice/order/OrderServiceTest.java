@@ -104,6 +104,7 @@ class OrderServiceTest {
     private ObjectMapper objectMapper;
     private CartService cartService;
     private FulfilmentService fulfilmentService;
+    private com.innbucks.marketplaceservice.settlement.SettlementService settlementService;
     private DeliveryAddressService addressService;
     private CheckoutProperties checkoutProperties;
     private OrderService service;
@@ -129,14 +130,16 @@ class OrderServiceTest {
         CheckoutPricer pricer = new CheckoutPricer(listingRepository, "USD");
         CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
                 mock(BasketViewAssembler.class), cartService, addressService, "USD");
+        settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         OrderViewAssembler views = new OrderViewAssembler(itemRepository, fulfilmentService,
+                mock(com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository.class),
                 mock(SellerService.class), checkoutService);
         service = new OrderService(orderRepository, itemRepository, listingRepository,
                 transitions, idempotencyService, auditService,
                 new MarketplaceMetrics(registry), objectMapper,
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(PlatformTransactionManager.class),
-                checkoutService, pricer, cartService, fulfilmentService, views,
+                checkoutService, pricer, cartService, fulfilmentService, settlementService, views,
                 new Msisdns("ZW"),
                 MAX_ITEMS, MAX_QTY_PER_ITEM, TTL_MINUTES, "USD");
         when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));

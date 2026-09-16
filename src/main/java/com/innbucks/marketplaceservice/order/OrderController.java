@@ -61,6 +61,7 @@ import java.util.UUID;
 public class OrderController {
 
     private final OrderService orderService;
+    private final com.innbucks.marketplaceservice.settlement.DisputeService disputeService;
 
     @PostMapping
     @PreAuthorize("hasRole('CUSTOMER')")
@@ -665,6 +666,68 @@ public class OrderController {
         return ResponseEntity.ok(ApiResult.ok("Thanks - receipt confirmed",
                 orderService.confirmReceived(CurrentUser.get(), parseOrderId(id),
                         parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
+    }
+
+    @PostMapping("/{id}/fulfilments/{fulfilmentId}/dispute")
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @Operation(summary = "Dispute a parcel",
+            description = "The buyer's half of the escrow: freezes THIS parcel's money until an "
+                    + "operator decides — the seller cannot be paid while it is open.\n\n"
+                    + "Disputing an UNDELIVERED parcel is legal on purpose: \"it never arrived\" "
+                    + "and \"the seller can't fulfil this\" are exactly the cases that need the "
+                    + "money stopped, and this is also the platform's refund path. A DELIVERED "
+                    + "parcel is disputable for a window after delivery (default 7 days). After "
+                    + "the seller has actually been PAID, nothing is disputable — the money has "
+                    + "left, and support takes it from there.\n\n"
+                    + "**One dispute per parcel, ever.** The operator resolves it exactly once: "
+                    + "released to the seller, or refunded to you.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Dispute opened; the seller's money "
+                    + "is frozen",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {
+                                      "code": "OK",
+                                      "message": "Dispute opened - we will review it and get back to you",
+                                      "data": {
+                                        "id": "5c8d1e2f-9a34-4b67-8c01-2d3e4f5a6b7c",
+                                        "orderId": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                        "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                        "reason": "NOT_RECEIVED",
+                                        "detail": "Paid five days ago, the seller has stopped answering.",
+                                        "status": "OPEN",
+                                        "createdAt": "2026-09-15T10:00:00Z"
+                                      }
+                                    }
+                                    """))),
+            @ApiResponse(responseCode = "404", description = "No such order owned by the caller, "
+                    + "or no such parcel on it",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"fulfilment_not_found","message":"Fulfilment not found"}
+                                    """))),
+            @ApiResponse(responseCode = "409", description = "Not disputable: already disputed, "
+                    + "window closed, seller already paid, or already refunded",
+                    content = @Content(mediaType = "application/json",
+                            examples = {
+                                    @ExampleObject(name = "Already disputed", value = """
+                                            {"code":"dispute_already_raised","message":"This parcel has already been disputed"}
+                                            """),
+                                    @ExampleObject(name = "Window closed", value = """
+                                            {"code":"dispute_window_closed","message":"This parcel was delivered more than 7 days ago and can no longer be disputed"}
+                                            """)}))
+    })
+    public ResponseEntity<ApiResult<com.innbucks.marketplaceservice.settlement.dto.DisputeResponse>> dispute(
+            @Parameter(description = "Order id (UUID)",
+                    example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
+            @PathVariable("id") String id,
+            @Parameter(description = "The parcel being disputed, from the order's `fulfilments`")
+            @PathVariable("fulfilmentId") String fulfilmentId,
+            @Valid @RequestBody com.innbucks.marketplaceservice.settlement.dto.DisputeRequest request) {
+        return ResponseEntity.ok(ApiResult.ok("Dispute opened - we will review it and get back to you",
+                disputeService.open(CurrentUser.get(), parseOrderId(id),
+                        parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"),
+                        request.reason(), request.detail())));
     }
 
     /** GlobalExceptionHandler has no MethodArgumentTypeMismatch mapping, so a

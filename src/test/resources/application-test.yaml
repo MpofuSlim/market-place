@@ -37,6 +37,9 @@ marketplace:
     # race the assertions.
     expiry-sweep-cron: "-"
     audit-verify-cron: "-"
+    # The ITs drive SettlementReleaseSweeper directly; a background firing
+    # mid-test would race the assertions.
+    settlement-release-cron: "-"
   audit:
     hmac-secret: dev-only-test-audit-hmac-secret-5e7a9b1c3d2f4a6b
 

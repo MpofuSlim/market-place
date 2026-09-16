@@ -432,6 +432,73 @@ never change either casually.
     does my profile say 2 days?" is answered by the very number the shopper
     sees. A MERCHANT_ADMIN's `merchantId` filter is IGNORED (cannot widen own
     scope); SUPER_ADMIN must name one (`merchant_id_required`).
+* **Escrow / Buyer Protection (V10): the settlement ledger is a RECORD of the
+  money, never a mover of it.** payment-service collects every marketplace
+  order into the shared platform account (MKT tag); `merchant_settlement` is
+  what makes "the seller only gets paid when you get your goods" true — one
+  row per PARCEL (V9's `order_fulfilment` already IS one seller's share of one
+  order), keyed by `fulfilment_id` with a unique index so a replayed payment
+  confirm can double neither parcels nor settlements (`openIfAbsent` =
+  `INSERT … ON CONFLICT DO NOTHING`). Payouts and refunds are OPERATOR actions
+  executed on the rails and RECORDED here with their references — the rails
+  have no reversal API, and a ledger that pretended to move the money would be
+  lying.
+  * **State machine** (`SettlementStateMachine`, same discipline as orders/
+    fulfilments — validate BEFORE mutate, illegal moves 409
+    `illegal_settlement_state` + counted, terminals immutable): HELD →
+    {RELEASABLE, DISPUTED}; RELEASABLE → {PAID_OUT, DISPUTED}; DISPUTED →
+    {RELEASABLE, REFUNDED}. RELEASABLE → DISPUTED is deliberate: confirming
+    receipt does not sign away the dispute — only PAID_OUT does (the money has
+    left).
+  * **Release follows the EVIDENCE.** The buyer's own receipt confirmation
+    releases IMMEDIATELY (`released_at` stamped, no wait). A seller's
+    self-close only starts the grace clock (`releasable_at = now + `
+    `marketplace.settlement.grace-hours`, default 48) — the
+    `SettlementReleaseSweeper` (ShedLock, per-row isolation, re-checks state
+    AND clock inside each row's tx so a dispute landing mid-sweep wins)
+    promotes it after. Delivery NEVER unfreezes a DISPUTED row.
+  * **gross/commission/net are all STORED and CHECK-enforced**
+    (`net = gross - commission`); commission is
+    `marketplace.settlement.commission-percent`, **0 by default** — charging
+    one is a config change, not a migration. The delivery fee is in NO
+    merchant settlement: it is per ORDER, sellers ship their own parcels, and
+    splitting one fee across N sellers invents an allocation nobody agreed to.
+  * **Disputes are the buyer's half** (`POST /marketplace/orders/{id}/
+    fulfilments/{fid}/dispute` — buyers think in orders, not settlements):
+    owner-masked 404s, PAID orders only, bounded reason enum + sanitized
+    detail (free text NEVER in the audit trail — V7 stance). An UNDELIVERED
+    parcel is disputable however old ("it never arrived" IS the refund path);
+    a delivered one for `dispute-window-days` (default 7) after delivery.
+    **One dispute per parcel, EVER** (unique index backstop) — a buyer who
+    could re-dispute after a release could freeze a seller's money in a loop.
+    The operator resolves exactly once (FIFO queue, oldest first): RELEASE →
+    money back to RELEASABLE for the next run; REFUND → recorded with the
+    operator's transfer reference. The buyer is told either way via
+    `DisputeResolved` → AFTER_COMMIT + `@Async` listener (never throws,
+    `UserNotifyGateway`).
+  * **Payout is per MERCHANT, per run** (`POST /marketplace/settlements/
+    pay-out`): every RELEASABLE row of one merchant under ONE payout
+    reference — the shape finance actually pays in. An empty run is refused
+    (409 `nothing_releasable`). **ONE audit event per payout run**, not per
+    row (a batch of per-row audits would serialise on the chain-head lock);
+    the per-parcel trail is each order's journal — settlement transitions ride
+    `market_order_event` with `kind = SETTLEMENT` (V10 widened the CHECK).
+    Plain deliveries/releases are NOT audited (already evidenced by the
+    fulfilment trail); dispute open/resolve and payout runs ARE.
+    `GET /marketplace/settlements/payout-report` is the finance CSV (biggest
+    owed first, date in the FILENAME — fleet CSV rule).
+  * **Scoping is the fulfilment queue's, verbatim**: MERCHANT_ADMIN always
+    reads their own claim (`merchantId` param IGNORED — cannot widen scope),
+    SUPER_ADMIN reads all and must NAME a merchant for the summary. The
+    seller's parcel view carries `settlementStatus` + `settlementNetCents`;
+    the buyer's order view carries the parcel's `dispute` — each surface
+    answers its own "where is my money / my complaint?" without a second
+    call.
+  * **V10 backfilled honestly**: existing PAID parcels got settlements —
+    buyer-confirmed → RELEASABLE (released at the delivery moment),
+    seller-closed → HELD with `releasable_at = delivered_at` (the first sweep
+    after deploy promotes what genuinely lapsed — the migration does not
+    guess the configured grace), everything else HELD.
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`
