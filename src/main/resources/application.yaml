@@ -91,6 +91,12 @@ marketplace:
     fee-cents: ${MARKETPLACE_DELIVERY_FEE_CENTS:0}
     # Abuse guard on the buyer's address book.
     max-addresses-per-buyer: ${MARKETPLACE_MAX_ADDRESSES_PER_BUYER:25}
+  seller-stats:
+    # Sample floor under the public trust figures (median dispatch time,
+    # buyer-confirmed rate). Below it a figure is NULL, never a percentage —
+    # "100% confirmed" over two parcels is noise wearing a percentage, and a
+    # new seller deserves "new seller", not a verdict.
+    min-sample: ${MARKETPLACE_SELLER_STATS_MIN_SAMPLE:5}
   scheduler:
     # Order-expiry sweep: releases stock held by lapsed PENDING_PAYMENT orders.
     expiry-sweep-cron: ${MARKETPLACE_EXPIRY_SWEEP_CRON:0 * * * * *}

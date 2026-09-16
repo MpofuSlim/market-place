@@ -1,5 +1,7 @@
 package com.innbucks.marketplaceservice.catalog.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.innbucks.marketplaceservice.fulfilment.dto.SellerFulfilmentStats;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -22,11 +24,15 @@ import java.util.UUID;
  * profile than an error page.
  *
  * <p><b>Nothing here is invented.</b> The app team's proposal also asked for a
- * logo, a response time and a return policy; this service stores none of the
- * three and no other service in the fleet does either, so they are absent
- * rather than defaulted. A fabricated "responds within 24h" is a promise the
- * platform has no basis to make.
+ * logo, a response time and a return policy; a fabricated "responds within
+ * 24h" is a promise the platform has no basis to make, so those stayed absent.
+ * V9 changed the premise for ONE of them: every paid order now leaves a real
+ * fulfilment trail, so {@code fulfilment} carries a COMPUTED track record —
+ * median payment→dispatch time, buyer-confirmed delivery rate — in place of
+ * the response time nobody could substantiate. Logo and return policy remain
+ * absent: still nothing to compute them from.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 @Schema(description = "Public profile of one seller")
 public record MerchantProfileResponse(
 
@@ -58,6 +64,12 @@ public record MerchantProfileResponse(
 
         @Schema(description = "How many of this merchant's listings are ACTIVE — the number a "
                 + "shopper can browse. Excludes DRAFT and ARCHIVED.", example = "12")
-        long activeListingCount
+        long activeListingCount,
+
+        @Schema(description = "The seller's fulfilment track record, COMPUTED from their real "
+                + "orders (V9). Absent for a seller with no completed parcel yet — render \"new "
+                + "seller\", not zeroes. Individual figures inside stay null until they rest on "
+                + "enough parcels to mean something.", nullable = true)
+        SellerFulfilmentStats fulfilment
 ) {
 }

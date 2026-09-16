@@ -261,7 +261,12 @@ public class CatalogController {
                 "since": "2026-04-01T09:15:00Z",
                 "ratingAvg": 5.0,
                 "reviewCount": 1,
-                "activeListingCount": 1
+                "activeListingCount": 1,
+                "fulfilment": {
+                  "completedOrders": 128,
+                  "medianDispatchHours": 20,
+                  "buyerConfirmedPercent": 96
+                }
               }
             }""";
 

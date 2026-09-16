@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.fulfilment;
 import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResponse;
+import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentStatsResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse;
 import com.innbucks.marketplaceservice.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
@@ -49,6 +50,7 @@ import java.util.UUID;
 public class FulfilmentController {
 
     private final FulfilmentService fulfilmentService;
+    private final SellerFulfilmentStatsService statsService;
 
     private static final String EXAMPLE_PARCEL = """
             {
@@ -177,6 +179,50 @@ public class FulfilmentController {
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(ApiResult.ok(fulfilmentService.queue(
                 CurrentUser.get(), status, merchantId, page, size)));
+    }
+
+    @GetMapping("/stats")
+    @Operation(summary = "My fulfilment stats",
+            description = "The trust figures shoppers see on the public seller profile — from the "
+                    + "SAME computation, so a seller wondering \"why does my profile say 2 days?\" "
+                    + "is looking at the very number the shopper sees — plus the live queue counts "
+                    + "that are the seller's business alone (`awaitingDispatch` is the number to "
+                    + "keep at zero).\n\n"
+                    + "Every figure is COMPUTED from real parcels; small samples stay null rather "
+                    + "than pretending two orders make a percentage. A MERCHANT_ADMIN always reads "
+                    + "their own merchant — `merchantId` is ignored for them; SUPER_ADMIN must "
+                    + "name one.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The caller's stats",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {
+                              "code": "OK",
+                              "message": "Success",
+                              "data": {
+                                "publicStats": {
+                                  "completedOrders": 128,
+                                  "medianDispatchHours": 20,
+                                  "buyerConfirmedPercent": 96
+                                },
+                                "awaitingDispatch": 3,
+                                "inTransit": 5,
+                                "completedOrders": 128
+                              }
+                            }"""))),
+            @ApiResponse(responseCode = "400", description = "SUPER_ADMIN without a merchantId",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {
+                              "code": "merchant_id_required",
+                              "message": "merchantId is required when a SUPER_ADMIN reads a merchant's stats"
+                            }"""))),
+            @ApiResponse(responseCode = "403", description = "Merchant token with no merchant scope",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_SCOPE_403)))
+    })
+    public ResponseEntity<ApiResult<MerchantFulfilmentStatsResponse>> stats(
+            @Parameter(description = "SUPER_ADMIN only: whose stats. Ignored for a MERCHANT_ADMIN.")
+            @RequestParam(required = false) UUID merchantId) {
+        return ResponseEntity.ok(ApiResult.ok(
+                statsService.merchantStats(CurrentUser.get(), merchantId)));
     }
 
     @PostMapping("/{id}/dispatch")

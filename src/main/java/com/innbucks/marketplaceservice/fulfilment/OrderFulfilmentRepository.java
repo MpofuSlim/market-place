@@ -39,6 +39,63 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
     Page<OrderFulfilment> findAllByOrderByCreatedAtAsc(Pageable pageable);
 
     /**
+     * One seller's lifetime parcel counts in ONE scan: how many they have
+     * delivered, how many of those the BUYER confirmed, and what is still
+     * open on their queue. Feeds the trust stats — every figure the platform
+     * shows about a seller is COMPUTED from these rows, never asserted.
+     */
+    @Query(value = """
+            SELECT COUNT(*) FILTER (WHERE status = 'DELIVERED')                            AS delivered,
+                   COUNT(*) FILTER (WHERE status = 'DELIVERED'
+                                      AND delivered_by = 'BUYER')                          AS buyerConfirmed,
+                   COUNT(*) FILTER (WHERE status = 'PREPARING')                            AS awaitingDispatch,
+                   COUNT(*) FILTER (WHERE status = 'DISPATCHED')                           AS inTransit
+              FROM order_fulfilment
+             WHERE merchant_id = :merchantId
+            """, nativeQuery = true)
+    ParcelCounts countParcels(@Param("merchantId") UUID merchantId);
+
+    /**
+     * Median hours from the buyer PAYING to this seller DISPATCHING, over
+     * every parcel that was actually dispatched.
+     *
+     * <p>MEDIAN, not mean: one parcel forgotten over a holiday must not
+     * poison a seller who ships same-day, and one instant dispatch must not
+     * flatter a slow one. Parcels closed straight from PREPARING (handed over
+     * in person — nothing was ever dispatched) are excluded; they carry no
+     * dispatch to measure. The {@code dispatched_at >= paid_at} guard drops
+     * rows whose clocks disagree (a backfilled or corrected row) rather than
+     * feeding a negative duration into the percentile.
+     */
+    @Query(value = """
+            SELECT percentile_cont(0.5) WITHIN GROUP (
+                       ORDER BY EXTRACT(EPOCH FROM (f.dispatched_at - o.paid_at))) AS medianSeconds,
+                   COUNT(*)                                                        AS sample
+              FROM order_fulfilment f
+              JOIN market_order o ON o.id = f.order_id
+             WHERE f.merchant_id = :merchantId
+               AND f.dispatched_at IS NOT NULL
+               AND o.paid_at IS NOT NULL
+               AND f.dispatched_at >= o.paid_at
+            """, nativeQuery = true)
+    DispatchTiming dispatchTiming(@Param("merchantId") UUID merchantId);
+
+    /** Bytes-free projection of {@link #countParcels} — aliases must match. */
+    interface ParcelCounts {
+        long getDelivered();
+        long getBuyerConfirmed();
+        long getAwaitingDispatch();
+        long getInTransit();
+    }
+
+    /** Projection of {@link #dispatchTiming}. {@code medianSeconds} is null
+     *  when the sample is empty — Postgres' percentile over no rows. */
+    interface DispatchTiming {
+        Double getMedianSeconds();
+        long getSample();
+    }
+
+    /**
      * Opens a parcel per seller, idempotently. {@code ON CONFLICT DO NOTHING}
      * against the (order_id, merchant_id) unique index, because the only caller
      * is the payment confirm — which the payments service is free to replay,
