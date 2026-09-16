@@ -81,7 +81,9 @@ class FulfilmentServiceTest {
         registry = new SimpleMeterRegistry();
         settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         service = new FulfilmentService(fulfilmentRepository, orderRepository, itemRepository,
-                eventRepository, settlementService, auditService, new MarketplaceMetrics(registry));
+                eventRepository, settlementService, auditService, new MarketplaceMetrics(registry),
+                mock(com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts.class),
+                mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

@@ -161,9 +161,16 @@ public class SettlementService {
         if (settlement.getStatus() != SettlementStatus.HELD) {
             return; // disputed, or already released by an operator decision
         }
-        if (parcel.getDeliveredBy() == DeliveryConfirmer.BUYER) {
-            transition(settlement, SettlementStatus.RELEASABLE,
-                    "Released - buyer confirmed receipt", s -> {
+        // The two kinds of evidence that release on the spot: the buyer said it
+        // arrived, or somebody produced the collection code only the buyer and
+        // the person they sent were ever given (V11). The seller's own say-so
+        // is the one that waits.
+        if (parcel.getDeliveredBy() == DeliveryConfirmer.BUYER
+                || parcel.getDeliveredBy() == DeliveryConfirmer.RECIPIENT) {
+            String why = parcel.getDeliveredBy() == DeliveryConfirmer.BUYER
+                    ? "Released - buyer confirmed receipt"
+                    : "Released - collection code redeemed at handover";
+            transition(settlement, SettlementStatus.RELEASABLE, why, s -> {
                         s.setReleasedAt(Instant.now());
                         s.setReleasableAt(null);
                     });

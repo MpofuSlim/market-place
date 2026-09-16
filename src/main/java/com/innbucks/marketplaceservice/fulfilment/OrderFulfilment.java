@@ -69,6 +69,29 @@ public class OrderFulfilment {
     @Column(name = "delivered_by", length = 16)
     private DeliveryConfirmer deliveredBy;
 
+    // ---- Collection handover code (V11) --------------------------------
+    // Set only on a COLLECTION parcel, and only once the buyer has asked for a
+    // code. The plaintext is never stored — see CollectCodes.
+
+    /** SHA-256 hex of the live code. Null until one is minted; REPLACED, never
+     *  appended to, when the buyer mints a fresh one (the old code dies with
+     *  the hash it hashed to). */
+    @Column(name = "collect_code_hash", length = 64)
+    private String collectCodeHash;
+
+    @Column(name = "collect_code_issued_at")
+    private Instant collectCodeIssuedAt;
+
+    /** When a seller redeemed it — the handover itself. */
+    @Column(name = "collect_code_redeemed_at")
+    private Instant collectCodeRedeemedAt;
+
+    /** Wrong codes tried against this parcel. Never written through this field
+     *  (see CollectCodeAttempts): a read-modify-write here would lose
+     *  increments and hand an attacker a budget that never runs down. */
+    @Column(name = "collect_code_attempts", nullable = false)
+    private int collectCodeAttempts;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

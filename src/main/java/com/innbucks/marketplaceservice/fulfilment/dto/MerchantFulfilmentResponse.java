@@ -93,5 +93,21 @@ public record MerchantFulfilmentResponse(
         @Schema(description = "What this parcel pays the seller once released (net of any "
                 + "commission), minor units. Absent with settlementStatus.",
                 example = "4798", nullable = true)
-        Long settlementNetCents) {
+        Long settlementNetCents,
+
+        @Schema(description = "Who is coming to collect, when the order was bought for someone "
+                + "else. Their NAME only — the platform does not hand a seller a third party's "
+                + "phone number, and the collection code is what actually proves entitlement. "
+                + "Absent when the buyer is collecting themselves.",
+                example = "Gogo Chipo Moyo", nullable = true)
+        String collectorName,
+
+        @Schema(description = "Whether this parcel has a live collection code waiting to be "
+                + "redeemed. The code itself is NEVER shown to a seller — you verify one, you do "
+                + "not read one.", example = "true")
+        boolean collectCodeIssued,
+
+        @Schema(description = "When you redeemed the collection code for this parcel",
+                example = "2026-09-16T15:40:00Z", nullable = true)
+        Instant collectCodeRedeemedAt) {
 }

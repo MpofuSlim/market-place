@@ -61,6 +61,17 @@ marketplace:
     # single order from reserving a whole listing's stock via one request.
     max-items: ${MARKETPLACE_ORDER_MAX_ITEMS:20}
     max-quantity-per-item: ${MARKETPLACE_ORDER_MAX_QTY_PER_ITEM:25}
+  fulfilment:
+    # How many wrong collection codes a single parcel tolerates before it
+    # locks and the buyer has to mint a fresh one.
+    #
+    # The budget is small on purpose. The ONLY party who can submit a
+    # candidate is the seller already holding that parcel, and what they would
+    # be buying with a lucky guess is the instant escrow release that a real
+    # handover earns — so this is the number standing between a dishonest
+    # seller and their own money, not a convenience dial. Ten is generous for
+    # a code read out over a phone.
+    collect-code-max-attempts: ${MARKETPLACE_COLLECT_CODE_MAX_ATTEMPTS:10}
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}

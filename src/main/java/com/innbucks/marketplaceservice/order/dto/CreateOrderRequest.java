@@ -4,6 +4,7 @@ import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -57,7 +58,39 @@ public record CreateOrderRequest(
                 + "to send it. The address is SNAPSHOT onto the order, so editing or deleting it "
                 + "afterwards never redirects a parcel already in flight.",
                 example = "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45", nullable = true)
-        UUID deliveryAddressId) {
+        UUID deliveryAddressId,
+
+        @Schema(description = "Who the order is FOR, when that is not the buyer — the diaspora "
+                + "case: paying from abroad for someone at home. Omit it and the order is yours, "
+                + "exactly as before. The recipient is NOT given an account and cannot see the "
+                + "order; they are a name the goods are handed to and a number we can message "
+                + "about it.", nullable = true)
+        @Valid
+        Recipient recipient) {
+
+    @Schema(description = "The person an order is bought for")
+    public record Recipient(
+
+            @Schema(description = "Their name, as it should read on the parcel and to the seller "
+                    + "at the counter.", example = "Gogo Chipo Moyo")
+            @NotBlank
+            @Size(max = 120)
+            String name,
+
+            @Schema(description = "Their number, so the platform can tell them something is "
+                    + "coming and send the collection code. Normalised to E.164 (default region = "
+                    + "the deployment country). Optional — a recipient with no number is simply "
+                    + "never messaged, and the buyer passes the code on themselves.",
+                    example = "+263772345678", nullable = true)
+            @Size(max = 32)
+            String msisdn,
+
+            @Schema(description = "The note that makes it a gift. Sanitized server-side and short "
+                    + "because it rides an SMS.", example = "Happy birthday Gogo, love from Tari",
+                    nullable = true)
+            @Size(max = 200)
+            String message) {
+    }
 
     @Schema(description = "One order line")
     public record Item(

@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
 import com.innbucks.marketplaceservice.api.ApiResult;
+import com.innbucks.marketplaceservice.fulfilment.dto.CollectRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentStatsResponse;
@@ -278,5 +279,62 @@ public class FulfilmentController {
             @PathVariable UUID id) {
         return ResponseEntity.ok(ApiResult.ok("Parcel marked delivered",
                 fulfilmentService.markDelivered(CurrentUser.get(), id)));
+    }
+
+    @PostMapping("/{id}/collect")
+    @Operation(summary = "Redeem a collection code",
+            description = "Hand the parcel over to whoever produced the code and close it. Scan "
+                    + "the QR or type what they read out — dashes, spaces, case and the "
+                    + "characters people confuse (I/L for 1, O for 0) are all handled.\n\n"
+                    + "This closes the parcel as `deliveredBy: RECIPIENT`, which is the strongest "
+                    + "evidence of handover the platform records — so **your money is released "
+                    + "immediately** instead of waiting out the grace window a self-close starts. "
+                    + "That is the reason to ask for the code rather than closing the parcel "
+                    + "yourself.\n\n"
+                    + "Only the buyer can create a code, and you never see one — you verify a "
+                    + "code, you do not read one. Wrong codes are counted against the parcel and "
+                    + "the tenth locks it; the buyer then mints a fresh one.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Collected",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {
+                              "code": "OK",
+                              "message": "Collected - the parcel is closed and your money is released",
+                              "data": {
+                                "id": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                "orderRef": "MKT-4F9A1C22B7D3",
+                                "status": "DELIVERED",
+                                "deliveredAt": "2026-09-16T15:40:00Z",
+                                "deliveredBy": "RECIPIENT",
+                                "collectorName": "Gogo Chipo Moyo",
+                                "collectCodeIssued": false,
+                                "collectCodeRedeemedAt": "2026-09-16T15:40:00Z",
+                                "settlementStatus": "RELEASABLE",
+                                "settlementNetCents": 4798
+                              }
+                            }"""))),
+            @ApiResponse(responseCode = "404", description = "No such parcel for this seller",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404))),
+            @ApiResponse(responseCode = "409", description = "Nothing to redeem here: a delivery "
+                    + "order, no code issued yet, the parcel is already closed, or the wrong-code "
+                    + "budget has run out",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "No code yet", value = """
+                                    {"code":"collect_code_unavailable","message":"No collection code has been issued for this parcel - ask the buyer to generate one in their app"}"""),
+                            @ExampleObject(name = "Locked", value = """
+                                    {"code":"collect_code_locked","message":"Too many wrong codes have been tried for this parcel - ask the buyer to generate a new one"}"""),
+                            @ExampleObject(name = "Delivery order", value = """
+                                    {"code":"collect_code_not_applicable","message":"This is a delivery order - there is nothing to collect in person"}""")})),
+            @ApiResponse(responseCode = "422", description = "That code is not valid for this "
+                    + "parcel — counted against the parcel's budget",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"collect_code_invalid","message":"That collection code is not valid for this parcel"}""")))
+    })
+    public ResponseEntity<ApiResult<MerchantFulfilmentResponse>> collect(
+            @PathVariable UUID id,
+            @Valid @RequestBody CollectRequest request) {
+        return ResponseEntity.ok(ApiResult.ok(
+                "Collected - the parcel is closed and your money is released",
+                fulfilmentService.collect(CurrentUser.get(), id, request)));
     }
 }

@@ -138,6 +138,26 @@ public class MarketOrder {
     @Column(name = "delivery_landmark", length = 160)
     private String deliveryLandmark;
 
+    // ---- Gifting (V11) -------------------------------------------------
+    // Who the order is FOR, when that is not the buyer. All null on an order
+    // bought for oneself, which is most of them — a copy of the buyer's own
+    // details here would assert a gift that was never sent.
+    //
+    // The recipient is not an account and never becomes one: they are a name
+    // the goods are handed to and a number we can message.
+
+    @Column(name = "recipient_name", length = 120)
+    private String recipientName;
+
+    /** E.164. PII with the payer's posture: never logged in full, never on a
+     *  public surface, and never shown to the seller (who gets the name). */
+    @Column(name = "recipient_msisdn", length = 20)
+    private String recipientMsisdn;
+
+    /** The note that makes it a gift. Sanitized; short because it rides an SMS. */
+    @Column(name = "gift_message", length = 200)
+    private String giftMessage;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

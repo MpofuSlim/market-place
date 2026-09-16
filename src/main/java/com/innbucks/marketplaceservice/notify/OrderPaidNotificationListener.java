@@ -11,8 +11,9 @@ import org.springframework.transaction.event.TransactionalEventListener;
 /**
  * Tells the buyer their order is paid — SMS to {@code order.buyerMsisdn}
  * (primary), WhatsApp fallback when SMS fails and the WhatsApp gateway is
- * configured — then fans out the merchant-side new-paid-order notifications
- * (flag-gated, see {@link MerchantOrderNotifier}).
+ * configured — tells the gift RECIPIENT when the order named one (V11), then
+ * fans out the merchant-side new-paid-order notifications (flag-gated, see
+ * {@link MerchantOrderNotifier}).
  *
  * <p><b>Subordinate to the money movement, structurally</b> (the
  * middleware/ticketing discipline, copied deliberately):
@@ -66,6 +67,16 @@ public class OrderPaidNotificationListener {
             log.warn("Order-paid buyer notification failed orderRef={} cause={}",
                     event.orderRef(), ex.toString());
         }
+        // The gift half (V11), guarded independently for the same reason: a
+        // buyer whose own receipt failed must not also cost the recipient
+        // their only notice that something is on its way.
+        try {
+            notifyGiftRecipient(event);
+        } catch (RuntimeException ex) {
+            metrics.notificationOutcome("gift", "failed");
+            log.warn("Gift recipient notification failed orderRef={} cause={}",
+                    event.orderRef(), ex.toString());
+        }
         // Merchant fan-out is independently guarded so a buyer SMS failure
         // can't suppress it, and vice versa. The notifier is itself
         // never-throws; the catch is defence in depth for the same reason as
@@ -76,6 +87,52 @@ public class OrderPaidNotificationListener {
             log.warn("Merchant order fan-out failed orderRef={} cause={}",
                     event.orderRef(), ex.toString());
         }
+    }
+
+    /**
+     * Tells the RECIPIENT of a gift order that something is coming.
+     *
+     * <p>Without this the gift is invisible to the one person it is for: the
+     * order lives in the buyer's app, the recipient has no account, and the
+     * first they would know is a stranger at the door or a parcel they were
+     * never told to collect.
+     *
+     * <p>Says nothing about price or contents — see the composer. Silent when
+     * the order named no recipient, or named one without a number.
+     */
+    private void notifyGiftRecipient(OrderPaid event) {
+        if (!event.hasContactableRecipient()) {
+            return;
+        }
+        if (!sms.isConfigured() && !whatsApp.isConfigured()) {
+            metrics.notificationOutcome("gift", "disabled");
+            return;
+        }
+        String message = OrderNotificationComposer.giftRecipientMessage(
+                event.orderRef(), event.giftMessage());
+        if (sms.isConfigured()) {
+            try {
+                sms.sendSms(event.recipientMsisdn(), message, event.orderRef());
+                metrics.notificationOutcome("gift", "sent");
+                return;
+            } catch (RuntimeException e) {
+                log.warn("Gift SMS failed for {} orderRef={}: {}",
+                        MsisdnMasking.mask(event.recipientMsisdn()), event.orderRef(),
+                        e.getMessage());
+            }
+        }
+        if (whatsApp.isConfigured()) {
+            try {
+                whatsApp.sendCustomNotification(event.recipientMsisdn(), message);
+                metrics.notificationOutcome("gift", "fallback");
+                return;
+            } catch (RuntimeException e) {
+                log.warn("Gift WhatsApp fallback failed for {} orderRef={}: {}",
+                        MsisdnMasking.mask(event.recipientMsisdn()), event.orderRef(),
+                        e.getMessage());
+            }
+        }
+        metrics.notificationOutcome("gift", "failed");
     }
 
     private void notifyBuyer(OrderPaid event) {

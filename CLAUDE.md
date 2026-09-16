@@ -499,6 +499,62 @@ never change either casually.
     seller-closed → HELD with `releasable_at = delivered_at` (the first sweep
     after deploy promotes what genuinely lapsed — the migration does not
     guess the configured grace), everything else HELD.
+* **Gifting + the collection handover code (V11): an order can be FOR someone,
+  and a handover can be PROVEN.** The marketplace could only be bought from for
+  yourself — a diaspora buyer paying for their mother's groceries had nowhere to
+  say whose they were, the recipient was never told anything, and at the counter
+  the seller had no way to know who was entitled to collect. `market_order`
+  gained `recipient_name` / `recipient_msisdn` / `gift_message` (all nullable —
+  **nothing is defaulted from the buyer**, because every surface reads "has a
+  recipient" as "is a gift"), and a COLLECTION parcel can carry a code.
+  * **The recipient is NOT an account and never becomes one**: a name the goods
+    are handed to and a number we can message. Making them a party to the order
+    would mean deciding what a stranger may see of someone else's purchase, and
+    nothing here needs that. Their number rides the same `Msisdns` as the payer's
+    (refusal names `recipient.msisdn`), and it is returned in full ONLY on the
+    buyer's own order view — the seller gets `collectorName`, never the number.
+  * **`CollectCodes`: 12 Crockford base32 characters = 60 bits of `SecureRandom`,
+    stored as a plain SHA-256.** The entropy is what licenses an unkeyed hash
+    against the fleet's HMAC rule for low-entropy secrets — an OTP's million-value
+    space is a dictionary, 2^60 is not — so **no new boot-required secret and no
+    cell provisioning change**. Inbound, confusables are folded (`I`/`L` → `1`,
+    `O` → `0`) and grouping/case ignored, so a code read imperfectly off a screen
+    still verifies.
+  * **The plaintext exists in exactly two places, neither at rest**: the mint
+    response to the buyer (`POST /marketplace/orders/{id}/fulfilments/{fid}/
+    collect-code`) and the SMS to whoever collects. **No merchant surface has
+    ever seen it** — a seller who could read a code could redeem it themselves
+    and take the instant payout with the goods still on the shelf; pinned by
+    `GiftFlowIT`. Lost code = mint again, which replaces the live one.
+  * **A redeemed code is the THIRD kind of delivery evidence**
+    (`DeliveryConfirmer.RECIPIENT`, V11 widened the CHECK) and releases escrow
+    IMMEDIATELY, like a buyer's own confirmation — that instant payout is
+    precisely the seller's incentive to ask for a code instead of self-closing
+    into the 48h grace window.
+  * **The wrong-code budget is counted in its OWN transaction**
+    (`CollectCodeAttempts`, `REQUIRES_NEW` + bulk UPDATE). A counter written on
+    the refusing transaction is rolled back by the very exception it counts, so
+    the budget never moves however many codes are tried — the middleware's
+    failed-PIN lesson, imported rather than rediscovered. The cap matters
+    because the only party who can submit a candidate is the seller holding
+    that parcel. Exhausting it locks the parcel (the buyer mints a fresh one)
+    and writes ONE `COLLECT_CODE_LOCKED` audit row — self-limiting, since the
+    lock short-circuits every later attempt before the compare.
+  * **Minting is deliberately NOT `@Transactional`**: one row write plus a call
+    to an external SMS gateway, and wrapping them together would hold a pooled
+    connection open across somebody else's network call. The send is inline and
+    best-effort (the buyer is watching the screen and already holds the code in
+    the response, so `sentTo` reports what actually happened) — deliberately
+    neither the OTP posture (roll back on failure) nor the order-paid one
+    (after-commit async).
+  * **`buyerConfirmedPercent` now counts BUYER *and* RECIPIENT closes.** The
+    figure has always measured "a close the seller did not perform themselves";
+    counting only BUYER would have made the stat FALL for every seller who
+    verified a handover properly. The published field name is unchanged.
+  * **Cost:** a gift order sends one extra SMS on payment (the recipient's
+    notice — without it the gift is invisible to the one person it is for), and
+    one per code mint. Watch `marketplace.collect_codes{outcome=invalid}`: a
+    seller mistyping is ordinary, a climb is somebody working the keyspace.
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`

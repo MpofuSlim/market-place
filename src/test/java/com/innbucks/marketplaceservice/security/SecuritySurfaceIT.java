@@ -324,6 +324,19 @@ class SecuritySurfaceIT extends PostgresTestContainer {
     }
 
     @Test
+    void anonymousCollectionCodeSurfacesAreUnauthorized() throws Exception {
+        // A code is a credential: neither minting one nor spending one may be
+        // reachable without a token, whatever ids the caller guesses.
+        mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/collect-code",
+                        UUID.randomUUID(), UUID.randomUUID()))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/collect", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"K7Q2-9XMF-3TRW\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void anonymousSettlementsReadIsUnauthorized() throws Exception {
         mockMvc.perform(get("/marketplace/settlements"))
                 .andExpect(status().isUnauthorized());

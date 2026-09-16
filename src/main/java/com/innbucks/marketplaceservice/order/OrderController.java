@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.order;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.api.ApiResult;
+import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
 import com.innbucks.marketplaceservice.order.dto.OrderPageResponse;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
@@ -62,6 +63,7 @@ public class OrderController {
 
     private final OrderService orderService;
     private final com.innbucks.marketplaceservice.settlement.DisputeService disputeService;
+    private final com.innbucks.marketplaceservice.fulfilment.FulfilmentService fulfilmentService;
 
     @PostMapping
     @PreAuthorize("hasRole('CUSTOMER')")
@@ -728,6 +730,67 @@ public class OrderController {
                 disputeService.open(CurrentUser.get(), parseOrderId(id),
                         parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"),
                         request.reason(), request.detail())));
+    }
+
+    @PostMapping("/{id}/fulfilments/{fulfilmentId}/collect-code")
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @Operation(summary = "Get a collection code for a parcel",
+            description = "Mints a single-parcel handover code for a COLLECTION order and returns "
+                    + "it — **this response is the only place the code is ever readable.** Show "
+                    + "it, render it as a QR, or forward it to whoever is collecting; the seller "
+                    + "verifies it at the counter and the parcel closes as collected.\n\n"
+                    + "Calling again mints a FRESH code and kills the previous one — that is the "
+                    + "recovery path when a code is lost, and it also resets the parcel's "
+                    + "wrong-code budget. The code is sent by SMS to the order's recipient (or to "
+                    + "you when the order names none) as a convenience; `sentTo` says whether "
+                    + "that actually happened.\n\n"
+                    + "A redeemed code is the strongest evidence of handover the platform holds, "
+                    + "so it releases the seller's money immediately instead of after the "
+                    + "seller-closed grace window.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "A live code for this parcel",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {
+                                      "code": "OK",
+                                      "message": "Collection code ready - show it when you collect",
+                                      "data": {
+                                        "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                        "code": "K7Q29XMF3TRW",
+                                        "groupedCode": "K7Q2-9XMF-3TRW",
+                                        "issuedAt": "2026-09-16T14:05:00Z",
+                                        "sentTo": "****5678"
+                                      }
+                                    }
+                                    """))),
+            @ApiResponse(responseCode = "404", description = "No such order owned by the caller, "
+                    + "or no such parcel on it",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"fulfilment_not_found","message":"Fulfilment not found"}
+                                    """))),
+            @ApiResponse(responseCode = "409", description = "Nothing to collect: a delivery "
+                    + "order, or a parcel already handed over",
+                    content = @Content(mediaType = "application/json",
+                            examples = {
+                                    @ExampleObject(name = "Delivery order", value = """
+                                            {"code":"collect_code_not_applicable","message":"This is a delivery order - there is nothing to collect in person"}
+                                            """),
+                                    @ExampleObject(name = "Already collected", value = """
+                                            {"code":"illegal_fulfilment_state","message":"This parcel has already been handed over"}
+                                            """)}))
+    })
+    public ResponseEntity<ApiResult<CollectCodeResponse>> collectCode(
+            @Parameter(description = "Order id (UUID)",
+                    example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
+            @PathVariable("id") String id,
+            @Parameter(description = "The parcel being collected, from the order's `fulfilments`",
+                    example = "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31")
+            @PathVariable("fulfilmentId") String fulfilmentId) {
+        return ResponseEntity.ok(ApiResult.ok("Collection code ready - show it when you collect",
+                fulfilmentService.mintCollectCode(CurrentUser.get(), parseOrderId(id),
+                        parseId(fulfilmentId, "invalid_fulfilment_id",
+                                "Fulfilment id must be a UUID"))));
     }
 
     /** GlobalExceptionHandler has no MethodArgumentTypeMismatch mapping, so a

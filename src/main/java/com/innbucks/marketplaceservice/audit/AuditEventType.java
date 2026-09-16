@@ -67,6 +67,11 @@ public enum AuditEventType {
     /** A buyer disputed a parcel — its settlement froze until an operator
      *  decides (V10). Metadata carries the bounded reason, NEVER the buyer's
      *  free-text detail. */
+    /** A parcel's collection-code budget ran out — ten wrong codes against
+     *  one parcel is not a typo, and only the seller holding it can submit
+     *  one. Recorded once: the lock short-circuits every later attempt, so
+     *  this can never flood the chain. */
+    COLLECT_CODE_LOCKED,
     SETTLEMENT_DISPUTED,
     /** An operator resolved a dispute (V10) — metadata's {@code action} says
      *  which way (RELEASE to the seller / REFUND to the buyer), with the

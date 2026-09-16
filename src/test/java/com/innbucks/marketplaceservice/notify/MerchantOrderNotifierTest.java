@@ -43,7 +43,7 @@ class MerchantOrderNotifierTest {
     private MerchantOrderNotifier notifier;
 
     private final OrderPaid event = new OrderPaid(UUID.randomUUID(), REF,
-            "+263771234567", 7797, "USD");
+            "+263771234567", 7797, "USD", null, null);
 
     @BeforeEach
     void setUp() {

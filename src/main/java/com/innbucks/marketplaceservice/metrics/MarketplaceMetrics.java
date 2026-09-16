@@ -211,6 +211,25 @@ public class MarketplaceMetrics {
                 .increment(amount);
     }
 
+    /**
+     * Collection-code outcomes, {@code marketplace.collect_codes{outcome}}:
+     * vocabulary {@code minted|redeemed|invalid|locked}.
+     *
+     * <p>{@code invalid} is the one to alert on. A seller mistyping a code the
+     * collector read out is ordinary and rare; {@code invalid} climbing on one
+     * cell is somebody working through the keyspace of parcels they already
+     * hold, trying to buy themselves the instant payout that a real handover
+     * earns. {@code locked} means the per-parcel budget actually ran out,
+     * which should be close to never.
+     */
+    public void collectCodeOutcome(String outcome) {
+        Counter.builder("marketplace.collect_codes")
+                .description("Collection handover codes by outcome")
+                .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment();
+    }
+
     public void illegalTransition() {
         illegalTransitions.increment();
     }

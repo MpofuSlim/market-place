@@ -17,6 +17,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.ignoreStubs;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,7 +44,7 @@ class OrderPaidNotificationListenerTest {
     private OrderPaidNotificationListener listener;
 
     private final OrderPaid event = new OrderPaid(UUID.randomUUID(), "MKT-4F2A9C1B77D0",
-            "+263771234567", 3100, "USD");
+            "+263771234567", 3100, "USD", null, null);
 
     @BeforeEach
     void setUp() {
@@ -54,9 +57,64 @@ class OrderPaidNotificationListenerTest {
     }
 
     private double outcome(String outcome) {
+        return outcome("order_paid", outcome);
+    }
+
+    private double outcome(String type, String outcome) {
         var counter = registry.find("marketplace.notifications")
-                .tag("type", "order_paid").tag("outcome", outcome).counter();
+                .tag("type", type).tag("outcome", outcome).counter();
         return counter == null ? 0.0 : counter.count();
+    }
+
+    /** The same order, bought for somebody else. */
+    private OrderPaid gift(String recipientMsisdn, String note) {
+        return new OrderPaid(event.orderId(), event.orderRef(), event.buyerMsisdn(),
+                event.totalCents(), event.currency(), recipientMsisdn, note);
+    }
+
+    @Test
+    @DisplayName("A gift tells the RECIPIENT too, without naming the price or the goods")
+    void aGiftAlsoNotifiesTheRecipient() {
+        when(sms.isConfigured()).thenReturn(true);
+
+        listener.onOrderPaid(gift("+263772345678", "Happy birthday Gogo"));
+
+        verify(sms).sendSms(eq("+263771234567"), eq(EXPECTED_MESSAGE), anyString());
+        verify(sms).sendSms("+263772345678",
+                "You have a gift coming on InnBucks Marketplace. Order MKT-4F2A9C1B77D0. "
+                        + "Note - Happy birthday Gogo",
+                "MKT-4F2A9C1B77D0");
+        assertThat(outcome("gift", "sent")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("An order for oneself, or a recipient with no number, messages nobody extra")
+    void noRecipientMeansNoSecondMessage() {
+        when(sms.isConfigured()).thenReturn(true);
+
+        listener.onOrderPaid(event);
+        listener.onOrderPaid(gift(null, "Happy birthday Gogo"));
+        listener.onOrderPaid(gift("   ", null));
+
+        // Three orders, three buyer receipts, and not one gift message.
+        verify(sms, times(3)).sendSms(eq("+263771234567"), anyString(), anyString());
+        verifyNoMoreInteractions(ignoreStubs(sms));
+        assertThat(outcome("gift", "sent")).isZero();
+    }
+
+    @Test
+    @DisplayName("A failed gift SMS costs the recipient their notice, never the payment confirm")
+    void aFailedGiftMessageIsSwallowed() {
+        when(sms.isConfigured()).thenReturn(true);
+        doThrow(new NotificationDeliveryException("gateway 500"))
+                .when(sms).sendSms(any(), any(), any());
+
+        // Nothing escapes: an exception from an after-commit listener would
+        // reach the caller of commit() and look like a FAILED confirm.
+        listener.onOrderPaid(gift("+263772345678", null));
+
+        assertThat(outcome("gift", "failed")).isEqualTo(1.0);
+        verify(merchantNotifier).notifyMerchants(any());
     }
 
     @Test
