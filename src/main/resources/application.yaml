@@ -64,6 +64,33 @@ marketplace:
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}
+  checkout:
+    # The payment rails GET /marketplace/checkout/options advertises, in
+    # the order the app should offer them.
+    #
+    # MUST mirror what payment-service is actually provisioned with on this
+    # cell. Marketplace-service holds no payment credentials and cannot ask —
+    # the rails live behind POST /payments, whose ZimSwitch and EcoCash legs
+    # each 503 when their credentials are blank. Advertising a rail the cell
+    # cannot collect on sends the buyer down a path that dead-ends at another
+    # service's error.
+    #
+    # Hence the fail-safe default: the InnBucks code rail ALONE, which every
+    # cell has. Add the others as they are provisioned.
+    payment-methods: ${MARKETPLACE_PAYMENT_METHODS:INNBUCKS_CODE}
+  delivery:
+    # How goods may reach the buyer here. A market with no courier arrangement
+    # drops DELIVERY and checkout stops offering it.
+    methods: ${MARKETPLACE_DELIVERY_METHODS:DELIVERY,COLLECTION}
+    # Flat delivery fee in MINOR units, added to a DELIVERY order's total;
+    # COLLECTION never pays it. Zero by default, which is the honest default:
+    # this service books no couriers and has no rate card, so any non-zero
+    # number is a commercial decision a cell makes deliberately. A per-merchant
+    # or per-zone rate is a real gap (a multi-seller order ships in several
+    # parcels and pays this ONCE) and is deferred rather than faked.
+    fee-cents: ${MARKETPLACE_DELIVERY_FEE_CENTS:0}
+    # Abuse guard on the buyer's address book.
+    max-addresses-per-buyer: ${MARKETPLACE_MAX_ADDRESSES_PER_BUYER:25}
   scheduler:
     # Order-expiry sweep: releases stock held by lapsed PENDING_PAYMENT orders.
     expiry-sweep-cron: ${MARKETPLACE_EXPIRY_SWEEP_CRON:0 * * * * *}

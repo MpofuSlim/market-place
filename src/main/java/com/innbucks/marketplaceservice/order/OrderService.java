@@ -2,16 +2,22 @@ package com.innbucks.marketplaceservice.order;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.i18n.phonenumbers.NumberParseException;
-import com.google.i18n.phonenumbers.PhoneNumberUtil;
-import com.google.i18n.phonenumbers.Phonenumber;
 import com.innbucks.marketplaceservice.api.ApiException;
+import com.innbucks.marketplaceservice.api.Msisdns;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
+import com.innbucks.marketplaceservice.cart.CartService;
 import com.innbucks.marketplaceservice.catalog.ListingRestocked;
-import com.innbucks.marketplaceservice.catalog.ListingStatus;
+import com.innbucks.marketplaceservice.checkout.BasketLine;
+import com.innbucks.marketplaceservice.checkout.CheckoutPricer;
+import com.innbucks.marketplaceservice.checkout.CheckoutService;
+import com.innbucks.marketplaceservice.checkout.PricedBasket;
+import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
+import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.idempotency.ClaimResult;
 import com.innbucks.marketplaceservice.idempotency.IdempotencyService;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
@@ -46,7 +52,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
  * Order domain operations: the buyer surface (create / cancel / read own) and
@@ -80,8 +85,6 @@ public class OrderService {
     static final int MIN_EXTEND_MINUTES = 1;
     static final int MAX_EXTEND_MINUTES = 60;
 
-    private static final PhoneNumberUtil PHONE_UTIL = PhoneNumberUtil.getInstance();
-
     private final MarketOrderRepository orderRepository;
     private final MarketOrderItemRepository itemRepository;
     private final ListingRepository listingRepository;
@@ -92,11 +95,16 @@ public class OrderService {
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final TransactionTemplate transactionTemplate;
+    private final CheckoutService checkoutService;
+    private final CheckoutPricer pricer;
+    private final CartService cartService;
+    private final FulfilmentService fulfilmentService;
+    private final OrderViewAssembler views;
+    private final Msisdns msisdns;
 
     private final int maxItems;
     private final int maxQuantityPerItem;
     private final long paymentTtlMinutes;
-    private final String country;
     private final String currency;
 
     public OrderService(MarketOrderRepository orderRepository,
@@ -109,10 +117,15 @@ public class OrderService {
                         ObjectMapper objectMapper,
                         ApplicationEventPublisher eventPublisher,
                         PlatformTransactionManager transactionManager,
+                        CheckoutService checkoutService,
+                        CheckoutPricer pricer,
+                        CartService cartService,
+                        FulfilmentService fulfilmentService,
+                        OrderViewAssembler views,
+                        Msisdns msisdns,
                         @Value("${marketplace.order.max-items}") int maxItems,
                         @Value("${marketplace.order.max-quantity-per-item}") int maxQuantityPerItem,
                         @Value("${marketplace.order.payment-ttl-minutes}") long paymentTtlMinutes,
-                        @Value("${innbucks.country}") String country,
                         @Value("${innbucks.currency}") String currency) {
         this.orderRepository = orderRepository;
         this.itemRepository = itemRepository;
@@ -124,10 +137,15 @@ public class OrderService {
         this.objectMapper = objectMapper;
         this.eventPublisher = eventPublisher;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.checkoutService = checkoutService;
+        this.pricer = pricer;
+        this.cartService = cartService;
+        this.fulfilmentService = fulfilmentService;
+        this.views = views;
+        this.msisdns = msisdns;
         this.maxItems = maxItems;
         this.maxQuantityPerItem = maxQuantityPerItem;
         this.paymentTtlMinutes = paymentTtlMinutes;
-        this.country = country;
         this.currency = currency;
     }
 
@@ -166,6 +184,17 @@ public class OrderService {
             throw ex;
         }
 
+        // The ordered lines leave the cart only once the order has COMMITTED.
+        // Clearing them inside the transaction and then rolling back would
+        // look to the shopper like their cart vanished and their order failed;
+        // losing this call to a crash leaves stale lines they can remove
+        // themselves, which is strictly the better failure. Anything they did
+        // not check out stays where it was.
+        if (request.sourcedFromCart()) {
+            cartService.removeOrdered(UUID.fromString(buyer.uuid()),
+                    response.items().stream().map(OrderResponse.Line::listingId).toList());
+        }
+
         storeReplayBody(keyHash, response);
         // Audit + metric AFTER the commit: AuditService commits in its own
         // REQUIRES_NEW tx, so recording inside ours would leave an audit row
@@ -178,82 +207,42 @@ public class OrderService {
 
     private OrderResponse createOrderTx(AuthenticatedUser buyer, CreateOrderRequest request,
                                         String keyHash) {
-        List<CreateOrderRequest.Item> items = request.items();
-        if (items == null || items.isEmpty() || items.size() > maxItems) {
-            throw ApiException.badRequest("invalid_items",
-                    "Order must contain between 1 and " + maxItems + " line items");
-        }
-        Set<UUID> seen = new HashSet<>();
-        for (CreateOrderRequest.Item item : items) {
-            if (item.listingId() == null || item.quantity() == null) {
-                // Bean Validation already rejects these; defensive for direct callers.
-                throw ApiException.badRequest("invalid_items", "Each line needs listingId and quantity");
-            }
-            if (item.quantity() < 1 || item.quantity() > maxQuantityPerItem) {
-                throw ApiException.badRequest("invalid_quantity",
-                        "Quantity for listing " + item.listingId() + " must be between 1 and "
-                                + maxQuantityPerItem);
-            }
-            if (!seen.add(item.listingId())) {
-                throw ApiException.badRequest("duplicate_listing",
-                        "Listing " + item.listingId() + " appears more than once in the order");
-            }
-        }
-        String buyerMsisdn = normalizeMsisdn(resolveBuyerMsisdn(buyer, request));
+        // Where the lines come from is CheckoutService's question, answered the
+        // same way for the quote and the order — a quote and the order made
+        // from it must never price different baskets.
+        List<BasketLine> basket = checkoutService.resolveBasket(buyer, request.sourcedFromCart(),
+                request.items() == null ? List.of()
+                        : request.items().stream()
+                                .map(item -> new BasketLine(item.listingId(), item.quantity()))
+                                .toList());
+        validateBasket(basket);
 
-        Map<UUID, Listing> listings = listingRepository.findAllById(seen).stream()
-                .collect(Collectors.toMap(Listing::getId, l -> l));
+        String buyerMsisdn = msisdns.normalize(resolveBuyerMsisdn(buyer, request), "buyerMsisdn");
+        DeliveryMethod deliveryMethod = checkoutService.resolveMethod(request.deliveryMethod());
+        // Resolved BEFORE any stock is touched: a buyer with no saved address
+        // must be refused having reserved nothing.
+        DeliveryAddress destination =
+                checkoutService.resolveAddress(buyer, deliveryMethod, request.deliveryAddressId());
 
-        // Collect EVERY failing line rather than aborting at the first. A cart
-        // with two problems otherwise costs the customer two round-trips, and
-        // the second problem only appears once they have fixed the first. The
-        // order is still refused as a WHOLE — a partially-fulfilled order is
-        // never minted, and that is deliberate.
-        List<OrderLineRejection> rejections = new ArrayList<>(0);
-        for (CreateOrderRequest.Item item : items) {
-            Listing listing = listings.get(item.listingId());
-            // One reason for missing / not ACTIVE / foreign currency: the
-            // client remedy is identical (drop the line), and it leaks nothing
-            // more than the public catalog already shows.
-            if (listing == null
-                    || listing.getStatus() != ListingStatus.ACTIVE
-                    || !currency.equals(listing.getCurrency())) {
-                rejections.add(OrderLineRejection.unavailable(item.listingId(), item.quantity()));
-            } else if (listing.getStockQty() < item.quantity()) {
-                // ADVISORY ONLY: reserveStock below is still the authoritative
-                // guard — it is the atomic UPDATE a concurrent buyer cannot
-                // slip past, and this read can be stale the instant it is
-                // taken. The pre-check exists so the COMMON case reports every
-                // short line at once instead of one per attempt; a line that
-                // passes here and loses the race still gets the 409 below.
-                rejections.add(OrderLineRejection.insufficientStock(item.listingId(),
-                        listing.getTitle(), item.quantity(), listing.getStockQty(),
-                        listing.getPriceCents()));
-            }
-        }
-        if (!rejections.isEmpty()) {
-            throw refusalFor(rejections).withDetails(OrderRejectionDetails.of(rejections));
+        // Availability, pricing and the subtotal all come from the SAME
+        // resolver the cart and the quote use, so the three screens a shopper
+        // sees in a row cannot disagree about what is buyable. Still ADVISORY:
+        // reserveStock below is the authoritative guard.
+        PricedBasket priced = pricer.price(basket);
+        if (!priced.issues().isEmpty()) {
+            throw refusalFor(priced.issues()).withDetails(OrderRejectionDetails.of(priced.issues()));
         }
 
-        // Totals SERVER-SIDE from the listing rows, overflow-checked. Computed
-        // before any stock is touched so a pathological order aborts cheaply.
-        long totalCents = 0;
-        List<OrderResponse.Line> lines = new ArrayList<>(items.size());
+        long deliveryFee = checkoutService.deliveryFeeFor(deliveryMethod);
+        long totalCents;
         try {
-            for (CreateOrderRequest.Item item : items) {
-                Listing listing = listings.get(item.listingId());
-                long lineTotal = Math.multiplyExact(listing.getPriceCents(),
-                        (long) item.quantity());
-                totalCents = Math.addExact(totalCents, lineTotal);
-                lines.add(new OrderResponse.Line(listing.getId(), listing.getTitle(),
-                        listing.getPriceCents(), item.quantity(), lineTotal));
-            }
+            totalCents = Math.addExact(priced.subtotalCents(), deliveryFee);
         } catch (ArithmeticException ex) {
             throw ApiException.unprocessable("order_total_overflow",
                     "Order total exceeds the maximum representable amount");
         }
 
-        reserveStock(items);
+        reserveStock(basket);
 
         Instant now = Instant.now();
         MarketOrder order = MarketOrder.builder()
@@ -262,30 +251,90 @@ public class OrderService {
                 .buyerUuid(UUID.fromString(buyer.uuid()))
                 .buyerMsisdn(buyerMsisdn)
                 .status(OrderStatus.PENDING_PAYMENT)
+                .subtotalCents(priced.subtotalCents())
+                .deliveryFeeCents(deliveryFee)
                 .totalCents(totalCents)
                 .currency(currency)
+                .deliveryMethod(deliveryMethod)
                 .expiresAt(now.plus(paymentTtlMinutes, ChronoUnit.MINUTES))
                 .stockReleased(false)
                 .idempotencyKey(keyHash)
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
+        applyDestination(order, destination);
         orderRepository.save(order);
-        itemRepository.saveAll(lines.stream()
+
+        List<MarketOrderItem> items = priced.lines().stream()
                 .map(line -> MarketOrderItem.builder()
                         .id(UUID.randomUUID())
                         .orderId(order.getId())
                         .listingId(line.listingId())
-                        .titleSnapshot(line.titleSnapshot())
+                        // SNAPSHOT, not a later join back to the listing: the
+                        // seller who must pack this and be paid for it is the
+                        // one who was selling at order time.
+                        .merchantId(line.listing().getMerchantId())
+                        .titleSnapshot(line.listing().getTitle())
                         .unitPriceCents(line.unitPriceCents())
                         .quantity(line.quantity())
                         .lineTotalCents(line.lineTotalCents())
                         .build())
-                .toList());
+                .toList();
+        itemRepository.saveAll(items);
         transitions.journalCreation(order);
-        log.info("order created id={} ref={} lines={} totalCents={}",
-                order.getId(), order.getOrderRef(), lines.size(), totalCents);
-        return toResponse(order, lines);
+        log.info("order created id={} ref={} lines={} subtotalCents={} deliveryFeeCents={} "
+                        + "totalCents={} delivery={}",
+                order.getId(), order.getOrderRef(), items.size(), priced.subtotalCents(),
+                deliveryFee, totalCents, deliveryMethod);
+        return views.toResponse(order, items);
+    }
+
+    /**
+     * Shape checks that do not need the catalogue: line count, per-line
+     * quantity and duplicates. Run before anything is read or reserved so a
+     * pathological order aborts cheaply.
+     */
+    private void validateBasket(List<BasketLine> basket) {
+        if (basket.isEmpty() || basket.size() > maxItems) {
+            throw ApiException.badRequest("invalid_items",
+                    "Order must contain between 1 and " + maxItems + " line items");
+        }
+        Set<UUID> seen = new HashSet<>();
+        for (BasketLine line : basket) {
+            if (line.listingId() == null) {
+                // Bean Validation already rejects these; defensive for direct callers.
+                throw ApiException.badRequest("invalid_items", "Each line needs listingId and quantity");
+            }
+            if (line.quantity() < 1 || line.quantity() > maxQuantityPerItem) {
+                throw ApiException.badRequest("invalid_quantity",
+                        "Quantity for listing " + line.listingId() + " must be between 1 and "
+                                + maxQuantityPerItem);
+            }
+            if (!seen.add(line.listingId())) {
+                throw ApiException.badRequest("duplicate_listing",
+                        "Listing " + line.listingId() + " appears more than once in the order");
+            }
+        }
+    }
+
+    /**
+     * Copies the chosen address ONTO the order. A snapshot, never a reference:
+     * the buyer may rename, edit or delete the book entry the moment after
+     * ordering, and a parcel already packed must not change destination — nor
+     * lose one — because of it.
+     */
+    private static void applyDestination(MarketOrder order, DeliveryAddress address) {
+        if (address == null) {
+            return; // COLLECTION — no destination by construction
+        }
+        order.setDeliveryAddressId(address.getId());
+        order.setDeliveryRecipientName(address.getRecipientName());
+        order.setDeliveryRecipientMsisdn(address.getRecipientMsisdn());
+        order.setDeliveryLine1(address.getLine1());
+        order.setDeliveryLine2(address.getLine2());
+        order.setDeliveryCity(address.getCity());
+        order.setDeliveryArea(address.getArea());
+        order.setDeliveryLandmark(address.getLandmark());
     }
 
     /**
@@ -328,14 +377,14 @@ public class OrderService {
      * explicit restock keeps the guarantee even if this loop ever moves
      * outside the creating transaction; today the rollback would also undo it.
      */
-    private void reserveStock(List<CreateOrderRequest.Item> items) {
-        List<CreateOrderRequest.Item> sorted = items.stream()
-                .sorted(Comparator.comparing(CreateOrderRequest.Item::listingId))
+    private void reserveStock(List<BasketLine> items) {
+        List<BasketLine> sorted = items.stream()
+                .sorted(Comparator.comparing(BasketLine::listingId))
                 .toList();
-        List<CreateOrderRequest.Item> reserved = new ArrayList<>(sorted.size());
-        for (CreateOrderRequest.Item item : sorted) {
+        List<BasketLine> reserved = new ArrayList<>(sorted.size());
+        for (BasketLine item : sorted) {
             if (listingRepository.reserveStock(item.listingId(), item.quantity()) == 0) {
-                for (CreateOrderRequest.Item taken : reserved) {
+                for (BasketLine taken : reserved) {
                     listingRepository.restock(taken.listingId(), taken.quantity());
                 }
                 throw ApiException.conflict("insufficient_stock",
@@ -352,8 +401,27 @@ public class OrderService {
         // everything else, terminals included.
         transitions.transition(order, OrderStatus.CANCELLED, "Cancelled by buyer");
         releaseStockOnce(order);
-        return toResponse(order, itemRepository.findByOrderId(order.getId()).stream()
-                .map(OrderService::toLine).toList());
+        return views.toResponse(order);
+    }
+
+    /**
+     * The buyer confirms a parcel arrived — the last step of the journey.
+     *
+     * <p>Lives on the ORDER rather than the fulfilment resource because that is
+     * where a shopper looks: they think in orders, not parcels. Returns the
+     * whole order so the app re-renders the tracking screen from one response.
+     */
+    @Transactional
+    public OrderResponse confirmReceived(AuthenticatedUser buyer, UUID orderId, UUID fulfilmentId) {
+        MarketOrder order = requireOwn(buyer, orderId);
+        OrderFulfilment parcel = fulfilmentService.confirmReceived(buyer, fulfilmentId);
+        if (!parcel.getOrderId().equals(order.getId())) {
+            // The parcel is the buyer's but belongs to a DIFFERENT order of
+            // theirs. Refused rather than quietly confirmed, because the app
+            // would then show the wrong order closing.
+            throw ApiException.notFound("fulfilment_not_found", "Fulfilment not found");
+        }
+        return views.toResponse(order);
     }
 
     @Transactional(readOnly = true)
@@ -385,19 +453,13 @@ public class OrderService {
                 ? orderRepository.findById(orderId)
                         .orElseThrow(() -> ApiException.notFound("order_not_found", "Order not found"))
                 : requireOwn(caller, orderId);
-        return toResponse(order, itemRepository.findByOrderId(order.getId()).stream()
-                .map(OrderService::toLine).toList());
+        return views.toResponse(order);
     }
 
-    /** Bulk-loads every page row's items in ONE query (no N+1). */
+    /** Page assembly — lines, parcels and seller names each cost ONE query for
+     *  the whole page (no N+1 on the screen a shopper opens most). */
     private Page<OrderResponse> withItems(Page<MarketOrder> page) {
-        List<UUID> orderIds = page.getContent().stream().map(MarketOrder::getId).toList();
-        Map<UUID, List<MarketOrderItem>> itemsByOrder = orderIds.isEmpty() ? Map.of()
-                : itemRepository.findByOrderIdIn(orderIds).stream()
-                        .collect(Collectors.groupingBy(MarketOrderItem::getOrderId));
-        return page.map(order -> toResponse(order,
-                itemsByOrder.getOrDefault(order.getId(), List.of()).stream()
-                        .map(OrderService::toLine).toList()));
+        return views.toResponsePage(page);
     }
 
     // ------------------------------------------------------------------
@@ -473,6 +535,12 @@ public class OrderService {
         order.setPaidAt(Instant.now());
         transitions.transition(order, OrderStatus.PAID,
                 "Payment confirmed by platform payments service");
+        // Parcels open in the SAME transaction as the PAID transition. An order
+        // that committed as paid with nothing on any seller's queue would be
+        // money taken for goods nobody was ever asked to send — and nothing
+        // would notice, because that queue is the only place it would show.
+        // Idempotent, so a replayed confirm cannot double a seller's work.
+        fulfilmentService.openForOrder(order);
         return toView(order);
     }
 
@@ -579,25 +647,6 @@ public class OrderService {
         return request.buyerMsisdn();
     }
 
-    private String normalizeMsisdn(String raw) {
-        if (raw == null || raw.isBlank()) {
-            throw ApiException.badRequest("invalid_msisdn",
-                    "No buyer phone number: the token carries none and buyerMsisdn was not supplied");
-        }
-        try {
-            Phonenumber.PhoneNumber parsed = PHONE_UTIL.parse(raw, country);
-            if (!PHONE_UTIL.isValidNumber(parsed)) {
-                throw ApiException.badRequest("invalid_msisdn",
-                        "buyerMsisdn is not a valid phone number");
-            }
-            return PHONE_UTIL.format(parsed, PhoneNumberUtil.PhoneNumberFormat.E164);
-        } catch (NumberParseException ex) {
-            // Never log the raw value — it's a (possibly mistyped) phone number.
-            throw ApiException.badRequest("invalid_msisdn",
-                    "buyerMsisdn is not a valid phone number");
-        }
-    }
-
     /** Canonical request fingerprint for replay-vs-mismatch: SHA-256 over the
      *  Jackson serialization (record component order is stable). */
     private String fingerprint(CreateOrderRequest request) {
@@ -636,17 +685,6 @@ public class OrderService {
         metadata.put("currency", response.currency());
         metadata.put("lineCount", response.items().size());
         return metadata;
-    }
-
-    private static OrderResponse toResponse(MarketOrder order, List<OrderResponse.Line> lines) {
-        return new OrderResponse(order.getId(), order.getOrderRef(), order.getStatus(),
-                order.getTotalCents(), order.getCurrency(), order.getExpiresAt(),
-                order.getCreatedAt(), lines);
-    }
-
-    private static OrderResponse.Line toLine(MarketOrderItem item) {
-        return new OrderResponse.Line(item.getListingId(), item.getTitleSnapshot(),
-                item.getUnitPriceCents(), item.getQuantity(), item.getLineTotalCents());
     }
 
     private static InternalOrderView toView(MarketOrder order) {

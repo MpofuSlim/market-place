@@ -1,0 +1,84 @@
+package com.innbucks.marketplaceservice.fulfilment;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * One seller's parcel of one order (V9 {@code order_fulfilment} table).
+ *
+ * <p>Per MERCHANT, not per order, because a cart can legitimately span sellers
+ * and each ships their own goods on their own clock. An order-level fulfilment
+ * state would either block the fast seller behind the slow one or claim the
+ * whole order shipped when half of it had. The buyer's order view rolls the
+ * parcels up to the LEAST advanced one — the only summary that is never an
+ * overstatement.
+ *
+ * <p>Rows are opened when the order is PAID, in the confirming transaction, so
+ * an unpaid order has none: there is nothing to pack until the money has moved.
+ * The unique index on (order_id, merchant_id) makes opening them safely
+ * re-runnable — a replayed payment confirm cannot double them.
+ */
+@Entity
+@Table(name = "order_fulfilment")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class OrderFulfilment {
+
+    @Id
+    @Column(name = "id", nullable = false)
+    private UUID id;
+
+    @Column(name = "order_id", nullable = false)
+    private UUID orderId;
+
+    /** The SNAPSHOT merchant from the order's lines, not a live listing lookup:
+     *  the seller who owes these goods is the one who was selling at order time. */
+    @Column(name = "merchant_id", nullable = false)
+    private UUID merchantId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 24)
+    private FulfilmentStatus status;
+
+    /** Courier + waybill, or "ready at the Avondale counter". Sanitized free
+     *  text, shown to the buyer. */
+    @Column(name = "dispatch_note", length = 255)
+    private String dispatchNote;
+
+    @Column(name = "dispatched_at")
+    private Instant dispatchedAt;
+
+    @Column(name = "delivered_at")
+    private Instant deliveredAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "delivered_by", length = 16)
+    private DeliveryConfirmer deliveredBy;
+
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    /** Wrapper {@code Long} for the same reason {@code MarketOrder}'s is: with a
+     *  manually assigned id, Spring Data decides new-vs-existing by this field
+     *  being null. */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+}

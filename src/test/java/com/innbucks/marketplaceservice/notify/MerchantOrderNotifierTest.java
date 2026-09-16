@@ -1,7 +1,5 @@
 package com.innbucks.marketplaceservice.notify;
 
-import com.innbucks.marketplaceservice.catalog.Listing;
-import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
@@ -39,7 +37,6 @@ class MerchantOrderNotifierTest {
 
     private MarketplaceNotificationProperties properties;
     private MarketOrderItemRepository itemRepository;
-    private ListingRepository listingRepository;
     private MerchantAdminResolver resolver;
     private UserNotifyGateway gateway;
     private SimpleMeterRegistry registry;
@@ -52,11 +49,10 @@ class MerchantOrderNotifierTest {
     void setUp() {
         properties = new MarketplaceNotificationProperties();
         itemRepository = mock(MarketOrderItemRepository.class);
-        listingRepository = mock(ListingRepository.class);
         resolver = mock(MerchantAdminResolver.class);
         gateway = mock(UserNotifyGateway.class);
         registry = new SimpleMeterRegistry();
-        notifier = new MerchantOrderNotifier(properties, itemRepository, listingRepository,
+        notifier = new MerchantOrderNotifier(properties, itemRepository,
                 resolver, gateway, new MarketplaceMetrics(registry));
     }
 
@@ -66,18 +62,14 @@ class MerchantOrderNotifierTest {
         return counter == null ? 0.0 : counter.count();
     }
 
-    private Listing listing(UUID id, UUID merchantId) {
-        Listing listing = new Listing();
-        listing.setId(id);
-        listing.setMerchantId(merchantId);
-        return listing;
-    }
 
-    private MarketOrderItem item(UUID listingId, String title, int qty, long lineTotalCents) {
+    private MarketOrderItem item(UUID listingId, UUID merchantId, String title, int qty,
+                                 long lineTotalCents) {
         return MarketOrderItem.builder()
                 .id(UUID.randomUUID())
                 .orderId(event.orderId())
                 .listingId(listingId)
+                .merchantId(merchantId)
                 .titleSnapshot(title)
                 .unitPriceCents(lineTotalCents / qty)
                 .quantity(qty)
@@ -92,7 +84,7 @@ class MerchantOrderNotifierTest {
 
         notifier.notifyMerchants(event);
 
-        verifyNoInteractions(itemRepository, listingRepository, resolver, gateway);
+        verifyNoInteractions(itemRepository, resolver, gateway);
         assertThat(outcome("disabled")).isEqualTo(1.0);
     }
 
@@ -104,12 +96,9 @@ class MerchantOrderNotifierTest {
         UUID listingA2 = UUID.randomUUID();
         UUID listingB = UUID.randomUUID();
         when(itemRepository.findByOrderId(event.orderId())).thenReturn(List.of(
-                item(listingA1, "Solar Lantern", 2, 5198),
-                item(listingB, "Garden Hose", 1, 2599),
-                item(listingA2, "Torch", 1, 1000)));
-        when(listingRepository.findAllById(any())).thenReturn(List.of(
-                listing(listingA1, MERCHANT_A), listing(listingA2, MERCHANT_A),
-                listing(listingB, MERCHANT_B)));
+                item(listingA1, MERCHANT_A, "Solar Lantern", 2, 5198),
+                item(listingB, MERCHANT_B, "Garden Hose", 1, 2599),
+                item(listingA2, MERCHANT_A, "Torch", 1, 1000)));
         UUID adminA1 = UUID.randomUUID();
         UUID adminA2 = UUID.randomUUID();
         UUID adminB = UUID.randomUUID();
@@ -134,9 +123,7 @@ class MerchantOrderNotifierTest {
         properties.getMerchantOrders().setEnabled(true);
         UUID listingId = UUID.randomUUID();
         when(itemRepository.findByOrderId(event.orderId()))
-                .thenReturn(List.of(item(listingId, "Solar Lantern", 2, 5198)));
-        when(listingRepository.findAllById(any()))
-                .thenReturn(List.of(listing(listingId, MERCHANT_A)));
+                .thenReturn(List.of(item(listingId, MERCHANT_A, "Solar Lantern", 2, 5198)));
         when(resolver.adminUserUuids(MERCHANT_A)).thenReturn(List.of());
 
         notifier.notifyMerchants(event);
@@ -151,9 +138,7 @@ class MerchantOrderNotifierTest {
         properties.getMerchantOrders().setEnabled(true);
         UUID listingId = UUID.randomUUID();
         when(itemRepository.findByOrderId(event.orderId()))
-                .thenReturn(List.of(item(listingId, "Solar Lantern", 2, 5198)));
-        when(listingRepository.findAllById(any()))
-                .thenReturn(List.of(listing(listingId, MERCHANT_A)));
+                .thenReturn(List.of(item(listingId, MERCHANT_A, "Solar Lantern", 2, 5198)));
         UUID admin1 = UUID.randomUUID();
         UUID admin2 = UUID.randomUUID();
         when(resolver.adminUserUuids(MERCHANT_A)).thenReturn(List.of(admin1, admin2));

@@ -38,6 +38,14 @@ public final class TestJwts {
         return forUser(userUuid).role("MERCHANT_ADMIN").merchantId(merchantId).sign(secret);
     }
 
+    /** MERCHANT_ADMIN token carrying NO merchantId claim — the shape a
+     *  misconfigured or legacy seller token has. Every merchant-scoped read
+     *  and write must refuse it (403 merchant_scope_missing) rather than
+     *  defaulting it to "all merchants". */
+    public static String merchantAdminWithoutMerchant(UUID userUuid, String secret) {
+        return forUser(userUuid).role("MERCHANT_ADMIN").sign(secret);
+    }
+
     /** SUPER_ADMIN (fleet oversight) token — deliberately carries NO
      *  merchantId claim, exactly like the real admin tokens user-service
      *  mints; the service layer must not require one for admins. */

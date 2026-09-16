@@ -1,5 +1,11 @@
 package com.innbucks.marketplaceservice.order.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.innbucks.marketplaceservice.checkout.dto.PaymentInstruction;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
+import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
+import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentResponse;
 import com.innbucks.marketplaceservice.order.OrderStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -8,10 +14,15 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Buyer-facing order view. Also the shape stored verbatim on the idempotency
- * claim row, so a replayed POST returns exactly what the first execution
- * returned — keep it JSON-round-trippable (records + Instant only).
+ * Buyer-facing order view — the whole journey of one order in one response:
+ * what was bought, what it cost broken down, where it is going, how to pay for
+ * it while it is unpaid, and where each seller's parcel has got to once it is.
+ *
+ * <p>Also the shape stored verbatim on the idempotency claim row, so a replayed
+ * POST returns exactly what the first execution returned — keep it
+ * JSON-round-trippable (records, enums and {@code Instant} only).
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 @Schema(description = "A buyer order")
 public record OrderResponse(
 
@@ -23,20 +34,55 @@ public record OrderResponse(
 
         OrderStatus status,
 
-        @Schema(description = "Order total in minor units (cents)", example = "3550")
+        @Schema(description = "Sum of the lines, in minor units (cents)", example = "4798")
+        long subtotalCents,
+
+        @Schema(description = "Delivery fee in minor units — 0 for COLLECTION", example = "200")
+        long deliveryFeeCents,
+
+        @Schema(description = "subtotalCents + deliveryFeeCents — what the payments service "
+                + "collects", example = "4998")
         long totalCents,
 
         @Schema(description = "ISO-4217 currency (the deployment cell's currency)", example = "USD")
         String currency,
 
+        @Schema(description = "How the buyer receives the goods", example = "DELIVERY")
+        DeliveryMethod deliveryMethod,
+
+        @Schema(description = "Where it is being sent, as captured at order time. Absent for a "
+                + "COLLECTION order.", nullable = true)
+        FulfilmentDestination deliveryAddress,
+
         @Schema(description = "When the PENDING_PAYMENT stock hold lapses (UTC)",
-                example = "2026-08-05T10:45:00Z")
+                example = "2026-09-14T11:32:44Z")
         Instant expiresAt,
 
-        @Schema(example = "2026-08-05T10:15:00Z")
+        @Schema(example = "2026-09-14T11:02:44Z")
         Instant createdAt,
 
-        List<Line> items) {
+        @Schema(description = "When payment was confirmed. Absent until then.",
+                example = "2026-09-14T11:20:10Z", nullable = true)
+        Instant paidAt,
+
+        List<Line> items,
+
+        @Schema(description = "How to settle this order. Present ONLY while it is awaiting "
+                + "payment — marketplace-service does not collect money, and this block names the "
+                + "payments-service call and the rails this cell can collect on so the app does "
+                + "not carry that knowledge itself.", nullable = true)
+        PaymentInstruction payment,
+
+        @Schema(description = "The order's fulfilment summary: the LEAST advanced of its parcels, "
+                + "so DELIVERED always means everything arrived. Absent until the order is paid "
+                + "(and on a cancelled or expired order) — there is nothing to fulfil before the "
+                + "money moves, and a PREPARING there would claim a seller was packing goods "
+                + "nobody has paid for.", example = "DISPATCHED", nullable = true)
+        FulfilmentStatus fulfilmentStatus,
+
+        @Schema(description = "One parcel per selling merchant, each moving on its own clock. "
+                + "Empty until the order is paid.")
+        List<FulfilmentResponse> fulfilments) {
 
     @Schema(description = "One order line, priced from the listing at order time")
     public record Line(
