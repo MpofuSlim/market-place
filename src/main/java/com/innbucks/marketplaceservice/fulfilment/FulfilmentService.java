@@ -4,6 +4,11 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts;
+import com.innbucks.marketplaceservice.fulfilment.collect.CollectCodes;
+import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
+import com.innbucks.marketplaceservice.fulfilment.dto.CollectRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResponse;
@@ -18,9 +23,11 @@ import com.innbucks.marketplaceservice.order.MarketOrderRepository;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
+import com.innbucks.marketplaceservice.notify.CollectCodeNotifier;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -68,6 +75,14 @@ public class FulfilmentService {
     private final SettlementService settlementService;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
+    private final CollectCodeAttempts collectCodeAttempts;
+    private final CollectCodeNotifier collectCodeNotifier;
+
+    /** The per-parcel online-guessing budget for a collection code. Field
+     *  injection because {@code @RequiredArgsConstructor} covers final fields
+     *  only — the house pattern, see {@code CartService}. */
+    @Value("${marketplace.fulfilment.collect-code-max-attempts}")
+    private int maxCollectAttempts;
 
     // ------------------------------------------------------------------
     // Opening — driven by the PAID transition
@@ -233,11 +248,152 @@ public class FulfilmentService {
         return parcel;
     }
 
+    // ------------------------------------------------------------------
+    // The collection handover code
+    // ------------------------------------------------------------------
+
+    /**
+     * Mints a fresh collection code for one of the BUYER's parcels and returns
+     * it — the only time the plaintext is ever readable.
+     *
+     * <p>Minting again REPLACES the live code and resets its guessing budget.
+     * That is the whole recovery story for a code someone lost, and it is safe
+     * because only the buyer can ask: a seller cannot mint, cannot read, and
+     * therefore cannot refresh the budget they are spending.
+     *
+     * <p><b>Deliberately NOT {@code @Transactional}.</b> The DB work is a
+     * single row write that Spring Data commits on its own, and the SMS that
+     * follows is a call to an external gateway — wrapping the two together
+     * would hold a pooled connection open across a network call to somebody
+     * else's service, which is how a slow gateway becomes a database outage
+     * (the middleware's Argon2-inside-a-transaction lesson, imported).
+     */
+    public CollectCodeResponse mintCollectCode(AuthenticatedUser buyer, UUID orderId,
+                                               UUID fulfilmentId) {
+        OrderFulfilment parcel = fulfilmentRepository.findById(fulfilmentId)
+                .orElseThrow(FulfilmentService::notFound);
+        MarketOrder order = orderRepository.findById(parcel.getOrderId())
+                .orElseThrow(FulfilmentService::notFound);
+        // Owner-masked, and the parcel must belong to the order named in the
+        // path — someone else's parcel is the same 404 as a nonexistent one.
+        if (!order.getId().equals(orderId)
+                || !order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
+            throw notFound();
+        }
+        requireCollection(order);
+        if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
+            throw ApiException.conflict("illegal_fulfilment_state",
+                    "This parcel has already been handed over");
+        }
+
+        String code = CollectCodes.mint();
+        Instant now = Instant.now();
+        parcel.setCollectCodeHash(CollectCodes.hash(code));
+        parcel.setCollectCodeIssuedAt(now);
+        // A fresh credential gets a fresh budget. Only the buyer reaches this,
+        // so a seller working through candidates cannot reset their own cap.
+        parcel.setCollectCodeAttempts(0);
+        parcel.setUpdatedAt(now);
+        fulfilmentRepository.save(parcel);
+        metrics.collectCodeOutcome("minted");
+
+        // To the person actually collecting when the order named one, else to
+        // the buyer. Best-effort: they already hold the code in this response.
+        String destination = order.getRecipientMsisdn() != null
+                ? order.getRecipientMsisdn() : order.getBuyerMsisdn();
+        String grouped = CollectCodes.grouped(code);
+        String sentTo = collectCodeNotifier.send(destination, order.getOrderRef(), grouped);
+        log.info("collect code minted parcel={} orderRef={} notified={}",
+                parcel.getId(), order.getOrderRef(), sentTo != null);
+        return new CollectCodeResponse(parcel.getId(), code, grouped, now, sentTo);
+    }
+
+    /**
+     * The seller redeems the code the collector presented: the parcel closes as
+     * {@link DeliveryConfirmer#RECIPIENT} and — because that is the strongest
+     * evidence of handover the platform has — the escrow releases their money
+     * on the spot rather than after the self-close grace window.
+     *
+     * <p>Every refusal is the same shape whatever was wrong with the code, and
+     * a wrong one spends a slot of the parcel's budget. The budget matters
+     * because the ONLY party who can submit a candidate is the seller holding
+     * that parcel: without a cap, a seller could work through the keyspace to
+     * buy themselves an instant payout for goods still sitting on their shelf.
+     */
+    @Transactional
+    public MerchantFulfilmentResponse collect(AuthenticatedUser caller, UUID fulfilmentId,
+                                              CollectRequest request) {
+        OrderFulfilment parcel = requireSellerScope(caller, fulfilmentId);
+        MarketOrder order = orderRepository.findById(parcel.getOrderId())
+                .orElseThrow(FulfilmentService::notFound);
+        requireCollection(order);
+        if (parcel.getCollectCodeHash() == null) {
+            throw ApiException.conflict("collect_code_unavailable",
+                    "No collection code has been issued for this parcel - ask the buyer to "
+                            + "generate one in their app");
+        }
+        if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
+            // Checked before the compare so a correct code presented twice is
+            // not charged an attempt for the seller's double-tap.
+            throw ApiException.conflict("illegal_fulfilment_state",
+                    "This parcel has already been handed over");
+        }
+        if (parcel.getCollectCodeAttempts() >= maxCollectAttempts) {
+            metrics.collectCodeOutcome("locked");
+            throw lockedException();
+        }
+        if (!CollectCodes.matches(request.code(), parcel.getCollectCodeHash())) {
+            // Counted in its OWN transaction, so the refusal below cannot roll
+            // the budget back — see CollectCodeAttempts.
+            int spent = collectCodeAttempts.bumpAndCount(parcel.getId());
+            metrics.collectCodeOutcome("invalid");
+            log.warn("collect code rejected parcel={} merchantId={} attempts={}",
+                    parcel.getId(), parcel.getMerchantId(), spent);
+            if (spent >= maxCollectAttempts) {
+                metrics.collectCodeOutcome("locked");
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                metadata.put("orderId", parcel.getOrderId().toString());
+                metadata.put("merchantId", parcel.getMerchantId().toString());
+                metadata.put("attempts", spent);
+                auditService.record(AuditEventType.COLLECT_CODE_LOCKED, caller.uuid(),
+                        parcel.getId().toString(), metadata);
+            }
+            throw ApiException.unprocessable("collect_code_invalid",
+                    "That collection code is not valid for this parcel");
+        }
+
+        close(parcel, DeliveryConfirmer.RECIPIENT, "Collected - handover code redeemed", caller,
+                p -> p.setCollectCodeRedeemedAt(Instant.now()));
+        metrics.collectCodeOutcome("redeemed");
+        return toMerchantView(parcel);
+    }
+
+    /** A code only means anything where somebody physically collects. */
+    private static void requireCollection(MarketOrder order) {
+        if (order.getDeliveryMethod() != DeliveryMethod.COLLECTION) {
+            throw ApiException.conflict("collect_code_not_applicable",
+                    "This is a delivery order - there is nothing to collect in person");
+        }
+    }
+
+    private static ApiException lockedException() {
+        return ApiException.conflict("collect_code_locked",
+                "Too many wrong codes have been tried for this parcel - ask the buyer to "
+                        + "generate a new one");
+    }
+
     private void close(OrderFulfilment parcel, DeliveryConfirmer by, String detail,
                        AuthenticatedUser actor) {
+        close(parcel, by, detail, actor, p -> { });
+    }
+
+    private void close(OrderFulfilment parcel, DeliveryConfirmer by, String detail,
+                       AuthenticatedUser actor,
+                       java.util.function.Consumer<OrderFulfilment> extra) {
         transition(parcel, FulfilmentStatus.DELIVERED, detail, actor, p -> {
             p.setDeliveredAt(Instant.now());
             p.setDeliveredBy(by);
+            extra.accept(p);
         });
         // The escrow reacts IN the delivering transaction: a buyer's own
         // confirmation releases the seller's money now; a seller's self-close
@@ -374,7 +530,15 @@ public class FulfilmentService {
                 parcel.getDeliveredBy(),
                 parcel.getCreatedAt(),
                 settlement == null ? null : settlement.getStatus(),
-                settlement == null ? null : settlement.getNetCents());
+                settlement == null ? null : settlement.getNetCents(),
+                // Only where somebody is actually coming to a counter: on a
+                // DELIVERY order the destination block already names who the
+                // courier hands to, and a second name beside it would read as
+                // a second person.
+                order.getDeliveryMethod() == DeliveryMethod.COLLECTION
+                        ? order.getRecipientName() : null,
+                parcel.getCollectCodeHash() != null && parcel.getCollectCodeRedeemedAt() == null,
+                parcel.getCollectCodeRedeemedAt());
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {

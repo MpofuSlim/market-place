@@ -82,7 +82,29 @@ public record OrderResponse(
 
         @Schema(description = "One parcel per selling merchant, each moving on its own clock. "
                 + "Empty until the order is paid.")
-        List<FulfilmentResponse> fulfilments) {
+        List<FulfilmentResponse> fulfilments,
+
+        @Schema(description = "Who this order was bought for, when it is a gift. Absent on an "
+                + "order bought for oneself. Their number is returned in full here and nowhere "
+                + "else — this surface is the buyer reading back what they themselves typed.",
+                nullable = true)
+        Recipient recipient) {
+
+    @Schema(description = "The person this order was bought for")
+    public record Recipient(
+
+            @Schema(example = "Gogo Chipo Moyo")
+            String name,
+
+            @Schema(description = "E.164, as normalised on the way in. Null when the buyer named "
+                    + "a recipient without a number — nobody is messaged in that case and the "
+                    + "buyer passes the collection code on themselves.",
+                    example = "+263772345678", nullable = true)
+            String msisdn,
+
+            @Schema(example = "Happy birthday Gogo, love from Tari", nullable = true)
+            String message) {
+    }
 
     @Schema(description = "One order line, priced from the listing at order time")
     public record Line(

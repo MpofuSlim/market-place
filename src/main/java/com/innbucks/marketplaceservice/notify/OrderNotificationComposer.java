@@ -67,6 +67,54 @@ public final class OrderNotificationComposer {
         return "New paid order " + orderRef + ". " + lines + " - " + money(subtotal, currency);
     }
 
+    /** Subject used when the gift alert rides a subject-bearing channel. */
+    public static String giftSubject() {
+        return "A gift is on its way to you";
+    }
+
+    /**
+     * Told to the RECIPIENT of a gift order once it is paid, e.g. {@code "You
+     * have a gift coming on InnBucks Marketplace. Order MKT-4F2A9C1B77D0. Note
+     * - Happy birthday Gogo, love from Tari"}.
+     *
+     * <p>Deliberately says nothing about what was bought or what it cost: the
+     * recipient is not a party to the purchase, and a gift that announces its
+     * own price is not much of a gift. The buyer's note is where the sender
+     * identifies themselves — the platform does not know their name, and
+     * inventing one ("Tarisai sent you...") from an account it cannot vouch for
+     * would be worse than saying nothing.
+     *
+     * <p>The note is BUYER free text. Only the fixed parts of this template are
+     * pinned to round-trip {@link SmsTextSanitizer}; the note is sanitized by
+     * the SMS client on the way out like any other body.
+     */
+    public static String giftRecipientMessage(String orderRef, String giftMessage) {
+        String base = "You have a gift coming on InnBucks Marketplace. Order " + orderRef;
+        return giftMessage == null || giftMessage.isBlank()
+                ? base
+                : base + ". Note - " + giftMessage.trim();
+    }
+
+    /** Subject for the collection-code message. */
+    public static String collectCodeSubject() {
+        return "Your collection code";
+    }
+
+    /**
+     * The collection code, sent to whoever is collecting, e.g. {@code "Your
+     * InnBucks Marketplace collection code for order MKT-4F2A9C1B77D0 is
+     * K7Q2-9XMF-3TRW. Show it when you collect."}
+     *
+     * <p>Grouped form, because this is read off a phone and said out loud at a
+     * counter. It names no seller and no goods: a code is useless without the
+     * parcel it belongs to, and the fewer places the two travel together, the
+     * less a stolen phone is worth.
+     */
+    public static String collectCodeMessage(String orderRef, String groupedCode) {
+        return "Your InnBucks Marketplace collection code for order " + orderRef
+                + " is " + groupedCode + ". Show it when you collect.";
+    }
+
     /** Subject for the back-in-stock alert. */
     public static String restockSubject() {
         return "Back in stock on InnBucks Marketplace";

@@ -23,7 +23,7 @@ class OrderNotificationComposerTest {
     private static final String REF = "MKT-4F2A9C1B77D0";
 
     private OrderPaid paid(long totalCents) {
-        return new OrderPaid(UUID.randomUUID(), REF, "+263771234567", totalCents, "USD");
+        return new OrderPaid(UUID.randomUUID(), REF, "+263771234567", totalCents, "USD", null, null);
     }
 
     private MarketOrderItem item(String title, int quantity, long lineTotalCents) {
@@ -81,6 +81,30 @@ class OrderNotificationComposerTest {
     }
 
     @Test
+    @DisplayName("gift alert: names no price and no goods, carries the buyer's note")
+    void giftRecipientMessage_exactWording() {
+        assertThat(OrderNotificationComposer.giftRecipientMessage(REF,
+                "Happy birthday Gogo, love from Tari"))
+                .isEqualTo("You have a gift coming on InnBucks Marketplace. "
+                        + "Order MKT-4F2A9C1B77D0. Note - Happy birthday Gogo, love from Tari");
+        // A gift with no note still announces itself, without a dangling "Note -".
+        assertThat(OrderNotificationComposer.giftRecipientMessage(REF, null))
+                .isEqualTo("You have a gift coming on InnBucks Marketplace. "
+                        + "Order MKT-4F2A9C1B77D0");
+        assertThat(OrderNotificationComposer.giftRecipientMessage(REF, "   "))
+                .isEqualTo("You have a gift coming on InnBucks Marketplace. "
+                        + "Order MKT-4F2A9C1B77D0");
+    }
+
+    @Test
+    @DisplayName("collection code message: the GROUPED code, no seller and no goods named")
+    void collectCodeMessage_exactWording() {
+        assertThat(OrderNotificationComposer.collectCodeMessage(REF, "K7Q2-9XMF-3TRW"))
+                .isEqualTo("Your InnBucks Marketplace collection code for order "
+                        + "MKT-4F2A9C1B77D0 is K7Q2-9XMF-3TRW. Show it when you collect.");
+    }
+
+    @Test
     @DisplayName("money renders major units with two decimals, Locale-proof")
     void money_majorUnits() {
         assertThat(OrderNotificationComposer.money(5, "USD")).isEqualTo("USD 0.05");
@@ -103,7 +127,14 @@ class OrderNotificationComposerTest {
                 OrderNotificationComposer.merchantOrderMessage(REF,
                         List.of(item("Solar Lantern", 2, 5198), item("Garden Hose", 1, 2599)), "USD"),
                 OrderNotificationComposer.restockSubject(),
-                OrderNotificationComposer.restockMessage(listing));
+                OrderNotificationComposer.restockMessage(listing),
+                OrderNotificationComposer.giftSubject(),
+                // The buyer's own note is user text, sanitized by the SMS
+                // client on the way out; what is pinned here is the template
+                // around it.
+                OrderNotificationComposer.giftRecipientMessage(REF, "Happy birthday Gogo"),
+                OrderNotificationComposer.collectCodeSubject(),
+                OrderNotificationComposer.collectCodeMessage(REF, "K7Q2-9XMF-3TRW"));
         for (String template : templates) {
             assertThat(SmsTextSanitizer.toGsmSafe(template))
                     .as("template must be GSM-safe as composed: %s", template)

@@ -10,6 +10,7 @@ import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.cart.CartService;
 import com.innbucks.marketplaceservice.catalog.ListingRestocked;
+import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
 import com.innbucks.marketplaceservice.checkout.BasketLine;
 import com.innbucks.marketplaceservice.checkout.CheckoutPricer;
 import com.innbucks.marketplaceservice.checkout.CheckoutService;
@@ -267,6 +268,7 @@ public class OrderService {
                 .updatedAt(now)
                 .build();
         applyDestination(order, destination);
+        applyRecipient(order, request.recipient());
         orderRepository.save(order);
 
         List<MarketOrderItem> items = priced.lines().stream()
@@ -327,6 +329,45 @@ public class OrderService {
      * ordering, and a parcel already packed must not change destination — nor
      * lose one — because of it.
      */
+    /**
+     * Copies the gift recipient onto the order, if one was named.
+     *
+     * <p>Nothing is defaulted: an order with no {@code recipient} block is
+     * bought for the buyer, and filling these columns with the buyer's own
+     * details would assert a gift nobody sent — every downstream surface reads
+     * "is there a recipient" as "is this a gift".
+     *
+     * <p>The number goes through the SAME {@link Msisdns} as the payer's and
+     * the courier's, because a number this service will actually message must
+     * mean the same thing on every surface that stores one. The name is
+     * sanitized and then re-checked for emptiness: Bean Validation rejects a
+     * blank name, but a name that is nothing BUT markup survives that and
+     * arrives here empty.
+     */
+    private void applyRecipient(MarketOrder order, CreateOrderRequest.Recipient recipient) {
+        if (recipient == null) {
+            return;
+        }
+        String name = blankToNull(TextSanitizer.sanitize(recipient.name()));
+        if (name == null) {
+            throw ApiException.badRequest("recipient_name_required",
+                    "recipient.name is required when an order names a recipient");
+        }
+        order.setRecipientName(name);
+        if (recipient.msisdn() != null && !recipient.msisdn().isBlank()) {
+            order.setRecipientMsisdn(msisdns.normalize(recipient.msisdn(), "recipient.msisdn"));
+        }
+        order.setGiftMessage(blankToNull(TextSanitizer.sanitize(recipient.message())));
+    }
+
+    private static String blankToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
     private static void applyDestination(MarketOrder order, DeliveryAddress address) {
         if (address == null) {
             return; // COLLECTION — no destination by construction

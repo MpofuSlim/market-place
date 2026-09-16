@@ -40,6 +40,10 @@ marketplace:
     # The ITs drive SettlementReleaseSweeper directly; a background firing
     # mid-test would race the assertions.
     settlement-release-cron: "-"
+  fulfilment:
+    # Lower than production's 10 so the lockout case is three calls rather than
+    # ten — the mechanism under test is the budget, not its size.
+    collect-code-max-attempts: 3
   audit:
     hmac-secret: dev-only-test-audit-hmac-secret-5e7a9b1c3d2f4a6b
 

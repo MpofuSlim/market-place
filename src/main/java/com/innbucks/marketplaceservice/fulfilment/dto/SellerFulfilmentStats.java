@@ -37,10 +37,11 @@ public record SellerFulfilmentStats(
                 example = "20", nullable = true)
         Integer medianDispatchHours,
 
-        @Schema(description = "Share of this seller's completed parcels that the BUYER confirmed "
-                + "receiving, as an integer percent. A buyer's own confirmation is stronger "
-                + "evidence than a seller marking their own parcel delivered — this is the "
-                + "strength-of-evidence figure, not a score. Null below the minimum sample.",
-                example = "96", nullable = true)
+        @Schema(description = "Share of this seller's completed parcels whose handover somebody "
+                + "OTHER than the seller attested to, as an integer percent — the buyer "
+                + "confirming receipt in the app, or a collection code redeemed at the counter. "
+                + "Either is stronger evidence than a seller marking their own parcel delivered; "
+                + "this is the strength-of-evidence figure, not a score. Null below the minimum "
+                + "sample.", example = "96", nullable = true)
         Integer buyerConfirmedPercent) {
 }

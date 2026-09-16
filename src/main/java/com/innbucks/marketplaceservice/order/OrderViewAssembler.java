@@ -98,7 +98,18 @@ public class OrderViewAssembler {
                                 order.getTotalCents(), order.getCurrency(), order.getExpiresAt())
                         : null,
                 FulfilmentService.rollUp(parcels),
-                toParcels(parcels, items, sellerNames, disputes));
+                toParcels(parcels, items, sellerNames, disputes),
+                toRecipient(order));
+    }
+
+    /** Present only when the order was bought for someone else — the block's
+     *  absence is how every surface knows this is not a gift. */
+    private static OrderResponse.Recipient toRecipient(MarketOrder order) {
+        if (order.getRecipientName() == null) {
+            return null;
+        }
+        return new OrderResponse.Recipient(order.getRecipientName(),
+                order.getRecipientMsisdn(), order.getGiftMessage());
     }
 
     /** Each parcel carries only ITS seller's lines, so the buyer can see which
@@ -122,7 +133,9 @@ public class OrderViewAssembler {
                             .filter(item -> parcel.getMerchantId().equals(item.getMerchantId()))
                             .map(OrderViewAssembler::toLine)
                             .toList(),
-                    disputes.get(parcel.getId())));
+                    disputes.get(parcel.getId()),
+                    parcel.getCollectCodeIssuedAt(),
+                    parcel.getCollectCodeRedeemedAt()));
         }
         return out;
     }

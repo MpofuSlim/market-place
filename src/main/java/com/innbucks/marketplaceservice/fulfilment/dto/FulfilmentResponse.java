@@ -59,5 +59,15 @@ public record FulfilmentResponse(
                 + "says whether it is still with the operators (OPEN) or how it ended "
                 + "(RELEASED / REFUNDED). Absent when the parcel was never disputed.",
                 nullable = true)
-        DisputeResponse dispute) {
+        DisputeResponse dispute,
+
+        @Schema(description = "When a collection code was last minted for this parcel. Present "
+                + "means a live code is out there; the code itself is never returned here — mint "
+                + "a fresh one to see it again.", example = "2026-09-16T14:05:00Z", nullable = true)
+        Instant collectCodeIssuedAt,
+
+        @Schema(description = "When a seller redeemed the collection code — the moment the goods "
+                + "changed hands, and the strongest evidence the platform holds that they did.",
+                example = "2026-09-16T15:40:00Z", nullable = true)
+        Instant collectCodeRedeemedAt) {
 }

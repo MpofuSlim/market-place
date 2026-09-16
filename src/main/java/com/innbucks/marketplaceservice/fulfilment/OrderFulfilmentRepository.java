@@ -40,14 +40,22 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
 
     /**
      * One seller's lifetime parcel counts in ONE scan: how many they have
-     * delivered, how many of those the BUYER confirmed, and what is still
-     * open on their queue. Feeds the trust stats — every figure the platform
-     * shows about a seller is COMPUTED from these rows, never asserted.
+     * delivered, how many of those were closed by SOMEONE OTHER THAN THEM, and
+     * what is still open on their queue. Feeds the trust stats — every figure
+     * the platform shows about a seller is COMPUTED from these rows, never
+     * asserted.
+     *
+     * <p>{@code buyerConfirmed} counts BUYER and RECIPIENT alike (V11). The
+     * figure has always measured strength of evidence — a close the seller did
+     * not perform themselves — and a redeemed collection code is exactly that.
+     * Counting only BUYER would have made the stat fall for every seller who
+     * verified a handover properly, which is the behaviour the code exists to
+     * encourage. The response field keeps its published name.
      */
     @Query(value = """
             SELECT COUNT(*) FILTER (WHERE status = 'DELIVERED')                            AS delivered,
                    COUNT(*) FILTER (WHERE status = 'DELIVERED'
-                                      AND delivered_by = 'BUYER')                          AS buyerConfirmed,
+                                      AND delivered_by IN ('BUYER', 'RECIPIENT'))          AS buyerConfirmed,
                    COUNT(*) FILTER (WHERE status = 'PREPARING')                            AS awaitingDispatch,
                    COUNT(*) FILTER (WHERE status = 'DISPATCHED')                           AS inTransit
               FROM order_fulfilment
@@ -113,4 +121,28 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
                      @Param("orderId") UUID orderId,
                      @Param("merchantId") UUID merchantId,
                      @Param("now") Instant now);
+
+    /**
+     * Counts one wrong collection code against a parcel, atomically.
+     *
+     * <p>A bulk UPDATE rather than a read-modify-write through the entity (the
+     * stock and rating-aggregate discipline): two sellers hammering candidates
+     * at the same parcel must advance the budget by two, and a counter that
+     * loses increments to a lost update is a budget an attacker never exhausts.
+     * The caller runs it in its OWN transaction — see
+     * {@link com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts}.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE order_fulfilment
+               SET collect_code_attempts = collect_code_attempts + 1,
+                   updated_at            = :now
+             WHERE id = :id
+            """, nativeQuery = true)
+    int bumpCollectCodeAttempts(@Param("id") UUID id, @Param("now") Instant now);
+
+    /** The budget spent so far, read back inside the same bumping transaction. */
+    @Query(value = "SELECT collect_code_attempts FROM order_fulfilment WHERE id = :id",
+            nativeQuery = true)
+    Integer collectCodeAttempts(@Param("id") UUID id);
 }

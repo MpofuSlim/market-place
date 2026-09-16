@@ -159,7 +159,7 @@ class OrderServiceTest {
      *  what an order meant before delivery existed here — so these cases keep
      *  asserting the pre-V9 behaviour unchanged. */
     private static CreateOrderRequest req(String msisdn, CreateOrderRequest.Item... items) {
-        return new CreateOrderRequest(msisdn, null, List.of(items), null, null);
+        return new CreateOrderRequest(msisdn, null, List.of(items), null, null, null);
     }
 
     private static Listing listing(UUID id, long priceCents, String title) {
@@ -320,7 +320,7 @@ class OrderServiceTest {
     @Test
     void emptyItemListIsRejected() {
         ApiException ex = createFails(
-                new CreateOrderRequest("0771234567", null, List.of(), null, null));
+                new CreateOrderRequest("0771234567", null, List.of(), null, null, null));
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("invalid_items", ex.code());
@@ -683,7 +683,7 @@ class OrderServiceTest {
                 Instant.now().plusSeconds(1800), Instant.now(), null,
                 List.of(new OrderResponse.Line(new UUID(0, 1), "Solar Lantern 20W",
                         1550, 2, 3100)),
-                null, null, List.of());
+                null, null, List.of(), null);
         when(idempotencyService.claim(anyString(), anyString())).thenReturn(
                 new ClaimResult.Replay(201, objectMapper.writeValueAsString(stored)));
 
@@ -1032,6 +1032,86 @@ class OrderServiceTest {
             return captor.getValue();
         }
 
+        private CreateOrderRequest giftReq(CreateOrderRequest.Recipient recipient) {
+            return new CreateOrderRequest("0771234567", null, List.of(item(listingId, 1)),
+                    null, null, recipient);
+        }
+
+        @Test
+        void aGiftOrderStoresTheRecipientAndNormalisesTheirNumber() {
+            oneSellableListing();
+
+            OrderResponse response = service.createOrder(BUYER,
+                    giftReq(new CreateOrderRequest.Recipient("Gogo Chipo Moyo", "0772345678",
+                            "Happy birthday Gogo")), RAW_KEY);
+
+            MarketOrder row = createdRow();
+            assertEquals("Gogo Chipo Moyo", row.getRecipientName());
+            // Through the SAME Msisdns as the payer's: a number this service
+            // will message must mean the same thing on every surface.
+            assertEquals("+263772345678", row.getRecipientMsisdn());
+            assertEquals("Happy birthday Gogo", row.getGiftMessage());
+            assertEquals("Gogo Chipo Moyo", response.recipient().name());
+            assertEquals("+263772345678", response.recipient().msisdn());
+        }
+
+        @Test
+        void anOrderWithNoRecipientIsNotAGift_andNothingIsDefaultedFromTheBuyer() {
+            oneSellableListing();
+
+            OrderResponse response = service.createOrder(BUYER,
+                    req("0771234567", item(listingId, 1)), RAW_KEY);
+
+            MarketOrder row = createdRow();
+            // Filling these with the buyer's own details would assert a gift
+            // nobody sent — every downstream surface reads "has a recipient"
+            // as "is a gift".
+            assertNull(row.getRecipientName());
+            assertNull(row.getRecipientMsisdn());
+            assertNull(response.recipient());
+        }
+
+        @Test
+        void aRecipientNumberThatCannotBeDialledIsRefusedByFieldName() {
+            oneSellableListing();
+
+            ApiException ex = assertThrows(ApiException.class, () -> service.createOrder(BUYER,
+                    giftReq(new CreateOrderRequest.Recipient("Gogo Chipo Moyo", "not-a-number",
+                            null)), RAW_KEY));
+
+            assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+            assertEquals("invalid_msisdn", ex.code());
+            assertTrue(ex.getMessage().contains("recipient.msisdn"),
+                    "the refusal must name the field so the app highlights the right input");
+        }
+
+        @Test
+        void aRecipientNamedWithoutANumberIsStillAGift() {
+            oneSellableListing();
+
+            OrderResponse response = service.createOrder(BUYER,
+                    giftReq(new CreateOrderRequest.Recipient("Gogo Chipo Moyo", null, null)),
+                    RAW_KEY);
+
+            // Nobody is messaged, the buyer passes the collection code on
+            // themselves — but the parcel still carries whose it is.
+            assertEquals("Gogo Chipo Moyo", response.recipient().name());
+            assertNull(response.recipient().msisdn());
+        }
+
+        @Test
+        void aNameThatIsNothingButMarkupIsRefused() {
+            oneSellableListing();
+
+            ApiException ex = assertThrows(ApiException.class, () -> service.createOrder(BUYER,
+                    giftReq(new CreateOrderRequest.Recipient("<script>x()</script>", null, null)),
+                    RAW_KEY));
+
+            // Bean Validation rejects a BLANK name; a name that survives it and
+            // then sanitizes down to nothing has to be caught here.
+            assertEquals("recipient_name_required", ex.code());
+        }
+
         @Test
         void anUnstatedMethodIsCollection_soAnOldClientBehavesExactlyAsBefore() {
             oneSellableListing();
@@ -1056,7 +1136,7 @@ class OrderServiceTest {
 
             OrderResponse response = service.createOrder(BUYER,
                     new CreateOrderRequest("0771234567", null, List.of(item(listingId, 2)),
-                            DeliveryMethod.DELIVERY, null), RAW_KEY);
+                            DeliveryMethod.DELIVERY, null, null), RAW_KEY);
 
             assertEquals(3100, response.subtotalCents());
             assertEquals(200, response.deliveryFeeCents());
@@ -1073,7 +1153,8 @@ class OrderServiceTest {
             when(addressService.requireForCheckout(any(), any())).thenReturn(chosen);
 
             service.createOrder(BUYER, new CreateOrderRequest("0771234567", null,
-                    List.of(item(listingId, 1)), DeliveryMethod.DELIVERY, chosen.getId()), RAW_KEY);
+                    List.of(item(listingId, 1)), DeliveryMethod.DELIVERY, chosen.getId(), null),
+                    RAW_KEY);
 
             MarketOrder row = createdRow();
             assertEquals("Tariro Moyo", row.getDeliveryRecipientName());
@@ -1096,7 +1177,7 @@ class OrderServiceTest {
 
             ApiException ex = assertThrows(ApiException.class, () -> service.createOrder(BUYER,
                     new CreateOrderRequest("0771234567", null, List.of(item(listingId, 1)),
-                            DeliveryMethod.DELIVERY, null), RAW_KEY));
+                            DeliveryMethod.DELIVERY, null, null), RAW_KEY));
 
             assertEquals("delivery_address_required", ex.code());
             verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
@@ -1125,7 +1206,7 @@ class OrderServiceTest {
                     .thenReturn(List.of(new BasketLine(listingId, 2)));
 
             OrderResponse response = service.createOrder(BUYER,
-                    new CreateOrderRequest("0771234567", true, null, null, null), RAW_KEY);
+                    new CreateOrderRequest("0771234567", true, null, null, null, null), RAW_KEY);
 
             assertEquals(3100, response.totalCents());
             // Only the ordered listing leaves the cart; anything else stays.
@@ -1144,7 +1225,7 @@ class OrderServiceTest {
         @Test
         void sendingBothACartFlagAndItemsIsRefused() {
             ApiException ex = createFails(new CreateOrderRequest("0771234567", true,
-                    List.of(item(listingId, 1)), null, null));
+                    List.of(item(listingId, 1)), null, null, null));
 
             assertEquals("ambiguous_basket", ex.code());
         }
@@ -1157,7 +1238,7 @@ class OrderServiceTest {
             when(listingRepository.findAllById(any())).thenReturn(List.of());
 
             assertThrows(ApiException.class, () -> service.createOrder(BUYER,
-                    new CreateOrderRequest("0771234567", true, null, null, null), RAW_KEY));
+                    new CreateOrderRequest("0771234567", true, null, null, null, null), RAW_KEY));
 
             verify(cartService, never()).removeOrdered(any(), any());
         }
