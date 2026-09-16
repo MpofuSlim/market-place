@@ -57,6 +57,13 @@ public enum AuditEventType {
     /** A PENDING_PAYMENT order lapsed past its payment TTL and the expiry
      *  sweep released its stock. */
     ORDER_EXPIRED,
+    /** A seller dispatched their parcel of a paid order (V9). Metadata carries
+     *  the order, the merchant and the state it moved from. */
+    FULFILMENT_DISPATCHED,
+    /** A parcel was closed as delivered (V9) — metadata's {@code deliveredBy}
+     *  records whether the BUYER confirmed receipt or the seller marked it, a
+     *  distinction any delivery dispute turns on. */
+    FULFILMENT_DELIVERED,
     /** The 100x guard tripped: payment confirmation carried an amount that did
      *  not equal the order total. The order parked unconfirmed — any occurrence
      *  is a money incident. */

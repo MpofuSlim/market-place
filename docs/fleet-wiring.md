@@ -90,3 +90,44 @@ shape it uses for bookings:
 All three require `X-Internal-Token` (constant-time compared) and are
 edge-denied by route 1 above. Confirm cross-checks the paid amount against
 the order total and refuses on mismatch (the 100x guard).
+
+## 6. The buyer checkout journey (V9) — NO fleet changes required
+
+The cart, address book, checkout quote and fulfilment surfaces added in V9 all
+live under paths the existing `marketplace-service-route` already matches:
+
+| Surface            | Path                              | Audience                    |
+|--------------------|-----------------------------------|-----------------------------|
+| Cart               | `/marketplace/cart/**`            | CUSTOMER                    |
+| Delivery addresses | `/marketplace/addresses/**`       | CUSTOMER                    |
+| Checkout           | `/marketplace/checkout/**`        | CUSTOMER                    |
+| Fulfilment queue   | `/marketplace/fulfilments/**`     | MERCHANT_ADMIN / SUPER_ADMIN |
+
+None is an internal S2S surface, so **no new deny route is needed** and the
+"three files must agree" rule does not apply to them — they are ordinary
+authenticated endpoints behind the fleet JWT, gated per-endpoint by
+`@PreAuthorize`. Pinned by `SecuritySurfaceIT`.
+
+**Payments needs no change either.** Money is still collected by
+payment-service through the same three internal endpoints in section 5; the
+order's `total_cents` remains the single number it reads, now simply the sum of
+the lines plus any delivery fee. What IS new is that marketplace orders now
+tell the app how to reach that service — `GET /marketplace/checkout/options`
+and each pending order's `payment` block name `POST /payments` with
+`{orderType: "MARKETPLACE", orderRef, paymentRail}`.
+
+### The one thing a cell operator must set
+
+`MARKETPLACE_PAYMENT_METHODS` (default `INNBUCKS_CODE`) is what the app offers
+at checkout, and **it must mirror the rails payment-service is actually
+provisioned with on that cell**. Marketplace-service holds no payment
+credentials and cannot ask; advertising `ZIMSWITCH_CARD` or `ECOCASH` on a cell
+whose credentials are blank sends the buyer to a 503 from another service —
+exactly the half-provisioned failure the ticketing CLAUDE.md records for the ZW
+card rail. The default is deliberately the one rail every cell has.
+
+Optional, same file: `MARKETPLACE_DELIVERY_METHODS` (default
+`DELIVERY,COLLECTION`) and `MARKETPLACE_DELIVERY_FEE_CENTS` (default `0` — this
+service books no couriers and has no rate card, so a non-zero fee is a
+commercial decision a cell makes deliberately).
+

@@ -4,7 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.innbucks.marketplaceservice.api.ApiException;
+import com.innbucks.marketplaceservice.api.Msisdns;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
+import com.innbucks.marketplaceservice.cart.CartService;
+import com.innbucks.marketplaceservice.checkout.BasketViewAssembler;
+import com.innbucks.marketplaceservice.checkout.CheckoutPricer;
+import com.innbucks.marketplaceservice.checkout.CheckoutProperties;
+import com.innbucks.marketplaceservice.checkout.BasketLine;
+import com.innbucks.marketplaceservice.checkout.CheckoutService;
+import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
+import com.innbucks.marketplaceservice.delivery.DeliveryAddressService;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
+import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
@@ -90,6 +102,10 @@ class OrderServiceTest {
     private AuditService auditService;
     private SimpleMeterRegistry registry;
     private ObjectMapper objectMapper;
+    private CartService cartService;
+    private FulfilmentService fulfilmentService;
+    private DeliveryAddressService addressService;
+    private CheckoutProperties checkoutProperties;
     private OrderService service;
 
     @BeforeEach
@@ -102,12 +118,27 @@ class OrderServiceTest {
         auditService = mock(AuditService.class);
         registry = new SimpleMeterRegistry();
         objectMapper = JsonMapper.builder().addModule(new JavaTimeModule()).build();
+        // Real collaborators wherever they are pure, so these tests still
+        // exercise the ACTUAL pricing, availability and delivery rules rather
+        // than a stub's idea of them. Only the cart, the fulfilment queue and
+        // the address book — which have their own tests — are mocked.
+        cartService = mock(CartService.class);
+        fulfilmentService = mock(FulfilmentService.class);
+        addressService = mock(DeliveryAddressService.class);
+        checkoutProperties = new CheckoutProperties();
+        CheckoutPricer pricer = new CheckoutPricer(listingRepository, "USD");
+        CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
+                mock(BasketViewAssembler.class), cartService, addressService, "USD");
+        OrderViewAssembler views = new OrderViewAssembler(itemRepository, fulfilmentService,
+                mock(SellerService.class), checkoutService);
         service = new OrderService(orderRepository, itemRepository, listingRepository,
                 transitions, idempotencyService, auditService,
                 new MarketplaceMetrics(registry), objectMapper,
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(PlatformTransactionManager.class),
-                MAX_ITEMS, MAX_QTY_PER_ITEM, TTL_MINUTES, "ZW", "USD");
+                checkoutService, pricer, cartService, fulfilmentService, views,
+                new Msisdns("ZW"),
+                MAX_ITEMS, MAX_QTY_PER_ITEM, TTL_MINUTES, "USD");
         when(orderRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(idempotencyService.claim(anyString(), anyString()))
                 .thenReturn(new ClaimResult.New());
@@ -121,8 +152,11 @@ class OrderServiceTest {
         return new CreateOrderRequest.Item(listingId, quantity);
     }
 
+    /** No deliveryMethod: the unstated default is COLLECTION, which is exactly
+     *  what an order meant before delivery existed here — so these cases keep
+     *  asserting the pre-V9 behaviour unchanged. */
     private static CreateOrderRequest req(String msisdn, CreateOrderRequest.Item... items) {
-        return new CreateOrderRequest(msisdn, List.of(items));
+        return new CreateOrderRequest(msisdn, null, List.of(items), null, null);
     }
 
     private static Listing listing(UUID id, long priceCents, String title) {
@@ -282,7 +316,8 @@ class OrderServiceTest {
 
     @Test
     void emptyItemListIsRejected() {
-        ApiException ex = createFails(new CreateOrderRequest("0771234567", List.of()));
+        ApiException ex = createFails(
+                new CreateOrderRequest("0771234567", null, List.of(), null, null));
 
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("invalid_items", ex.code());
@@ -640,10 +675,12 @@ class OrderServiceTest {
     @Test
     void replayReturnsTheStoredResponseWithoutExecutingAnything() throws Exception {
         OrderResponse stored = new OrderResponse(UUID.randomUUID(), "MKT-AAAABBBBCCCC",
-                OrderStatus.PENDING_PAYMENT, 3550, "USD",
-                Instant.now().plusSeconds(1800), Instant.now(),
+                OrderStatus.PENDING_PAYMENT, 3550, 0, 3550, "USD",
+                DeliveryMethod.COLLECTION, null,
+                Instant.now().plusSeconds(1800), Instant.now(), null,
                 List.of(new OrderResponse.Line(new UUID(0, 1), "Solar Lantern 20W",
-                        1550, 2, 3100)));
+                        1550, 2, 3100)),
+                null, null, List.of());
         when(idempotencyService.claim(anyString(), anyString())).thenReturn(
                 new ClaimResult.Replay(201, objectMapper.writeValueAsString(stored)));
 
@@ -959,5 +996,220 @@ class OrderServiceTest {
                 any(org.springframework.data.domain.Pageable.class));
         verify(orderRepository, never())
                 .findAll(any(org.springframework.data.domain.Pageable.class));
+    }
+
+    // ==================================================================
+    // Checkout: cart sourcing, delivery and the money split (V9)
+    // ==================================================================
+
+    @Nested
+    class Checkout {
+
+        private final UUID listingId = new UUID(0, 1);
+
+        private void oneSellableListing() {
+            when(listingRepository.findAllById(any()))
+                    .thenReturn(List.of(listing(listingId, 1550, "Solar Lantern 20W")));
+            when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(1);
+        }
+
+        private DeliveryAddress savedAddress() {
+            Instant now = Instant.now();
+            return DeliveryAddress.builder()
+                    .id(UUID.randomUUID()).buyerUuid(BUYER_UUID).label("Home")
+                    .recipientName("Tariro Moyo").recipientMsisdn("+263771234567")
+                    .line1("14 Samora Machel Ave").line2("Flat 3B").city("Harare")
+                    .area("Avondale").landmark("Opposite the clinic")
+                    .defaultAddress(true).createdAt(now).updatedAt(now).version(0L).build();
+        }
+
+        private MarketOrder createdRow() {
+            ArgumentCaptor<MarketOrder> captor = ArgumentCaptor.forClass(MarketOrder.class);
+            verify(orderRepository).save(captor.capture());
+            return captor.getValue();
+        }
+
+        @Test
+        void anUnstatedMethodIsCollection_soAnOldClientBehavesExactlyAsBefore() {
+            oneSellableListing();
+
+            OrderResponse response = service.createOrder(BUYER,
+                    req("0771234567", item(listingId, 2)), RAW_KEY);
+
+            assertEquals(DeliveryMethod.COLLECTION, response.deliveryMethod());
+            assertEquals(3100, response.subtotalCents());
+            assertEquals(0, response.deliveryFeeCents());
+            assertEquals(3100, response.totalCents());
+            assertNull(response.deliveryAddress());
+            // No address is resolved at all for a collection order.
+            verifyNoInteractions(addressService);
+        }
+
+        @Test
+        void aDeliveryOrderAddsTheCellsFeeToTheTotal() {
+            checkoutProperties.getDelivery().setFeeCents(200);
+            oneSellableListing();
+            when(addressService.requireForCheckout(any(), any())).thenReturn(savedAddress());
+
+            OrderResponse response = service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", null, List.of(item(listingId, 2)),
+                            DeliveryMethod.DELIVERY, null), RAW_KEY);
+
+            assertEquals(3100, response.subtotalCents());
+            assertEquals(200, response.deliveryFeeCents());
+            // total = subtotal + fee, which is what the payments service collects
+            assertEquals(3300, response.totalCents());
+        }
+
+        @Test
+        void theDestinationIsSNAPSHOTontoTheOrder_notReferencedById() {
+            // The buyer may rename, edit or delete the book entry the moment
+            // after ordering; a parcel already packed must not follow it.
+            oneSellableListing();
+            DeliveryAddress chosen = savedAddress();
+            when(addressService.requireForCheckout(any(), any())).thenReturn(chosen);
+
+            service.createOrder(BUYER, new CreateOrderRequest("0771234567", null,
+                    List.of(item(listingId, 1)), DeliveryMethod.DELIVERY, chosen.getId()), RAW_KEY);
+
+            MarketOrder row = createdRow();
+            assertEquals("Tariro Moyo", row.getDeliveryRecipientName());
+            assertEquals("+263771234567", row.getDeliveryRecipientMsisdn());
+            assertEquals("14 Samora Machel Ave", row.getDeliveryLine1());
+            assertEquals("Flat 3B", row.getDeliveryLine2());
+            assertEquals("Harare", row.getDeliveryCity());
+            assertEquals("Avondale", row.getDeliveryArea());
+            assertEquals("Opposite the clinic", row.getDeliveryLandmark());
+            // Kept only as provenance — nothing reads back through it.
+            assertEquals(chosen.getId(), row.getDeliveryAddressId());
+        }
+
+        @Test
+        void aDeliveryOrderWithNoAddressIsRefusedBeforeAnyStockIsTouched() {
+            oneSellableListing();
+            when(addressService.requireForCheckout(any(), any()))
+                    .thenThrow(ApiException.badRequest("delivery_address_required",
+                            "Choose a delivery address, or add one first"));
+
+            ApiException ex = assertThrows(ApiException.class, () -> service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", null, List.of(item(listingId, 1)),
+                            DeliveryMethod.DELIVERY, null), RAW_KEY));
+
+            assertEquals("delivery_address_required", ex.code());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+        }
+
+        @Test
+        void orderLinesCarryTheSELLERasAtOrderTime() {
+            // The fulfilment queue and the merchant notifier both group on this
+            // snapshot; a later join back to the listing would name whoever owns
+            // it now.
+            Listing sold = listing(listingId, 1550, "Solar Lantern 20W");
+            when(listingRepository.findAllById(any())).thenReturn(List.of(sold));
+            when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(1);
+
+            service.createOrder(BUYER, req("0771234567", item(listingId, 1)), RAW_KEY);
+
+            ArgumentCaptor<List<MarketOrderItem>> captor = ArgumentCaptor.forClass(List.class);
+            verify(itemRepository).saveAll(captor.capture());
+            assertEquals(sold.getMerchantId(), captor.getValue().getFirst().getMerchantId());
+        }
+
+        @Test
+        void fromCartSourcesTheCartAndClearsOnlyWhatWasBought() {
+            oneSellableListing();
+            when(cartService.basketOf(BUYER))
+                    .thenReturn(List.of(new BasketLine(listingId, 2)));
+
+            OrderResponse response = service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", true, null, null, null), RAW_KEY);
+
+            assertEquals(3100, response.totalCents());
+            // Only the ordered listing leaves the cart; anything else stays.
+            verify(cartService).removeOrdered(BUYER_UUID, List.of(listingId));
+        }
+
+        @Test
+        void anExplicitItemsOrderNeverTouchesTheCart() {
+            oneSellableListing();
+
+            service.createOrder(BUYER, req("0771234567", item(listingId, 1)), RAW_KEY);
+
+            verify(cartService, never()).removeOrdered(any(), any());
+        }
+
+        @Test
+        void sendingBothACartFlagAndItemsIsRefused() {
+            ApiException ex = createFails(new CreateOrderRequest("0771234567", true,
+                    List.of(item(listingId, 1)), null, null));
+
+            assertEquals("ambiguous_basket", ex.code());
+        }
+
+        @Test
+        void aFailedOrderNeverClearsTheCart() {
+            // The cart is cleared only AFTER the order commits — a shopper whose
+            // order failed must not also lose what they were buying.
+            when(cartService.basketOf(BUYER)).thenReturn(List.of(new BasketLine(listingId, 1)));
+            when(listingRepository.findAllById(any())).thenReturn(List.of());
+
+            assertThrows(ApiException.class, () -> service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", true, null, null, null), RAW_KEY));
+
+            verify(cartService, never()).removeOrdered(any(), any());
+        }
+
+        @Test
+        void aPendingOrderCarriesTheCallItMustMakeToBePaidFor() {
+            oneSellableListing();
+
+            OrderResponse response = service.createOrder(BUYER,
+                    req("0771234567", item(listingId, 2)), RAW_KEY);
+
+            assertNotNull(response.payment());
+            // Cross-service knowledge the app no longer has to hardcode.
+            assertEquals("POST /payments", response.payment().endpoint());
+            assertEquals("MARKETPLACE", response.payment().orderType());
+            assertEquals(response.orderRef(), response.payment().orderRef());
+            assertEquals(response.totalCents(), response.payment().amountCents());
+            assertEquals(response.expiresAt(), response.payment().payBefore());
+            assertFalse(response.payment().methods().isEmpty());
+        }
+
+        @Test
+        void aNewOrderHasNoParcelsYet() {
+            oneSellableListing();
+
+            OrderResponse response = service.createOrder(BUYER,
+                    req("0771234567", item(listingId, 1)), RAW_KEY);
+
+            // Nothing to pack until the money has moved.
+            assertTrue(response.fulfilments().isEmpty());
+            assertNull(response.fulfilmentStatus());
+        }
+
+        @Test
+        void confirmingPaymentOpensTheSellersParcelsInTheSameTransaction() {
+            MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+            when(orderRepository.findByOrderRef(ORDER_REF)).thenReturn(Optional.of(order));
+
+            service.confirmPayment(ORDER_REF, new ConfirmPaymentRequest("INB-PAY-1",
+                    order.getTotalCents()));
+
+            // An order that committed as paid with nothing on any seller's queue
+            // would be money taken for goods nobody was asked to send.
+            verify(fulfilmentService).openForOrder(order);
+        }
+
+        @Test
+        void aRefusedConfirmOpensNothing() {
+            MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+            when(orderRepository.findByOrderRef(ORDER_REF)).thenReturn(Optional.of(order));
+
+            assertThrows(ApiException.class, () -> service.confirmPayment(ORDER_REF,
+                    new ConfirmPaymentRequest("INB-PAY-1", order.getTotalCents() * 100)));
+
+            verify(fulfilmentService, never()).openForOrder(any());
+        }
     }
 }

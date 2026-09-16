@@ -236,4 +236,90 @@ class SecuritySurfaceIT extends PostgresTestContainer {
                         .header("X-Metrics-Token", "definitely-not-the-scrape-token"))
                 .andExpect(status().isUnauthorized());
     }
+
+    // ------------------------------------------------------------------
+    // Checkout journey surfaces (V9) — all under /marketplace/**, so the
+    // fleet gateway needs no new route; each one is authenticated and
+    // role-gated here.
+    // ------------------------------------------------------------------
+
+    @Test
+    void anonymousCartIsUnauthorized() throws Exception {
+        // The cart is a specific shopper's, resolved from the token — there is
+        // no anonymous cart to serve.
+        mockMvc.perform(get("/marketplace/cart"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+    }
+
+    @Test
+    void merchantCannotUseTheBuyerCart() throws Exception {
+        mockMvc.perform(get("/marketplace/cart")
+                        .header("Authorization", "Bearer " + TestJwts.merchantAdmin(
+                                UUID.randomUUID(), UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void anonymousAddressBookIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/marketplace/addresses"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void merchantCannotReadTheBuyerAddressBook() throws Exception {
+        // Delivery addresses are buyer PII; a seller reaches a destination only
+        // through their own fulfilment parcel.
+        mockMvc.perform(get("/marketplace/addresses")
+                        .header("Authorization", "Bearer " + TestJwts.merchantAdmin(
+                                UUID.randomUUID(), UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void anonymousCheckoutOptionsIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/marketplace/checkout/options"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void customerReadsThisCellsCheckoutOptions() throws Exception {
+        mockMvc.perform(get("/marketplace/checkout/options")
+                        .header("Authorization", "Bearer " + TestJwts.customer(
+                                UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isOk())
+                // The fail-safe default: only the rail every cell has.
+                .andExpect(jsonPath("$.data.paymentMethods[0].rail").value("INNBUCKS_CODE"))
+                .andExpect(jsonPath("$.data.paymentEndpoint").value("POST /payments"))
+                .andExpect(jsonPath("$.data.paymentOrderType").value("MARKETPLACE"));
+    }
+
+    @Test
+    void customerCannotReadASellersFulfilmentQueue() throws Exception {
+        // The queue carries destinations and buyer phone numbers for every
+        // parcel that seller owes — never a buyer surface.
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + TestJwts.customer(
+                                UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void anonymousFulfilmentQueueIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/marketplace/fulfilments"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void aMerchantTokenWithNoMerchantScopeCannotReadTheQueue() throws Exception {
+        // Merchant scope comes from the JWT, never from a request body — a
+        // token without one is refused rather than defaulted to "all".
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + TestJwts.merchantAdminWithoutMerchant(
+                                UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("merchant_scope_missing"));
+    }
 }

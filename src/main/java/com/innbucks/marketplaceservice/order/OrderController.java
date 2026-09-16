@@ -45,10 +45,19 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/marketplace/orders")
 @RequiredArgsConstructor
-@Tag(name = "Orders", description = "Buyer orders: create (reserves stock, mints a payable total), "
-        + "read own, cancel while awaiting payment. Payment itself rides the platform payments "
-        + "service via the internal S2S surface. SUPER_ADMIN additionally reads all orders "
-        + "(GET /marketplace/orders, GET /{id}) but can never place or cancel one.")
+@Tag(name = "Orders", description = "Buyer orders end to end: create (reserves stock, mints a "
+        + "payable total), read own, cancel while awaiting payment, track fulfilment and confirm "
+        + "receipt. SUPER_ADMIN additionally reads all orders (GET /marketplace/orders, GET /{id}) "
+        + "but can never place or cancel one.\n\n"
+        + "**Paying is a different service.** Marketplace-service never collects money. While an "
+        + "order is PENDING_PAYMENT its `payment` block names exactly what to send to the payments "
+        + "service — `POST /payments` with `{orderType: \"MARKETPLACE\", orderRef, paymentRail}` "
+        + "— and which rails this cell can actually collect on, so the app does not carry that "
+        + "knowledge itself. That service confirms the order over the internal S2S surface; the "
+        + "order then moves to PAID on its own.\n\n"
+        + "**After payment** the order carries one fulfilment parcel per selling merchant, rolled "
+        + "up into `fulfilmentStatus` as the LEAST advanced of them — so DELIVERED always means "
+        + "everything arrived.")
 public class OrderController {
 
     private final OrderService orderService;
@@ -76,15 +85,23 @@ public class OrderController {
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = CreateOrderRequest.class),
-                            examples = @ExampleObject(name = "Two-line order", value = """
-                                    {
-                                      "buyerMsisdn": "+263771234567",
-                                      "items": [
-                                        { "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d", "quantity": 2 },
-                                        { "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d", "quantity": 1 }
-                                      ]
-                                    }
-                                    """))))
+                            examples = {
+                                    @ExampleObject(name = "Check out the cart", value = """
+                                            {
+                                              "fromCart": true,
+                                              "deliveryMethod": "DELIVERY",
+                                              "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                                            }
+                                            """),
+                                    @ExampleObject(name = "Buy Now, two lines, collected", value = """
+                                            {
+                                              "items": [
+                                                { "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d", "quantity": 2 },
+                                                { "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d", "quantity": 1 }
+                                              ],
+                                              "deliveryMethod": "COLLECTION"
+                                            }
+                                            """)})))
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order created; stock reserved",
                     content = @Content(mediaType = "application/json",
@@ -97,8 +114,20 @@ public class OrderController {
                                         "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
                                         "orderRef": "MKT-4F9A1C22B7D3",
                                         "status": "PENDING_PAYMENT",
-                                        "totalCents": 3550,
+                                        "subtotalCents": 3550,
+                                        "deliveryFeeCents": 200,
+                                        "totalCents": 3750,
                                         "currency": "USD",
+                                        "deliveryMethod": "DELIVERY",
+                                        "deliveryAddress": {
+                                          "recipientName": "Tariro Moyo",
+                                          "recipientMsisdn": "+263771234567",
+                                          "line1": "14 Samora Machel Ave",
+                                          "line2": "Flat 3B",
+                                          "city": "Harare",
+                                          "area": "Avondale",
+                                          "landmark": "Opposite the clinic, blue gate"
+                                        },
                                         "expiresAt": "2026-08-05T10:45:00Z",
                                         "createdAt": "2026-08-05T10:15:00Z",
                                         "items": [
@@ -116,7 +145,24 @@ public class OrderController {
                                             "quantity": 1,
                                             "lineTotalCents": 450
                                           }
-                                        ]
+                                        ],
+                                        "payment": {
+                                          "endpoint": "POST /payments",
+                                          "orderType": "MARKETPLACE",
+                                          "orderRef": "MKT-4F9A1C22B7D3",
+                                          "amountCents": 3750,
+                                          "currency": "USD",
+                                          "payBefore": "2026-08-05T10:45:00Z",
+                                          "methods": [
+                                            {
+                                              "rail": "INNBUCKS_CODE",
+                                              "label": "InnBucks app",
+                                              "description": "Approve the payment code in your InnBucks app.",
+                                              "completion": "APPROVE_IN_APP"
+                                            }
+                                          ]
+                                        },
+                                        "fulfilments": []
                                       }
                                     }
                                     """))),
@@ -241,8 +287,11 @@ public class OrderController {
                                             "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
                                             "orderRef": "MKT-4F9A1C22B7D3",
                                             "status": "PENDING_PAYMENT",
-                                            "totalCents": 3550,
+                                            "subtotalCents": 3550,
+                                            "deliveryFeeCents": 200,
+                                            "totalCents": 3750,
                                             "currency": "USD",
+                                            "deliveryMethod": "DELIVERY",
                                             "expiresAt": "2026-08-05T10:45:00Z",
                                             "createdAt": "2026-08-05T10:15:00Z",
                                             "items": [
@@ -308,8 +357,11 @@ public class OrderController {
                                             "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
                                             "orderRef": "MKT-4F9A1C22B7D3",
                                             "status": "PENDING_PAYMENT",
-                                            "totalCents": 3550,
+                                            "subtotalCents": 3550,
+                                            "deliveryFeeCents": 200,
+                                            "totalCents": 3750,
                                             "currency": "USD",
+                                            "deliveryMethod": "DELIVERY",
                                             "expiresAt": "2026-08-05T10:45:00Z",
                                             "createdAt": "2026-08-05T10:15:00Z",
                                             "items": [
@@ -374,18 +426,31 @@ public class OrderController {
             @ApiResponse(responseCode = "200", description = "Order returned",
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = OrderResponse.class),
-                            examples = @ExampleObject(name = "My order", value = """
+                            examples = @ExampleObject(name = "My order, paid and on its way", value = """
                                     {
                                       "code": "OK",
                                       "message": "Success",
                                       "data": {
                                         "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
                                         "orderRef": "MKT-4F9A1C22B7D3",
-                                        "status": "PENDING_PAYMENT",
-                                        "totalCents": 3550,
+                                        "status": "PAID",
+                                        "subtotalCents": 3550,
+                                        "deliveryFeeCents": 200,
+                                        "totalCents": 3750,
                                         "currency": "USD",
+                                        "deliveryMethod": "DELIVERY",
+                                        "deliveryAddress": {
+                                          "recipientName": "Tariro Moyo",
+                                          "recipientMsisdn": "+263771234567",
+                                          "line1": "14 Samora Machel Ave",
+                                          "line2": "Flat 3B",
+                                          "city": "Harare",
+                                          "area": "Avondale",
+                                          "landmark": "Opposite the clinic, blue gate"
+                                        },
                                         "expiresAt": "2026-08-05T10:45:00Z",
                                         "createdAt": "2026-08-05T10:15:00Z",
+                                        "paidAt": "2026-08-05T10:21:33Z",
                                         "items": [
                                           {
                                             "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
@@ -400,6 +465,33 @@ public class OrderController {
                                             "unitPriceCents": 450,
                                             "quantity": 1,
                                             "lineTotalCents": 450
+                                          }
+                                        ],
+                                        "fulfilmentStatus": "DISPATCHED",
+                                        "fulfilments": [
+                                          {
+                                            "id": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                            "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                            "sellerName": "Sunrise Electronics",
+                                            "status": "DISPATCHED",
+                                            "dispatchNote": "Swift Couriers, waybill 88213",
+                                            "dispatchedAt": "2026-08-06T09:20:00Z",
+                                            "items": [
+                                              {
+                                                "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                                "titleSnapshot": "Solar Lantern 20W",
+                                                "unitPriceCents": 1550,
+                                                "quantity": 2,
+                                                "lineTotalCents": 3100
+                                              },
+                                              {
+                                                "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
+                                                "titleSnapshot": "USB-C Charging Cable 2m",
+                                                "unitPriceCents": 450,
+                                                "quantity": 1,
+                                                "lineTotalCents": 450
+                                              }
+                                            ]
                                           }
                                         ]
                                       }
@@ -451,8 +543,11 @@ public class OrderController {
                                         "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
                                         "orderRef": "MKT-4F9A1C22B7D3",
                                         "status": "CANCELLED",
-                                        "totalCents": 3550,
+                                        "subtotalCents": 3550,
+                                        "deliveryFeeCents": 200,
+                                        "totalCents": 3750,
                                         "currency": "USD",
+                                        "deliveryMethod": "DELIVERY",
                                         "expiresAt": "2026-08-05T10:45:00Z",
                                         "createdAt": "2026-08-05T10:15:00Z",
                                         "items": [
@@ -503,13 +598,86 @@ public class OrderController {
                 orderService.cancelOrder(CurrentUser.get(), parseOrderId(id))));
     }
 
+    @PostMapping("/{id}/fulfilments/{fulfilmentId}/received")
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @Operation(summary = "Confirm I received a parcel",
+            description = "The last step of the journey. Closes ONE parcel — a multi-seller order "
+                    + "is confirmed one seller at a time, because that is how the goods actually "
+                    + "arrive.\n\n"
+                    + "Lives on the order rather than the fulfilment resource because that is where "
+                    + "a shopper looks: they think in orders, not parcels. Returns the whole order "
+                    + "so the app re-renders its tracking screen from one response.\n\n"
+                    + "The seller can also close a parcel themselves (`deliveredBy: MERCHANT`) — a "
+                    + "buyer who never opens the app must not leave one open forever — but a "
+                    + "buyer's own confirmation is the stronger record, and it is what this "
+                    + "endpoint writes.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Receipt confirmed; the whole order "
+                    + "comes back with the parcel closed",
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = OrderResponse.class),
+                            examples = @ExampleObject(value = """
+                                    {
+                                      "code": "OK",
+                                      "message": "Thanks - receipt confirmed",
+                                      "data": {
+                                        "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                        "orderRef": "MKT-4F9A1C22B7D3",
+                                        "status": "PAID",
+                                        "fulfilmentStatus": "DELIVERED",
+                                        "fulfilments": [
+                                          {
+                                            "id": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                            "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                            "sellerName": "Sunrise Electronics",
+                                            "status": "DELIVERED",
+                                            "deliveredAt": "2026-08-07T14:05:00Z",
+                                            "deliveredBy": "BUYER"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """))),
+            @ApiResponse(responseCode = "400", description = "Malformed order or fulfilment id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"invalid_order_id","message":"Order id must be a UUID"}
+                                    """))),
+            @ApiResponse(responseCode = "404", description = "No such order owned by the caller, or "
+                    + "no such parcel on it",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"fulfilment_not_found","message":"Fulfilment not found"}
+                                    """))),
+            @ApiResponse(responseCode = "409", description = "The parcel is already closed",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"illegal_fulfilment_state","message":"This parcel is DELIVERED and cannot move to DELIVERED"}
+                                    """)))
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> confirmReceived(
+            @Parameter(description = "Order id (UUID)",
+                    example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
+            @PathVariable("id") String id,
+            @Parameter(description = "The parcel being confirmed, from the order's `fulfilments`",
+                    example = "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31")
+            @PathVariable("fulfilmentId") String fulfilmentId) {
+        return ResponseEntity.ok(ApiResult.ok("Thanks - receipt confirmed",
+                orderService.confirmReceived(CurrentUser.get(), parseOrderId(id),
+                        parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
+    }
+
     /** GlobalExceptionHandler has no MethodArgumentTypeMismatch mapping, so a
      *  UUID-typed @PathVariable would 500 on garbage — parse here and 400. */
     private static UUID parseOrderId(String raw) {
+        return parseId(raw, "invalid_order_id", "Order id must be a UUID");
+    }
+
+    private static UUID parseId(String raw, String code, String message) {
         try {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException ex) {
-            throw ApiException.badRequest("invalid_order_id", "Order id must be a UUID");
+            throw ApiException.badRequest(code, message);
         }
     }
 

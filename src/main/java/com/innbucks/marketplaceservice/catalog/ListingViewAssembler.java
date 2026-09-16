@@ -53,7 +53,28 @@ public class ListingViewAssembler {
     /** Page assembly: exactly THREE extra queries for the whole page —
      *  galleries, category names, and seller badges — regardless of page size. */
     public Page<ListingResponse> toResponsePage(Page<Listing> page) {
-        List<UUID> listingIds = page.getContent().stream().map(Listing::getId).toList();
+        Map<UUID, ListingResponse> assembled = assemble(page.getContent());
+        return page.map(listing -> assembled.get(listing.getId()));
+    }
+
+    /**
+     * Batch assembly for a caller that already HOLDS the listing rows — the
+     * cart and the checkout quote, which resolve their lines through
+     * {@code CheckoutPricer} and must not then pay a per-row
+     * {@link #toResponse} (three queries each) to render them.
+     *
+     * <p>Keyed by listing id rather than returned as a list because callers
+     * hold their own ordering (request order, cart order) and must not have it
+     * silently replaced by ours.
+     */
+    public Map<UUID, ListingResponse> toResponsesById(List<Listing> listings) {
+        return assemble(listings);
+    }
+
+    /** The one batch body: three extra queries for the whole collection —
+     *  galleries, category names, seller badges — regardless of its size. */
+    private Map<UUID, ListingResponse> assemble(List<Listing> content) {
+        List<UUID> listingIds = content.stream().map(Listing::getId).toList();
         // groupingBy(LinkedHashMap) keeps the query's within-listing order
         // (primary first, then position) intact per key.
         Map<UUID, List<ImageMeta>> imagesByListing = listingIds.isEmpty()
@@ -66,19 +87,23 @@ public class ListingViewAssembler {
         // Third and last batch: seller trust records for the badge. Distinct
         // merchant ids so a page of one merchant's listings is a single-key
         // lookup, not one per row.
-        List<UUID> merchantIds = page.getContent().stream()
+        List<UUID> merchantIds = content.stream()
                 .map(Listing::getMerchantId).distinct().toList();
         Map<UUID, MarketplaceSeller> sellersByMerchant = sellerService.findAllByMerchantIds(merchantIds);
-        List<String> codes = page.getContent().stream()
+        List<String> codes = content.stream()
                 .map(Listing::getCategoryCode).distinct().toList();
         Map<String, String> categoryNames = codes.isEmpty()
                 ? Map.of()
                 : categoryRepository.findAllById(codes).stream()
                         .collect(Collectors.toMap(Category::getCode, Category::getName));
-        return page.map(listing -> ListingResponse.from(
-                listing,
-                imagesByListing.getOrDefault(listing.getId(), List.of()),
-                categoryNames.get(listing.getCategoryCode()),
-                sellersByMerchant.get(listing.getMerchantId())));
+        Map<UUID, ListingResponse> byId = new LinkedHashMap<>();
+        for (Listing listing : content) {
+            byId.put(listing.getId(), ListingResponse.from(
+                    listing,
+                    imagesByListing.getOrDefault(listing.getId(), List.of()),
+                    categoryNames.get(listing.getCategoryCode()),
+                    sellersByMerchant.get(listing.getMerchantId())));
+        }
+        return byId;
     }
 }

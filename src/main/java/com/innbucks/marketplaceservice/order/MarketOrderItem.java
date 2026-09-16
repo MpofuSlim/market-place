@@ -17,6 +17,12 @@ import java.util.UUID;
  * a later merchant edit can never change what the buyer agreed to pay —
  * totals are always computed server-side from the listing, never taken from
  * the client.
+ *
+ * <p>{@code merchantId} (V9) is a snapshot for the same reason. It is what the
+ * fulfilment queue and the merchant notifier group on, and joining back to the
+ * live listing to find it is a lie waiting to happen: a listing can be archived
+ * or transferred, and the seller who must pack and be paid is the one who was
+ * selling AT ORDER TIME.
  */
 @Entity
 @Table(name = "market_order_item")
@@ -37,6 +43,10 @@ public class MarketOrderItem {
 
     @Column(name = "listing_id", nullable = false)
     private UUID listingId;
+
+    /** The selling merchant AS AT order time — never re-read from the listing. */
+    @Column(name = "merchant_id", nullable = false)
+    private UUID merchantId;
 
     @Column(name = "title_snapshot", nullable = false, length = 160)
     private String titleSnapshot;

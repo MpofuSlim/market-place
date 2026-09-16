@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.order;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.support.PostgresTestContainer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -84,11 +85,15 @@ class ExpirySweepIT extends PostgresTestContainer {
     // mark the rows as new, so save() INSERTs).
     // ------------------------------------------------------------------
 
+    /** The seller of every listing this test seeds — {@code market_order_item}
+     *  snapshots it (V9), so the order fixture needs the same value. */
+    private final UUID merchantId = UUID.randomUUID();
+
     private UUID seedActiveListing(int stockQty) {
         Instant now = Instant.now();
         Listing listing = Listing.builder()
                 .id(UUID.randomUUID())
-                .merchantId(UUID.randomUUID())
+                .merchantId(merchantId)
                 .title("Solar Lantern 20W")
                 .priceCents(1550L)
                 .currency("USD")
@@ -109,8 +114,13 @@ class ExpirySweepIT extends PostgresTestContainer {
                 .buyerUuid(UUID.randomUUID())
                 .buyerMsisdn("+263771234567")
                 .status(OrderStatus.PENDING_PAYMENT)
+                .subtotalCents(1550L * quantity)
+                .deliveryFeeCents(0)
                 .totalCents(1550L * quantity)
                 .currency("USD")
+                // COLLECTION, so the order needs no destination — the V9 CHECK
+                // refuses a DELIVERY order without one.
+                .deliveryMethod(DeliveryMethod.COLLECTION)
                 .expiresAt(expiresAt)
                 .stockReleased(false)
                 .createdAt(createdAt)
@@ -121,6 +131,7 @@ class ExpirySweepIT extends PostgresTestContainer {
                 .id(UUID.randomUUID())
                 .orderId(order.getId())
                 .listingId(listingId)
+                .merchantId(merchantId)
                 .titleSnapshot("Solar Lantern 20W")
                 .unitPriceCents(1550L)
                 .quantity(quantity)

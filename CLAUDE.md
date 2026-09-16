@@ -309,6 +309,113 @@ never change either casually.
   alongside LISTING_REPORT_RESOLVED; `deactivateListing` on DISMISS is
   refused (400). Closed reports are terminal (409 `report_not_open`).
   Metrics `marketplace.reports{reason}`, `marketplace.reports.resolved{action}`.
+* **The buyer journey is complete end to end (V9)**: browse → cart →
+  delivery address → checkout quote → order → pay → fulfilment → confirm
+  receipt → review. Four load-bearing decisions hold it together:
+  * **One resolver decides "can this be bought, and what does it cost"** —
+    `checkout/CheckoutPricer`, shared by the cart read, the checkout quote AND
+    order creation. Those are the three screens a shopper sees in a row; a cart
+    that says "in stock", a quote that prices it and an order that then refuses
+    it is exactly what independent copies of that rule produce as they drift.
+    It reuses `OrderLineRejection`'s reason vocabulary rather than inventing
+    per-surface ones. Still **advisory** — `reserveStock`'s atomic UPDATE is the
+    authoritative guard.
+  * **The cart stores QUANTITIES and nothing else**, and holds NO stock. Price,
+    stock and status resolve live on every read: a cart sits for weeks, and a
+    copied price becomes a promise the catalogue no longer makes. A cart that
+    reserved would let anyone freeze a merchant's inventory for free. A line
+    that goes out of stock STAYS visible carrying its `issue` and contributing
+    0 — dropping it silently is how a shopper reaches checkout with a total
+    they do not recognise. Add ACCUMULATES and clamps at the per-item cap (the
+    `+` button wants the cap); PUT sets an EXACT quantity and refuses above it
+    (the shopper named that number); quantity 0 is refused so a zero can never
+    be a silent delete on a retry.
+  * **`POST /marketplace/checkout/quote` reserves NOTHING.** Before it, the only
+    way to learn an item was out of stock was to CREATE an order — which holds
+    stock as a side effect, so "let me just check the total" cost a merchant an
+    inventory hold, and comparing delivery against collection meant placing two
+    orders. A problem basket is a **200** with `checkoutReady: false` and every
+    failing line in `rejections`: the shopper has to SEE the basket to fix it.
+    Only a malformed request or a missing address is an error.
+  * **An unstated `deliveryMethod` is COLLECTION**, which is precisely what an
+    order meant before delivery existed here (V9 backfills every pre-existing
+    row the same way) — so an un-updated client keeps behaving identically
+    instead of being 400ed for an address it does not know to send. Delivery is
+    an explicit choice: it costs money and needs somewhere to go.
+* **The order's destination is a SNAPSHOT, never a reference.** `delivery_*`
+  columns on `market_order` copy the chosen `delivery_address` row; the
+  `delivery_address_id` kept beside them is provenance only and nothing reads
+  through it. Same discipline as `title_snapshot` one level up: a buyer who
+  edits "Home" after ordering must not silently redirect a parcel already on
+  its way, and deleting the book entry must not erase where a delivered order
+  went. The DB refuses a `DELIVERY` order with no destination
+  (`chk_order_delivery_destination`) rather than trusting every future write
+  path to remember. Exactly one default address per buyer — first-saved wins,
+  promotion demotes the incumbent FIRST, deleting the default promotes the most
+  recent survivor, and `uq_address_default_per_buyer` backstops all three.
+* **Money on an order is a SPLIT**: `total_cents = subtotal_cents +
+  delivery_fee_cents`, CHECK-enforced. `total_cents` stays the SINGLE number
+  payment-service collects, so its internal contract is unchanged and needed no
+  coordinated deploy. The delivery fee is a flat per-cell
+  `marketplace.delivery.fee-cents`, **0 by default** — this service books no
+  couriers and has no rate card, so any non-zero number is a deliberate
+  commercial decision. **Known gap, deliberately deferred:** a multi-seller
+  order ships in several parcels and pays that fee ONCE; a per-merchant or
+  per-zone rate card is real work, not something to fake with a number nobody
+  can justify.
+* **Fulfilment is PER SELLER and a SEPARATE lifecycle from payment (V9)**:
+  `order_fulfilment`, one row per `(order, merchant)`, opened in the SAME
+  transaction as the PAID transition (idempotent via the unique index, because
+  payment-service is free to replay a confirm). An order that committed as paid
+  with nothing on any seller's queue would be money taken for goods nobody was
+  asked to send.
+  * **Deliberately NOT extra `OrderStatus` values.** `PENDING_PAYMENT` is what
+    payment-service reads to decide an order is payable and `PAID` is what the
+    verified-purchase review gate queries — a delivered order that had moved on
+    from PAID would silently stop being reviewable. Payment state and
+    fulfilment state are different questions about the same order.
+  * `PREPARING → DISPATCHED → DELIVERED`, with `PREPARING → DELIVERED` legal
+    (goods handed over in person never pass through a dispatch). DELIVERED is
+    terminal; an illegal move is refused 409 + counted, never applied. The
+    mutation that goes with a move runs only AFTER the legality check —
+    structurally, not carefully.
+  * **The order-level `fulfilmentStatus` is the LEAST advanced parcel**, so
+    DELIVERED always means everything arrived; `FulfilmentStatus`'s ordinal
+    order IS the advancement order that roll-up depends on. Null (never
+    PREPARING) when there are no parcels.
+  * `deliveredBy` keeps BUYER and MERCHANT apart: a buyer's confirmation is
+    evidence a dispute can lean on in a way the seller's own say-so is not. The
+    seller can always close it themselves — a buyer who never opens the app
+    must not leave a parcel open forever.
+  * One vocabulary for both delivery methods: on a COLLECTION order DISPATCHED
+    reads "ready to collect" and DELIVERED reads "collected". The app has the
+    order's `deliveryMethod` and labels accordingly; two parallel vocabularies
+    would double every state machine, query and dashboard for a wording
+    difference.
+  * The seller's view carries the DESTINATION and only THEIR lines and
+    subtotal — never the order total — so a seller in a multi-seller order
+    learns nothing about what else the buyer bought. A separate DTO from the
+    buyer's view rather than one with fields blanked, because that is how the
+    destination eventually leaks onto the wrong surface.
+* **`market_order_item.merchant_id` is a SNAPSHOT (V9)** and is what the
+  fulfilment queue and `MerchantOrderNotifier` group on. Joining back to the
+  live listing is a lie waiting to happen — a listing can be archived or
+  transferred, and the seller who must pack and be paid is the one who was
+  selling AT ORDER TIME. (The notifier's old join also silently DROPPED any
+  line whose listing could not be read.)
+* **Marketplace-service still collects no money, but it now says WHERE to.**
+  A `PENDING_PAYMENT` order carries a `payment` block, and
+  `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`
+  with `{orderType: "MARKETPLACE", orderRef, paymentRail}`. That was
+  cross-service knowledge hardcoded in a mobile binary, which is wrong the
+  moment a cell enables a rail the app was not built with.
+  **`marketplace.checkout.payment-methods` MUST mirror what payment-service is
+  provisioned with on that cell** — this service holds no payment credentials
+  and cannot ask, and advertising a rail whose credentials are blank sends the
+  buyer to another service's 503 (the ZimSwitch half-provisioned lesson).
+  Hence the fail-safe default of `INNBUCKS_CODE` alone. Keep `PaymentRail`'s
+  names byte-identical to payment-service's enum — the value is passed straight
+  through.
 * **Error shape**: everything renders as the fleet `ApiResult` envelope via
   `GlobalExceptionHandler`; server.error includes nothing; unhandled → generic
   500, internals stay in logs.

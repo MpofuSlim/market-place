@@ -1,7 +1,5 @@
 package com.innbucks.marketplaceservice.notify;
 
-import com.innbucks.marketplaceservice.catalog.Listing;
-import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
@@ -16,7 +14,7 @@ import java.util.UUID;
 
 /**
  * Tells each selling merchant's admin users about a newly-PAID order
- * containing their listings: groups the order's lines by the listing's
+ * containing their listings: groups the order's lines by the line's snapshot
  * {@code merchant_id}, composes one per-merchant summary (that merchant's
  * lines + subtotal, never the whole order), resolves the admin users via
  * {@link MerchantAdminResolver} and delivers through
@@ -39,20 +37,17 @@ public class MerchantOrderNotifier {
 
     private final MarketplaceNotificationProperties properties;
     private final MarketOrderItemRepository itemRepository;
-    private final ListingRepository listingRepository;
     private final MerchantAdminResolver adminResolver;
     private final UserNotifyGateway userNotifyGateway;
     private final MarketplaceMetrics metrics;
 
     public MerchantOrderNotifier(MarketplaceNotificationProperties properties,
                                  MarketOrderItemRepository itemRepository,
-                                 ListingRepository listingRepository,
                                  MerchantAdminResolver adminResolver,
                                  UserNotifyGateway userNotifyGateway,
                                  MarketplaceMetrics metrics) {
         this.properties = properties;
         this.itemRepository = itemRepository;
-        this.listingRepository = listingRepository;
         this.adminResolver = adminResolver;
         this.userNotifyGateway = userNotifyGateway;
         this.metrics = metrics;
@@ -99,18 +94,22 @@ public class MerchantOrderNotifier {
     /** Groups the order's lines by the OWNING listing's merchant_id (one bulk
      *  listing load, insertion-ordered so composition is deterministic). A line
      *  whose listing row has vanished is skipped — nobody owns it anymore. */
+    /**
+     * Groups by the SNAPSHOT merchant on each line (V9), not by joining back to
+     * the live listing.
+     *
+     * <p>Two reasons it changed. The snapshot is the correct answer — the seller
+     * owed this money is the one who was selling at order time, not whoever owns
+     * the listing now — and it is the same source the fulfilment queue groups
+     * on, so a seller cannot be told about an order they have no parcel for. The
+     * old join also DROPPED any line whose listing could not be read, silently
+     * omitting it from the seller's notification.
+     */
     private Map<UUID, List<MarketOrderItem>> groupByMerchant(List<MarketOrderItem> items) {
-        List<UUID> listingIds = items.stream().map(MarketOrderItem::getListingId).toList();
-        Map<UUID, UUID> merchantByListing = new LinkedHashMap<>();
-        for (Listing listing : listingRepository.findAllById(listingIds)) {
-            merchantByListing.put(listing.getId(), listing.getMerchantId());
-        }
         Map<UUID, List<MarketOrderItem>> byMerchant = new LinkedHashMap<>();
         for (MarketOrderItem item : items) {
-            UUID merchantId = merchantByListing.get(item.getListingId());
-            if (merchantId != null) {
-                byMerchant.computeIfAbsent(merchantId, k -> new java.util.ArrayList<>()).add(item);
-            }
+            byMerchant.computeIfAbsent(item.getMerchantId(), k -> new java.util.ArrayList<>())
+                    .add(item);
         }
         return byMerchant;
     }

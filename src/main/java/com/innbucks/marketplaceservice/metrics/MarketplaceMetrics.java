@@ -169,6 +169,29 @@ public class MarketplaceMetrics {
                 .increment(amount);
     }
 
+    /**
+     * Fulfilment outcomes on one tagged series,
+     * {@code marketplace.fulfilments{outcome}}. The vocabulary is
+     * {@code opened|dispatched|delivered|illegal_transition}.
+     *
+     * <p>The two worth watching: {@code opened} minus {@code delivered} over a
+     * window is the backlog sellers owe buyers — the number that says whether
+     * paid orders are actually reaching people — and {@code illegal_transition}
+     * rising means callers are racing each other (a seller marking delivered a
+     * parcel the buyer just confirmed), which is normal in a trickle and a bug
+     * in a stream.
+     */
+    public void fulfilmentOutcome(String outcome, int amount) {
+        if (amount <= 0) {
+            return;
+        }
+        Counter.builder("marketplace.fulfilments")
+                .description("Order fulfilment parcels by lifecycle outcome")
+                .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment(amount);
+    }
+
     public void illegalTransition() {
         illegalTransitions.increment();
     }
