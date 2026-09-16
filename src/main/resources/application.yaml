@@ -97,9 +97,29 @@ marketplace:
     # "100% confirmed" over two parcels is noise wearing a percentage, and a
     # new seller deserves "new seller", not a verdict.
     min-sample: ${MARKETPLACE_SELLER_STATS_MIN_SAMPLE:5}
+  settlement:
+    # The escrow's clocks (V10). All deliberately config, none load-bearing in
+    # code: a cell tunes trust economics without a deploy.
+    #
+    # grace-hours: how long a SELLER-CLOSED delivery stays HELD before the
+    # sweeper releases it — the buyer's chance to object to the weaker
+    # evidence. A buyer's own confirmation releases immediately and never
+    # waits this out.
+    grace-hours: ${MARKETPLACE_SETTLEMENT_GRACE_HOURS:48}
+    # How long after DELIVERY a parcel can still be disputed. Undelivered
+    # parcels are disputable for as long as the money has not been paid out.
+    dispute-window-days: ${MARKETPLACE_SETTLEMENT_DISPUTE_WINDOW_DAYS:7}
+    # Platform commission withheld from each settlement, percent of gross.
+    # ZERO until the platform decides to charge one — the ledger columns
+    # exist so that decision is a config change, not a migration.
+    commission-percent: ${MARKETPLACE_SETTLEMENT_COMMISSION_PERCENT:0}
   scheduler:
     # Order-expiry sweep: releases stock held by lapsed PENDING_PAYMENT orders.
     expiry-sweep-cron: ${MARKETPLACE_EXPIRY_SWEEP_CRON:0 * * * * *}
+    # Escrow release sweep: promotes HELD settlements whose grace lapsed
+    # unchallenged. Every 15 minutes — releases are not urgent, disputes are
+    # checked per row, and the grace window is measured in days.
+    settlement-release-cron: ${MARKETPLACE_SETTLEMENT_RELEASE_CRON:0 */15 * * * *}
     # Nightly tamper-evidence walk over the audit chain.
     audit-verify-cron: ${MARKETPLACE_AUDIT_VERIFY_CRON:0 30 3 * * *}
   audit:

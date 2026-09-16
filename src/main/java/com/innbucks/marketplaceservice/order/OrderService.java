@@ -28,6 +28,7 @@ import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
 import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
@@ -99,6 +100,7 @@ public class OrderService {
     private final CheckoutPricer pricer;
     private final CartService cartService;
     private final FulfilmentService fulfilmentService;
+    private final SettlementService settlementService;
     private final OrderViewAssembler views;
     private final Msisdns msisdns;
 
@@ -121,6 +123,7 @@ public class OrderService {
                         CheckoutPricer pricer,
                         CartService cartService,
                         FulfilmentService fulfilmentService,
+                        SettlementService settlementService,
                         OrderViewAssembler views,
                         Msisdns msisdns,
                         @Value("${marketplace.order.max-items}") int maxItems,
@@ -141,6 +144,7 @@ public class OrderService {
         this.pricer = pricer;
         this.cartService = cartService;
         this.fulfilmentService = fulfilmentService;
+        this.settlementService = settlementService;
         this.views = views;
         this.msisdns = msisdns;
         this.maxItems = maxItems;
@@ -541,6 +545,11 @@ public class OrderService {
         // would notice, because that queue is the only place it would show.
         // Idempotent, so a replayed confirm cannot double a seller's work.
         fulfilmentService.openForOrder(order);
+        // And the escrow beside them: one HELD settlement per parcel, same
+        // transaction, same idempotency — money recorded as collected with no
+        // ledger row saying whose it is would be the state V10 exists to
+        // make impossible.
+        settlementService.openForOrder(order);
         return toView(order);
     }
 
