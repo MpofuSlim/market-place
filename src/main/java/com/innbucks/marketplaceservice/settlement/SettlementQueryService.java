@@ -87,7 +87,14 @@ public class SettlementQueryService {
                 .map(row -> new SettlementSummaryResponse.Line(
                         row.getStatus(), row.getParcels(), row.getNetCents()))
                 .toList();
-        return new SettlementSummaryResponse(merchantId, totals);
+        // Read from the seller record rather than inferred from anything
+        // here: "can this seller be paid" is a property of the seller, and a
+        // summary that guessed would be the one screen telling them they are
+        // fine when they are not.
+        boolean configured = sellerService.findAllByMerchantIds(List.of(merchantId))
+                .values().stream()
+                .anyMatch(MarketplaceSeller::hasPayoutDestination);
+        return new SettlementSummaryResponse(merchantId, configured, totals);
     }
 
     /**
@@ -114,24 +121,62 @@ public class SettlementQueryService {
      * with RELEASABLE money, biggest owed first, with the trading name where
      * the platform knows one. The period is in the FILENAME (fleet CSV rule —
      * a preamble row breaks every parser that treats line 1 as the header).
+     *
+     * <p><b>It carries the DESTINATION (V13), and that is the whole point of
+     * the column set.</b> Until then this sheet said who was owed and how
+     * much, and an operator had to find each seller's bank details somewhere
+     * outside this system entirely. The one fact a payment cannot be made
+     * without was the one fact the report did not hold.
+     *
+     * <p><b>Unmasked, deliberately.</b> A masked account number cannot be paid
+     * into, so masking here would only send the operator back to the
+     * spreadsheet this column replaced. The surface is SUPER_ADMIN-only and
+     * the data is exactly what a payment instruction contains.
+     *
+     * <p><b>{@code payoutChangedAt} is a fraud control, not bookkeeping.</b>
+     * Re-pointing a payout is what a compromised seller account is used for,
+     * and this report is read in the moment BEFORE money moves — the last
+     * point at which a human can notice that a destination moved yesterday.
+     * The seller is warned at change time too; this is the other side of it.
      */
     @Transactional(readOnly = true)
     public Csv payoutReportCsv() {
         List<PayoutRow> rows = settlementRepository.payoutReport();
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(
                 rows.stream().map(PayoutRow::getMerchantId).toList());
-        StringBuilder csv = new StringBuilder("merchantId,displayName,parcels,netCents,currency\n");
+        StringBuilder csv = new StringBuilder("merchantId,displayName,parcels,netCents,currency,"
+                + "payoutMethod,payoutAccountName,payoutMsisdn,payoutBankName,"
+                + "payoutAccountNumber,payoutChangedAt\n");
         for (PayoutRow row : rows) {
             MarketplaceSeller seller = sellers.get(row.getMerchantId());
             csv.append(row.getMerchantId()).append(',')
                     .append(csvField(seller == null ? null : seller.getDisplayName())).append(',')
                     .append(row.getParcels()).append(',')
                     .append(row.getNetCents()).append(',')
-                    .append(row.getCurrency()).append('\n');
+                    .append(row.getCurrency()).append(',')
+                    // Every destination column is EMPTY for a seller with none
+                    // on file. That row still appears — the money is genuinely
+                    // owed, and a sheet that silently dropped it would hide a
+                    // seller who cannot be paid instead of surfacing them.
+                    .append(seller == null || !seller.hasPayoutDestination()
+                            ? ",,,,," : destinationFields(seller))
+                    .append('\n');
         }
         String filename = "marketplace-payout-report-"
                 + LocalDate.now(ZoneOffset.UTC) + ".csv";
         return new Csv(filename, csv.toString());
+    }
+
+    /** The six destination columns, in header order. Bank and wallet fields
+     *  are mutually exclusive by {@code chk_seller_payout_destination}, so
+     *  exactly one of them is ever populated on a row. */
+    private static String destinationFields(MarketplaceSeller seller) {
+        return seller.getPayoutMethod().name() + ','
+                + csvField(seller.getPayoutAccountName()) + ','
+                + csvField(seller.getPayoutMsisdn()) + ','
+                + csvField(seller.getPayoutBankName()) + ','
+                + csvField(seller.getPayoutAccountNumber()) + ','
+                + (seller.getPayoutUpdatedAt() == null ? "" : seller.getPayoutUpdatedAt());
     }
 
     /** RFC-4180 quoting for the one free-text column. */

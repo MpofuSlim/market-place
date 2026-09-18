@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.notify;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.OrderPaid;
+import com.innbucks.marketplaceservice.seller.PayoutMethod;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -143,6 +144,38 @@ class OrderNotificationComposerTest {
     }
 
     @Test
+    @DisplayName("payout-destination warning: names the RAIL and never the account")
+    void payoutDestinationMessage_namesTheRailOnly() {
+        String message = OrderNotificationComposer.payoutDestinationMessage(
+                PayoutMethod.BANK, true, true);
+        assertThat(message).isEqualTo("Your InnBucks Marketplace payout details were changed to "
+                + "a bank account. If this was not you, contact support now.");
+        assertThat(OrderNotificationComposer.payoutDestinationSubject())
+                .isEqualTo("Your InnBucks Marketplace payout details changed");
+    }
+
+    @Test
+    @DisplayName("A FIRST destination is 'were set to', with no alarm line")
+    void payoutDestinationMessage_firstSetIsNotAnAlarm() {
+        // Telling someone to check something they just created for the first
+        // time is how people learn to ignore the line that matters.
+        assertThat(OrderNotificationComposer.payoutDestinationMessage(
+                PayoutMethod.MOBILE_MONEY, false, true))
+                .isEqualTo("Your InnBucks Marketplace payout details were set to "
+                        + "a mobile money number.")
+                .doesNotContain("contact support");
+    }
+
+    @Test
+    @DisplayName("An admin override says so — 'we did this' reads differently from 'someone did'")
+    void payoutDestinationMessage_adminOverrideSaysSo() {
+        assertThat(OrderNotificationComposer.payoutDestinationMessage(
+                PayoutMethod.BANK, true, false))
+                .contains("This was done by our support team.")
+                .contains("If this was not you, contact support now.");
+    }
+
+    @Test
     @DisplayName("money renders major units with two decimals, Locale-proof")
     void money_majorUnits() {
         assertThat(OrderNotificationComposer.money(5, "USD")).isEqualTo("USD 0.05");
@@ -178,7 +211,13 @@ class OrderNotificationComposerTest {
                 // (sanitized by the SMS client on the way out), so what is
                 // pinned here is the fixed copy on either side of it.
                 OrderNotificationComposer.parcelUnfulfilledMessage(REF, "out of stock", 1550, "USD"),
-                OrderNotificationComposer.parcelUnfulfilledMessage(REF, null, 0, "USD"));
+                OrderNotificationComposer.parcelUnfulfilledMessage(REF, null, 0, "USD"),
+                OrderNotificationComposer.payoutDestinationSubject(),
+                // Both branches and both rails: this one carries no caller
+                // text at all, so every character of it is pinned here.
+                OrderNotificationComposer.payoutDestinationMessage(PayoutMethod.BANK, true, true),
+                OrderNotificationComposer.payoutDestinationMessage(
+                        PayoutMethod.MOBILE_MONEY, false, false));
         for (String template : templates) {
             assertThat(SmsTextSanitizer.toGsmSafe(template))
                     .as("template must be GSM-safe as composed: %s", template)

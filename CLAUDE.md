@@ -612,6 +612,74 @@ never change either casually.
     get instead is VISIBILITY: the stale sweep surfaces the genuinely overdue
     ones and an operator decides one at a time.
 
+* **A seller has a payout DESTINATION (V13) — the one fact a payment cannot be
+  made without.** V10 built the escrow ledger and V12 the refund side, so the
+  platform knew precisely who was owed and how much. It never knew where to
+  send it: `GET /marketplace/settlements/payout-report` carried merchantId,
+  displayName, parcels, netCents, currency, and an operator then had to find
+  that seller's bank details somewhere outside this system — an email, a
+  spreadsheet, a WhatsApp message.
+  * **On `marketplace_seller`, not a table of its own**: a destination is a
+    property of the seller, exactly one per seller, and V8 already keyed that
+    record by `merchant_id`. Two rails (`MOBILE_MONEY` / `BANK`), each owning
+    its own columns.
+  * **`payout_account_name` is NOT `display_name`.** The trading name is what
+    shoppers see; this is the name the destination account is held in, which is
+    what finance checks a transfer against and what a bank rejects a payment for
+    not matching. They differ routinely — "Rudo Traders" paying into
+    "R. Chikwanha".
+  * **Complete or absent, never half** (`chk_seller_payout_destination`). A
+    method with no account behind it reads as configured on every screen and
+    fails only when a transfer is attempted; the CHECK makes that
+    unrepresentable rather than trusting each write path, the same call V9 made
+    with `chk_order_delivery_destination`. The API replaces the whole
+    destination for the same reason — there is no partial update, and "change
+    just my account number" is not a smaller action than "change where my money
+    goes".
+  * **The seller sets their own** (`PUT /marketplace/sellers/me/payout-destination`,
+    scoped by SHAPE — no path or query parameter names a merchant, so there is
+    nothing to point at someone else's bank details). SUPER_ADMIN has an
+    override at `/marketplace/admin/sellers/{merchantId}/payout-destination` for
+    a phoned-in detail or a correction; the audit records which it was.
+  * **A missing destination does NOT block a payout run, deliberately.**
+    `payOutReleasable` RECORDS a transfer the operator already made on the
+    rails; refusing to record one because this service holds no address would
+    leave the ledger saying RELEASABLE after the money left, and the next run
+    would pay those parcels twice. A ledger that cannot record a payment that
+    happened is worse than one holding an incomplete address book. The
+    destination is surfaced where it changes an outcome instead: on the report,
+    read in the moment BEFORE money moves. Such a seller still APPEARS on the
+    report with empty destination columns — dropping the row would hide a seller
+    who cannot be paid rather than surface them.
+  * **Nothing is masked, anywhere it is read.** A masked account number cannot
+    be paid into, and masking a seller's own details for the person who typed
+    them makes "is this the right account?" unanswerable — the one question the
+    screen exists for. Both surfaces are already narrow (the seller's own, and
+    SUPER_ADMIN); the public merchant profile builds its DTO field by field and
+    cannot pick these up. It is PII, not a secret: it must be read back to pay
+    someone, so the fleet's keyed-HMAC rule does not apply and hashing it would
+    make the feature impossible.
+  * **Redirecting a payout is THE attack on this**, so two controls, neither of
+    them a hold policy nobody asked for: the seller's admin users are notified
+    on every change (via the same merchantId→admin-user chain the paid-order
+    notifier uses — `AFTER_COMMIT` + `@Async`, never throws), and the report
+    carries `payoutChangedAt` so finance can see a destination that moved
+    yesterday. **The SMS names the RAIL and never the account** — quoting the
+    new destination would hand an attacker holding the phone a confirmation
+    receipt. A FIRST destination gets no "contact support" line: telling someone
+    to check something they just created is how people learn to ignore the line
+    that matters.
+  * **The audit row carries the method and never the account** (V7's free-text
+    stance applied to money): an account number in the audit log is an account
+    number in one more place, and the method plus who-and-when is what a
+    redirect is investigated with.
+  * `payoutDestinationConfigured` rides the seller's own
+    `GET /marketplace/settlements/summary` — the screen a seller is on when
+    "where is my money" matters to them, and the only place they would learn
+    they need to provide one.
+  * **V13 backfills nothing** — no destination was ever collected, so every
+    existing seller correctly has none.
+
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`

@@ -60,4 +60,53 @@ public class MarketplaceSeller {
 
     @Column(name = "decided_at")
     private Instant decidedAt;
+
+    // ------------------------------------------------------------------
+    // Payout destination (V13) — where this seller's released money goes.
+    //
+    // Complete or absent, never half: chk_seller_payout_destination refuses a
+    // method with no account behind it, which would otherwise read as
+    // configured on every screen and fail only when a transfer is attempted.
+    // ------------------------------------------------------------------
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payout_method", length = 20)
+    private PayoutMethod payoutMethod;
+
+    /**
+     * The name the destination account is held in — NOT {@link #displayName}.
+     * The trading name is what shoppers see; this is what finance checks the
+     * transfer against and what a bank rejects a payment for not matching.
+     * They differ routinely: "Rudo Traders" paying into "R. Chikwanha".
+     */
+    @Column(name = "payout_account_name", length = 120)
+    private String payoutAccountName;
+
+    /** MOBILE_MONEY only. E.164, normalised through {@code Msisdns}. */
+    @Column(name = "payout_msisdn", length = 20)
+    private String payoutMsisdn;
+
+    /** BANK only. */
+    @Column(name = "payout_bank_name", length = 120)
+    private String payoutBankName;
+
+    /** BANK only. Free text — account-number formats vary per bank, and a
+     *  format guess that refuses a valid account is worse than no check. */
+    @Column(name = "payout_account_number", length = 40)
+    private String payoutAccountNumber;
+
+    /** When the destination last moved. Surfaced on the payout report because
+     *  a destination that changed yesterday is the shape of a redirected
+     *  payout, and finance reads that report before the money moves. */
+    @Column(name = "payout_updated_at")
+    private Instant payoutUpdatedAt;
+
+    /** Who last moved it — the seller themselves, or an admin acting for them. */
+    @Column(name = "payout_updated_by")
+    private UUID payoutUpdatedBy;
+
+    /** Whether this seller can be paid without someone going and asking them. */
+    public boolean hasPayoutDestination() {
+        return payoutMethod != null;
+    }
 }

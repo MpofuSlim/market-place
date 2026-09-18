@@ -10,6 +10,7 @@ import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -427,6 +428,64 @@ class SecuritySurfaceIT extends PostgresTestContainer {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refundReference\":\"RFND-1\"}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void anonymousPayoutDestinationIsUnauthorized() throws Exception {
+        // Bank details, on both the seller's own surface and the operator's.
+        mockMvc.perform(get("/marketplace/sellers/me/payout-destination"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/marketplace/admin/sellers/{id}/payout-destination",
+                        UUID.randomUUID()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void customerCannotReadOrSetAPayoutDestination() throws Exception {
+        // A buyer has no payout destination and must never reach a seller's.
+        String customer = TestJwts.customer(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/sellers/me/payout-destination")
+                        .header("Authorization", "Bearer " + customer))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(put("/marketplace/sellers/me/payout-destination")
+                        .header("Authorization", "Bearer " + customer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"method":"MOBILE_MONEY","accountName":"X","msisdn":"0771234567"}"""))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void aMerchantTokenWithNoScopeCannotReachAPayoutDestination() throws Exception {
+        // Scoped by SHAPE: the subject is the caller's own claim, so a token
+        // without one has no destination to name rather than defaulting to any.
+        mockMvc.perform(get("/marketplace/sellers/me/payout-destination")
+                        .header("Authorization", "Bearer " + TestJwts.merchantAdminWithoutMerchant(
+                                UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("merchant_scope_missing"));
+    }
+
+    @Test
+    void aMerchantCannotReachAnotherSellersPayoutDestination() throws Exception {
+        // The operator override names a merchant, so it is SUPER_ADMIN-only —
+        // otherwise it would be the one way a seller reads someone else's bank
+        // details.
+        String merchantToken = TestJwts.merchantAdmin(
+                UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/admin/sellers/{id}/payout-destination",
+                        UUID.randomUUID())
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(put("/marketplace/admin/sellers/{id}/payout-destination",
+                        UUID.randomUUID())
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"method":"MOBILE_MONEY","accountName":"X","msisdn":"0771234567"}"""))
+                .andExpect(status().isForbidden());
     }
 
     @Test
