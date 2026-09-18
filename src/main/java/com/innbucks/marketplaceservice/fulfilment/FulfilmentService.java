@@ -10,6 +10,7 @@ import com.innbucks.marketplaceservice.fulfilment.collect.CollectCodes;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
+import com.innbucks.marketplaceservice.fulfilment.dto.UnfulfillableRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse;
@@ -25,6 +26,7 @@ import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.notify.CollectCodeNotifier;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
+import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -77,6 +79,8 @@ public class FulfilmentService {
     private final MarketplaceMetrics metrics;
     private final CollectCodeAttempts collectCodeAttempts;
     private final CollectCodeNotifier collectCodeNotifier;
+    private final ParcelStockReturner stockReturner;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     /** The per-parcel online-guessing budget for a collection code. Field
      *  injection because {@code @RequiredArgsConstructor} covers final fields
@@ -154,12 +158,29 @@ public class FulfilmentService {
      * arrived. Rolling up to the furthest-along one would tell a buyer with two
      * sellers that their order was delivered while half of it was still in a
      * warehouse.
+     *
+     * <p>UNFULFILLED parcels are EXCLUDED from the ranking rather than placed
+     * in it (V12), because they are not a stage of the journey — they are a
+     * parcel that left it. Ranking one as least-advanced would pin a two-seller
+     * order on "unfulfilled" while the other half was on its way; ranking it as
+     * most-advanced would let DELIVERED claim everything arrived when something
+     * never will. So this summarises what is still owed, and says UNFULFILLED
+     * only when nothing is.
      */
     public static FulfilmentStatus rollUp(List<OrderFulfilment> parcels) {
-        return parcels.stream()
+        List<FulfilmentStatus> live = parcels.stream()
                 .map(OrderFulfilment::getStatus)
+                .filter(status -> status != FulfilmentStatus.UNFULFILLED)
+                .toList();
+        if (live.isEmpty()) {
+            // Either there are no parcels at all (nothing paid for yet) or
+            // every one of them fell through: null and UNFULFILLED say those
+            // two different things.
+            return parcels.isEmpty() ? null : FulfilmentStatus.UNFULFILLED;
+        }
+        return live.stream()
                 .min(java.util.Comparator.comparingInt(FulfilmentStatus::ordinal))
-                .orElse(null);
+                .orElseThrow();
     }
 
     // ------------------------------------------------------------------
@@ -246,6 +267,94 @@ public class FulfilmentService {
         }
         close(parcel, DeliveryConfirmer.BUYER, "Receipt confirmed by buyer", buyer);
         return parcel;
+    }
+
+    /**
+     * The seller declares they cannot supply this parcel (V12) — the exit V9
+     * never gave them.
+     *
+     * <p>Until this existed, a seller who was out of stock had two options:
+     * leave the parcel open forever, or wait for the buyer to dispute. The
+     * first is worse than it sounds, because V10 put the buyer's money behind
+     * delivery — an open parcel is money HELD indefinitely, invisible to every
+     * timer the ledger has.
+     *
+     * <p>Three things happen together, in one transaction, because any one of
+     * them alone is a lie: the parcel ends, its units go back on the shelf, and
+     * the buyer's money turns around onto the refund queue.
+     *
+     * <p>PREPARING only, by the state machine — see {@link
+     * FulfilmentStateMachine} for why a dispatched parcel is a dispute instead.
+     */
+    @Transactional
+    public MerchantFulfilmentResponse markUnfulfillable(AuthenticatedUser caller, UUID fulfilmentId,
+                                                        UnfulfillableRequest request) {
+        OrderFulfilment parcel = requireSellerScope(caller, fulfilmentId);
+        MarketOrder order = orderRepository.findById(parcel.getOrderId())
+                .orElseThrow(FulfilmentService::notFound);
+        String reason = blankToNull(TextSanitizer.sanitize(request.reason()));
+        if (reason == null) {
+            // @NotBlank catches an empty field; a reason that is nothing but
+            // markup survives that and arrives here empty.
+            throw ApiException.badRequest("unfulfilled_reason_required",
+                    "Tell the buyer why - reason is required");
+        }
+
+        transition(parcel, FulfilmentStatus.UNFULFILLED,
+                "Seller cannot fulfil: " + reason, caller, p -> {
+                    p.setUnfulfilledAt(Instant.now());
+                    p.setUnfulfilledReason(reason);
+                });
+        stockReturner.returnOnce(parcel);
+        fulfilmentRepository.save(parcel);
+
+        long refundCents = turnTheMoneyAround(parcel, reason);
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("orderId", parcel.getOrderId().toString());
+        metadata.put("orderRef", order.getOrderRef());
+        metadata.put("merchantId", parcel.getMerchantId().toString());
+        metadata.put("refundDueCents", refundCents);
+        auditService.record(AuditEventType.FULFILMENT_UNFULFILLED, caller.uuid(),
+                parcel.getId().toString(), metadata);
+        metrics.fulfilmentOutcome("unfulfilled", 1);
+        // Told AFTER commit: the buyer must never hear that their goods are not
+        // coming because of a transaction that then rolled back.
+        eventPublisher.publishEvent(new ParcelUnfulfilled(order.getId(), order.getOrderRef(),
+                order.getBuyerMsisdn(), reason, refundCents, order.getCurrency()));
+        return toMerchantView(parcel);
+    }
+
+    /**
+     * Puts this parcel's money on the refund queue — when it is still the
+     * platform's to turn around.
+     *
+     * <p>A settlement already DISPUTED belongs to an operator who is looking at
+     * it, and one already released or paid is past the point a seller can hand
+     * back. Neither is an error here: the seller's statement is true and worth
+     * recording either way, and refusing the decline would leave the parcel
+     * open — which is the exact state this method exists to end. So the money
+     * stays where it is and the decision stays with whoever owns it.
+     *
+     * @return the net cents queued for refund, 0 when nothing moved
+     */
+    private long turnTheMoneyAround(OrderFulfilment parcel, String reason) {
+        MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
+        if (settlement == null) {
+            // Pre-V10 parcels have no settlement row; log loudly rather than
+            // invent money that was never recorded.
+            log.error("Parcel declared unfulfillable with NO settlement row id={} orderId={}",
+                    parcel.getId(), parcel.getOrderId());
+            return 0;
+        }
+        if (settlement.getStatus() != SettlementStatus.HELD) {
+            log.warn("Parcel unfulfillable but settlement is {} - money left where it is "
+                            + "id={} orderId={}",
+                    settlement.getStatus(), parcel.getId(), parcel.getOrderId());
+            return 0;
+        }
+        settlementService.markRefundDue(settlement, reason);
+        return settlement.getNetCents();
     }
 
     // ------------------------------------------------------------------
@@ -538,7 +647,9 @@ public class FulfilmentService {
                 order.getDeliveryMethod() == DeliveryMethod.COLLECTION
                         ? order.getRecipientName() : null,
                 parcel.getCollectCodeHash() != null && parcel.getCollectCodeRedeemedAt() == null,
-                parcel.getCollectCodeRedeemedAt());
+                parcel.getCollectCodeRedeemedAt(),
+                parcel.getUnfulfilledReason(),
+                parcel.getUnfulfilledAt());
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {

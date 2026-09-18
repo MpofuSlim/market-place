@@ -377,6 +377,59 @@ class SecuritySurfaceIT extends PostgresTestContainer {
     }
 
     @Test
+    void anonymousDeclineIsUnauthorized() throws Exception {
+        // Declining a parcel hands stock back and turns a buyer's money
+        // around — never reachable without a token, whatever id is guessed.
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/unfulfillable", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Out of stock\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void customerCannotDeclineAParcel() throws Exception {
+        // A buyer's way out is the dispute on their own order; declaring the
+        // goods unavailable is the SELLER's admission, and lets a buyer who
+        // could call it release their own stock hold.
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/unfulfillable", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + TestJwts.customer(
+                                UUID.randomUUID(), jwtSecret))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Cancel this please\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aMerchantCannotReachTheStaleLedgerOrRecordARefund() throws Exception {
+        // Both are SUPER_ADMIN: the stale list is a fleet-wide view of every
+        // seller's unmoved money, and recording a refund closes a row against
+        // a transfer reference only the operator can have made.
+        String merchantToken = TestJwts.merchantAdmin(
+                UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/settlements/stale")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(post("/marketplace/settlements/{id}/refund", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refundReference\":\"RFND-1\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void anonymousStaleLedgerAndRefundAreUnauthorized() throws Exception {
+        mockMvc.perform(get("/marketplace/settlements/stale"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/marketplace/settlements/{id}/refund", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refundReference\":\"RFND-1\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void aMerchantCannotDisputeAnOrder() throws Exception {
         // Disputing rides the buyer's order surface (CUSTOMER-only) — a
         // seller freezing (or steering) their own settlement is nonsense.

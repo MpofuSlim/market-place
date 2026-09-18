@@ -135,7 +135,9 @@ public class OrderViewAssembler {
                             .toList(),
                     disputes.get(parcel.getId()),
                     parcel.getCollectCodeIssuedAt(),
-                    parcel.getCollectCodeRedeemedAt()));
+                    parcel.getCollectCodeRedeemedAt(),
+                    parcel.getUnfulfilledReason(),
+                    parcel.getUnfulfilledAt()));
         }
         return out;
     }

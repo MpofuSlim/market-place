@@ -555,6 +555,63 @@ never change either casually.
     notice — without it the gift is invisible to the one person it is for), and
     one per code mint. Watch `marketplace.collect_codes{outcome=invalid}`: a
     seller mistyping is ordinary, a climb is somebody working the keyspace.
+* **A parcel can end without arriving, and stuck money gets noticed (V12).** V9
+  gave a parcel three states and V10 put the buyer's money behind delivery —
+  together a silent trap. A seller who was out of stock had NO action available
+  (the queue offered dispatch and delivered, nothing else), so the honest answer
+  was to do nothing; and doing nothing left the settlement HELD where **no timer
+  could reach it**, because `SettlementReleaseSweeper` matches a `releasable_at`
+  that only a delivery sets. Money taken, goods never sent, nobody watching.
+  * **`FulfilmentStatus.UNFULFILLED` is terminal and reachable ONLY from
+    PREPARING.** Once a parcel is DISPATCHED the goods are with a courier and
+    "I cannot fulfil this" has stopped being true — that is a delivery failure,
+    which the buyer's dispute already covers with an operator looking at it.
+    **Not `CANCELLED`**: `OrderStatus` spends that word on a buyer abandoning an
+    unpaid order, and the two facts have opposite consequences.
+  * **`rollUp` EXCLUDES UNFULFILLED rather than ranking it**, so
+    `FulfilmentStatus`'s ordinal run stays the three-stage journey and
+    UNFULFILLED sits after it. Ranking it least-advanced would pin a two-seller
+    order on "unfulfilled" while the other half ships; ranking it most-advanced
+    would let DELIVERED claim everything arrived. An order whose parcels are ALL
+    declined rolls up to UNFULFILLED; no parcels is still null.
+  * **The decline does three things in one transaction**: closes the parcel with
+    the seller's reason, hands the stock back (`ParcelStockReturner.returnOnce`,
+    guarded by the per-parcel `stock_returned` — the sibling of
+    `market_order.stock_released`, which is per ORDER and owned by
+    cancel/expiry, so a later expiry cannot restock this parcel's units twice),
+    and turns the money around. A 0 → >0 move still publishes `ListingRestocked`,
+    so favoriters are alerted exactly as any other restock.
+  * **`SettlementStatus.REFUND_DUE` is the mirror of RELEASABLE**, and exists
+    for the same reason: this service moves no money, so the ledger needs
+    "decided, not yet transferred". Going straight to REFUNDED would record a
+    refund the operator has not made — and REFUNDED carries a
+    `refund_reference` precisely because it means the money actually left.
+    `POST /marketplace/settlements/{id}/refund` (SUPER_ADMIN) closes one row
+    against that reference, **per parcel rather than batched like the payout
+    run**: a payout is one transfer to one merchant covering everything
+    cleared, while a refund goes back to the individual buyer of one order, and
+    a single batched reference would be proof to none of them.
+  * **Only HELD money turns around.** A parcel whose settlement is already
+    DISPUTED, RELEASABLE or PAID_OUT still CLOSES — refusing would leave the
+    parcel open, which is the exact state being fixed — but the money is left
+    alone, and `ParcelUnfulfilled.refundQueued()` is false so the buyer's SMS
+    says "our support team will be in touch" instead of naming an amount the
+    ledger never queued. A buyer disputing money already REFUND_DUE gets a
+    clean 409 `refund_already_due`, not an illegal-transition error.
+  * **`StaleEscrowSweeper` REPORTS and does not DECIDE.** Auto-releasing would
+    pay a seller who never delivered; auto-refunding would punish one who is
+    merely slow; and either transfer is an operator's to make. So its whole
+    output is the gauge `marketplace.settlements.stale` (registered at
+    construction, so the series exists and reads 0 from boot — an alert cannot
+    fire on a series that is not there yet), a WARN naming the oldest row, and
+    `GET /marketplace/settlements/stale` to work the list.
+    `marketplace.settlement.stale-after-days` (default 14) is the threshold.
+  * **V12 backfills nothing, deliberately** — same call V9 made backfilling
+    parcels as PREPARING. Marking an existing row UNFULFILLED or REFUND_DUE
+    would assert a seller's intent the migration never observed. What those rows
+    get instead is VISIBILITY: the stale sweep surfaces the genuinely overdue
+    ones and an operator decides one at a time.
+
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`

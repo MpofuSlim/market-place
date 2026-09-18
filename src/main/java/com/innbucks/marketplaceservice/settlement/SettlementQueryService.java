@@ -38,6 +38,7 @@ public class SettlementQueryService {
     static final int MAX_PAGE_SIZE = 50;
 
     private final MerchantSettlementRepository settlementRepository;
+    private final SettlementService settlementService;
     private final SellerService sellerService;
 
     @Transactional(readOnly = true)
@@ -87,6 +88,25 @@ public class SettlementQueryService {
                         row.getStatus(), row.getParcels(), row.getNetCents()))
                 .toList();
         return new SettlementSummaryResponse(merchantId, totals);
+    }
+
+    /**
+     * Money still HELD past the staleness threshold, oldest first (V12).
+     *
+     * <p>Operator-only by its caller's {@code @PreAuthorize}, and deliberately
+     * a separate read rather than a filter on {@link #list}: staleness is a
+     * property of the whole ledger, not of one merchant's view of it, and
+     * folding it into the scoped list would put a per-merchant answer behind a
+     * fleet-wide question.
+     */
+    @Transactional(readOnly = true)
+    public SettlementPageResponse stale(int size) {
+        List<SettlementResponse> rows = settlementService
+                .staleHeld(Math.clamp(size, 1, MAX_PAGE_SIZE))
+                .stream()
+                .map(SettlementResponse::from)
+                .toList();
+        return new SettlementPageResponse(rows, 0, rows.size(), rows.size(), 1);
     }
 
     /**

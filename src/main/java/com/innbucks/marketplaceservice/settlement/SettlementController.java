@@ -6,6 +6,8 @@ import com.innbucks.marketplaceservice.settlement.dto.DisputePageResponse;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
 import com.innbucks.marketplaceservice.settlement.dto.PayoutRequest;
 import com.innbucks.marketplaceservice.settlement.dto.PayoutResult;
+import com.innbucks.marketplaceservice.settlement.dto.RefundRequest;
+import com.innbucks.marketplaceservice.settlement.dto.SettlementResponse;
 import com.innbucks.marketplaceservice.settlement.dto.ResolveDisputeRequest;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementPageResponse;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementSummaryResponse;
@@ -262,6 +264,72 @@ public class SettlementController {
         return ResponseEntity.ok(ApiResult.ok("Payout recorded", new PayoutResult(
                 request.merchantId(), outcome.parcels(), outcome.totalNetCents(),
                 outcome.currency(), request.payoutReference().trim())));
+    }
+
+    @GetMapping("/stale")
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @Operation(summary = "Money nobody is moving",
+            description = "Settlements still HELD past the staleness threshold "
+                    + "(`marketplace.settlement.stale-after-days`, default 14), oldest first.\n\n"
+                    + "These are the rows no timer can reach: the release sweeper matches a "
+                    + "`releasableAt` that only exists once a seller closes a parcel as "
+                    + "delivered, so a parcel that was never delivered is invisible to it. Each "
+                    + "row here is a buyer who paid, a seller who never delivered and never "
+                    + "declined, and nobody watching.\n\n"
+                    + "Nothing is decided for you, deliberately: chase the seller, or have them "
+                    + "decline the parcel so the refund queues itself. The gauge "
+                    + "`marketplace.settlements.stale` carries the same count for alerting.")
+    @ApiResponses(@ApiResponse(responseCode = "200", description = "Stale settlements, oldest first",
+            content = @Content(examples = @ExampleObject(value = EXAMPLE_SETTLEMENT_PAGE_200))))
+    public ResponseEntity<ApiResult<SettlementPageResponse>> stale(
+            @Parameter(description = "How many to return (capped)")
+            @RequestParam(defaultValue = "50") int size) {
+        return ResponseEntity.ok(ApiResult.ok(queryService.stale(size)));
+    }
+
+    @PostMapping("/{id}/refund")
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @Operation(summary = "Record a refund you have sent",
+            description = "Closes one REFUND_DUE settlement as REFUNDED against your transfer "
+                    + "reference. Call it AFTER making the transfer — this service moves no "
+                    + "money, and REFUNDED means the money actually left.\n\n"
+                    + "Per parcel rather than batched like the payout run, and that asymmetry is "
+                    + "the shape of the money: a payout is one transfer to one merchant covering "
+                    + "everything cleared, while a refund goes back to the individual buyer of "
+                    + "one order. A single batched reference would be no proof to any one of "
+                    + "them.\n\n"
+                    + "A refund arising from a DISPUTE is recorded on the dispute instead "
+                    + "(`PATCH /marketplace/settlements/disputes/{id}` with action REFUND) — the "
+                    + "operator is already looking at it there.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Refund recorded",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {
+                              "code": "OK",
+                              "message": "Refund recorded",
+                              "data": {
+                                "id": "9d2f7a10-3b64-4c8e-a1f5-6e7b8c9d0a12",
+                                "status": "REFUNDED",
+                                "netCents": 4798,
+                                "currency": "USD",
+                                "refundDueAt": "2026-09-18T09:15:00Z",
+                                "refundedAt": "2026-09-18T11:02:00Z",
+                                "refundReference": "RFND-2026-09-18-03"
+                              }
+                            }"""))),
+            @ApiResponse(responseCode = "404", description = "No such settlement",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"settlement_not_found","message":"Settlement not found"}"""))),
+            @ApiResponse(responseCode = "409", description = "This money is not owed back — only "
+                    + "a REFUND_DUE settlement can be refunded this way",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"illegal_settlement_state","message":"This settlement is HELD and cannot move to REFUNDED"}""")))
+    })
+    public ResponseEntity<ApiResult<SettlementResponse>> refund(
+            @PathVariable UUID id, @Valid @RequestBody RefundRequest request) {
+        return ResponseEntity.ok(ApiResult.ok("Refund recorded",
+                SettlementResponse.from(settlementService.recordRefundPayment(
+                        CurrentUser.get(), id, request.refundReference().trim()))));
     }
 
     @GetMapping(value = "/payout-report", produces = "text/csv")

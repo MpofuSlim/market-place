@@ -123,6 +123,13 @@ marketplace:
     # Platform commission withheld from each settlement, percent of gross.
     # ZERO until the platform decides to charge one — the ledger columns
     # exist so that decision is a config change, not a migration.
+    # How long a parcel's money may sit HELD before the stale-escrow sweep
+    # counts it as somebody's problem. This is NOT a deadline the system acts
+    # on: nothing auto-releases (that would pay a seller who never delivered)
+    # and nothing auto-refunds (that would punish one who is merely slow) —
+    # both transfers are an operator's to make. It is the age at which the
+    # platform admits it is holding money nobody is moving.
+    stale-after-days: ${MARKETPLACE_SETTLEMENT_STALE_AFTER_DAYS:14}
     commission-percent: ${MARKETPLACE_SETTLEMENT_COMMISSION_PERCENT:0}
   scheduler:
     # Order-expiry sweep: releases stock held by lapsed PENDING_PAYMENT orders.
@@ -131,6 +138,8 @@ marketplace:
     # unchallenged. Every 15 minutes — releases are not urgent, disputes are
     # checked per row, and the grace window is measured in days.
     settlement-release-cron: ${MARKETPLACE_SETTLEMENT_RELEASE_CRON:0 */15 * * * *}
+    # Daily is the right cadence for a report nobody can action in minutes.
+    stale-escrow-cron: ${MARKETPLACE_STALE_ESCROW_CRON:0 20 6 * * *}
     # Nightly tamper-evidence walk over the audit chain.
     audit-verify-cron: ${MARKETPLACE_AUDIT_VERIFY_CRON:0 30 3 * * *}
   audit:

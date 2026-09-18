@@ -26,10 +26,23 @@ public enum SettlementStatus {
     /** Frozen by the buyer's dispute until an operator decides. */
     DISPUTED,
 
+    /**
+     * Owed back to the buyer, not yet sent (V12) — the mirror of RELEASABLE,
+     * and it exists for the same reason: this service moves no money, so the
+     * ledger needs a word for "decided, not yet transferred".
+     *
+     * <p>Reached when a seller declares a parcel UNFULFILLED. Collapsing it
+     * into REFUNDED would record a transfer nobody made, and REFUNDED carries
+     * a {@code refund_reference} precisely because it means the money left.
+     */
+    REFUND_DUE,
+
     /** The operator paid the seller ({@code payout_reference} says how).
      *  Terminal — money that has left cannot be un-sent by this ledger. */
     PAID_OUT,
 
-    /** The operator refunded the buyer ({@code refund_reference}). Terminal. */
+    /** The operator refunded the buyer ({@code refund_reference}). Terminal —
+     *  reached from a resolved dispute, or from REFUND_DUE once the operator
+     *  has actually made the transfer. */
     REFUNDED
 }

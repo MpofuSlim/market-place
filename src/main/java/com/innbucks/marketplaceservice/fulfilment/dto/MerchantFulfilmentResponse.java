@@ -109,5 +109,12 @@ public record MerchantFulfilmentResponse(
 
         @Schema(description = "When you redeemed the collection code for this parcel",
                 example = "2026-09-16T15:40:00Z", nullable = true)
-        Instant collectCodeRedeemedAt) {
+        Instant collectCodeRedeemedAt,
+
+        @Schema(description = "The reason you gave for not supplying this parcel",
+                example = "Out of stock - the last one was damaged in storage", nullable = true)
+        String unfulfilledReason,
+
+        @Schema(example = "2026-09-18T09:15:00Z", nullable = true)
+        Instant unfulfilledAt) {
 }

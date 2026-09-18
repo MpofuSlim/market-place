@@ -15,6 +15,7 @@ import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -73,6 +74,8 @@ public class SettlementService {
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
     private final Duration grace;
+    /** How long a parcel's money may sit HELD before it is somebody's problem. */
+    private final Duration staleAfter;
     private final double commissionPercent;
 
     public SettlementService(MerchantSettlementRepository settlementRepository,
@@ -82,6 +85,7 @@ public class SettlementService {
                              AuditService auditService,
                              MarketplaceMetrics metrics,
                              @Value("${marketplace.settlement.grace-hours}") long graceHours,
+                             @Value("${marketplace.settlement.stale-after-days}") long staleAfterDays,
                              @Value("${marketplace.settlement.commission-percent}") double commissionPercent) {
         this.settlementRepository = settlementRepository;
         this.fulfilmentRepository = fulfilmentRepository;
@@ -90,6 +94,7 @@ public class SettlementService {
         this.auditService = auditService;
         this.metrics = metrics;
         this.grace = Duration.ofHours(graceHours);
+        this.staleAfter = Duration.ofDays(staleAfterDays);
         this.commissionPercent = commissionPercent;
     }
 
@@ -235,6 +240,101 @@ public class SettlementService {
                     s.setRefundReference(refundReference);
                 });
         metrics.settlementOutcome("refund_recorded", 1);
+    }
+
+    // ------------------------------------------------------------------
+    // Refund due — the buyer's money, when a parcel will never arrive (V12)
+    // ------------------------------------------------------------------
+
+    /**
+     * Queues this parcel's money to go back to the buyer, because the seller
+     * has declared they cannot supply it.
+     *
+     * <p>{@code MANDATORY}: the parcel going UNFULFILLED and its money turning
+     * around are the same fact and must commit together. A parcel that
+     * committed as unfulfillable while its settlement stayed HELD is exactly
+     * the silent trap V12 exists to close.
+     *
+     * <p>Only from HELD, by the state machine. A parcel whose money has already
+     * been released, paid out or disputed is past the point where a seller can
+     * simply hand it back — the refusal is the right answer there, not a
+     * special case.
+     */
+    // Public, unlike the dispute-path helpers beside it: this one's caller is
+    // FulfilmentService, in another package. MANDATORY keeps the contract —
+    // it may only run inside the caller's transaction.
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void markRefundDue(MerchantSettlement settlement, String sellerReason) {
+        String detail = sellerReason == null || sellerReason.isBlank()
+                ? "Refund due - seller could not fulfil the parcel"
+                : "Refund due - seller could not fulfil the parcel: " + sellerReason;
+        transition(settlement, SettlementStatus.REFUND_DUE, detail, s -> {
+            s.setRefundDueAt(Instant.now());
+            s.setReleasableAt(null);
+        });
+        metrics.settlementOutcome("refund_due", 1);
+    }
+
+    /**
+     * The operator records the refund they have actually sent, one parcel at a
+     * time.
+     *
+     * <p>Per parcel rather than batched like the payout run, and that asymmetry
+     * is the shape of the money: a payout is one transfer to one merchant
+     * covering everything cleared, while a refund goes back to the individual
+     * buyer of one order. Batching these would produce a single reference that
+     * no one buyer could be shown as proof of their own refund.
+     */
+    @Transactional
+    public MerchantSettlement recordRefundPayment(AuthenticatedUser operator, UUID settlementId,
+                                                  String refundReference) {
+        MerchantSettlement settlement = settlementRepository.findById(settlementId)
+                .orElseThrow(() -> ApiException.notFound("settlement_not_found",
+                        "Settlement not found"));
+        transition(settlement, SettlementStatus.REFUNDED,
+                "Refund paid - " + refundReference, s -> {
+                    s.setRefundedAt(Instant.now());
+                    s.setRefundReference(refundReference);
+                });
+        metrics.settlementOutcome("refund_paid", 1);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("orderId", settlement.getOrderId().toString());
+        metadata.put("merchantId", settlement.getMerchantId().toString());
+        metadata.put("netCents", settlement.getNetCents());
+        metadata.put("refundReference", refundReference);
+        auditService.record(AuditEventType.SETTLEMENT_REFUNDED, operator.uuid(),
+                settlement.getId().toString(), metadata);
+        log.info("refund recorded settlementId={} orderId={} netCents={} ref={}",
+                settlement.getId(), settlement.getOrderId(), settlement.getNetCents(),
+                refundReference);
+        return settlement;
+    }
+
+    // ------------------------------------------------------------------
+    // Stale escrow — money nobody is moving (V12)
+    // ------------------------------------------------------------------
+
+    /**
+     * Settlements that have been HELD longer than
+     * {@code marketplace.settlement.stale-after-days}, oldest first.
+     *
+     * <p>This is the hole V10 left: the release sweeper matches rows whose
+     * {@code releasable_at} has lapsed, and a parcel that was never delivered
+     * never gets one — so its money is invisible to every timer the ledger has.
+     * Paid a fortnight ago, never delivered, never declined, never disputed:
+     * nothing in the system was looking at it.
+     *
+     * <p>Deliberately a READ, not an action. Auto-releasing would pay a seller
+     * who never delivered; auto-refunding would punish one who is merely slow.
+     * Either way the transfer is an operator's to make, so what the platform
+     * owes here is to NOTICE — and to say so loudly enough that somebody asks
+     * the seller.
+     */
+    @Transactional(readOnly = true)
+    public List<MerchantSettlement> staleHeld(int limit) {
+        return settlementRepository.findByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+                SettlementStatus.HELD, Instant.now().minus(staleAfter),
+                PageRequest.of(0, Math.max(limit, 1)));
     }
 
     // ------------------------------------------------------------------
