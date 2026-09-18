@@ -54,7 +54,9 @@ class SellerServiceTest {
         listings = mock(ListingRepository.class);
         audit = mock(AuditService.class);
         when(sellers.save(any(MarketplaceSeller.class))).thenAnswer(inv -> inv.getArgument(0));
-        service = new SellerService(sellers, listings, audit);
+        service = new SellerService(sellers, listings, audit,
+                new com.innbucks.marketplaceservice.api.Msisdns("ZW"),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
     }
 
     private MarketplaceSeller existing(SellerStatus status) {

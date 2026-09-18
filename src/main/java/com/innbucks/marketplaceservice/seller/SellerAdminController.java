@@ -2,6 +2,8 @@ package com.innbucks.marketplaceservice.seller;
 
 import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationRequest;
+import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerDecisionRequest;
 import com.innbucks.marketplaceservice.seller.dto.SellerPageResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerResponse;
@@ -98,6 +100,22 @@ public class SellerAdminController {
             {
               "code": "seller_not_found",
               "message": "No seller record for merchant 7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54"
+            }""";
+
+    private static final String EXAMPLE_PAYOUT_DESTINATION = """
+            {
+              "code": "OK",
+              "message": "OK",
+              "data": {
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "configured": true,
+                "method": "BANK",
+                "accountName": "Rudo Chikwanha",
+                "bankName": "CBZ Bank",
+                "accountNumber": "01123456789012",
+                "updatedAt": "2026-09-18T09:15:00Z",
+                "updatedBy": "3f1c9d24-a77e-4e21-9c60-11ab22cd33ef"
+              }
             }""";
 
     @GetMapping
@@ -207,5 +225,55 @@ public class SellerAdminController {
             @PathVariable UUID merchantId,
             @Valid @RequestBody(required = false) SellerDecisionRequest body) {
         return ApiResult.ok(sellerService.reinstate(CurrentUser.get(), merchantId, body));
+    }
+
+    @GetMapping("/{merchantId}/payout-destination")
+    @Operation(summary = "Where this seller is paid",
+            description = "The destination an operator needs in order to actually send a payout "
+                    + "run's money. Unmasked — a masked account number cannot be paid into.\n\n"
+                    + "`configured: false` means none is on file. That does NOT block a payout "
+                    + "run: `POST /marketplace/settlements/pay-out` RECORDS a transfer you have "
+                    + "already made, and refusing to record one would leave the ledger saying "
+                    + "RELEASABLE after the money left — so the next run would pay it twice.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The seller's destination, or none on file",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = EXAMPLE_PAYOUT_DESTINATION))),
+            @ApiResponse(responseCode = "403", description = "Caller is not a SUPER_ADMIN")
+    })
+    public ApiResult<PayoutDestinationResponse> payoutDestination(@PathVariable UUID merchantId) {
+        return ApiResult.ok(sellerService.payoutDestination(merchantId));
+    }
+
+    @PutMapping("/{merchantId}/payout-destination")
+    @Operation(summary = "Set a seller's payout destination on their behalf",
+            description = "The operator override, for a seller who cannot or will not use the "
+                    + "self-service screen — a phoned-in detail, or a correction after a failed "
+                    + "transfer.\n\n"
+                    + "Identical rules to the seller's own `PUT /marketplace/sellers/me/"
+                    + "payout-destination`: REPLACES the destination entirely, and the chosen "
+                    + "method's fields are all required.\n\n"
+                    + "**The seller is notified either way**, and the audit row records that it "
+                    + "was you rather than them. Both matter: a seller who did not ask for this "
+                    + "change is the first person who should hear about it.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Saved",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = EXAMPLE_PAYOUT_DESTINATION))),
+            @ApiResponse(responseCode = "400", description = "A field the chosen method needs is "
+                    + "missing, or the msisdn is not a valid number",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {
+                                      "code": "payout_field_required",
+                                      "message": "bankName is required for this payout method"
+                                    }"""))),
+            @ApiResponse(responseCode = "403", description = "Caller is not a SUPER_ADMIN")
+    })
+    public ApiResult<PayoutDestinationResponse> setPayoutDestination(
+            @PathVariable UUID merchantId,
+            @Valid @RequestBody PayoutDestinationRequest request) {
+        return ApiResult.ok(sellerService.setPayoutDestination(
+                CurrentUser.get(), merchantId, request, false));
     }
 }

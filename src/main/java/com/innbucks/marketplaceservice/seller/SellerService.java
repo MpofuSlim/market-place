@@ -3,13 +3,18 @@ package com.innbucks.marketplaceservice.seller;
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
+import com.innbucks.marketplaceservice.api.Msisdns;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
+import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationRequest;
+import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerDecisionRequest;
 import com.innbucks.marketplaceservice.seller.dto.SellerPageResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -46,6 +51,8 @@ public class SellerService {
     private final MarketplaceSellerRepository sellers;
     private final ListingRepository listings;
     private final AuditService auditService;
+    private final Msisdns msisdns;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * The record for a merchant, creating a PENDING one on first sight.
@@ -159,6 +166,100 @@ public class SellerService {
                     "Only a SUSPENDED or REJECTED seller can be reinstated (status=" + seller.getStatus() + ")");
         }
         return decide(caller, merchantId, SellerStatus.APPROVED, body, false, s -> 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Payout destination (V13) — where this seller's released money goes
+    // ------------------------------------------------------------------
+
+    /**
+     * Reads a seller's destination, creating the trust record if this is the
+     * first thing they ever do here.
+     *
+     * <p>{@code ensureExists} rather than a 404: a merchant with a valid
+     * {@code merchantId} claim IS a seller, and asking them for bank details
+     * before they have listed anything is a perfectly ordinary onboarding
+     * order. Refusing would make the screen unreachable for exactly the
+     * sellers who have not started yet.
+     */
+    @Transactional
+    public PayoutDestinationResponse payoutDestination(UUID merchantId) {
+        return PayoutDestinationResponse.from(ensureExists(merchantId));
+    }
+
+    /**
+     * Sets or replaces a seller's payout destination.
+     *
+     * <p><b>Replace, never merge.</b> The request carries a whole destination
+     * and overwrites all five columns. A partial update is precisely how a row
+     * ends up naming one rail with another's account behind it — the state
+     * {@code chk_seller_payout_destination} exists to make unrepresentable —
+     * and "change just my account number" is not a smaller action than
+     * "change where my money goes", it is the same one.
+     *
+     * <p>The per-method fields are validated HERE rather than by Bean
+     * Validation, which cannot express "required depending on another field"
+     * without losing the field name the app needs to highlight.
+     */
+    @Transactional
+    public PayoutDestinationResponse setPayoutDestination(AuthenticatedUser caller,
+                                                          UUID merchantId,
+                                                          PayoutDestinationRequest body,
+                                                          boolean bySeller) {
+        MarketplaceSeller seller = ensureExists(merchantId);
+        String accountName = requireText(body.accountName(), "accountName");
+
+        String msisdn = null;
+        String bankName = null;
+        String accountNumber = null;
+        switch (body.method()) {
+            case MOBILE_MONEY -> msisdn = msisdns.normalize(body.msisdn(), "msisdn");
+            case BANK -> {
+                bankName = requireText(body.bankName(), "bankName");
+                accountNumber = requireText(body.accountNumber(), "accountNumber");
+            }
+        }
+
+        boolean replaced = seller.hasPayoutDestination();
+        seller.setPayoutMethod(body.method());
+        seller.setPayoutAccountName(accountName);
+        seller.setPayoutMsisdn(msisdn);
+        seller.setPayoutBankName(bankName);
+        seller.setPayoutAccountNumber(accountNumber);
+        seller.setPayoutUpdatedAt(Instant.now());
+        seller.setPayoutUpdatedBy(adminUuid(caller));
+        sellers.save(seller);
+
+        // Method and whether it replaced something, never the account itself —
+        // enough to investigate a redirected payout with, without putting an
+        // account number in one more place.
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("method", body.method().name());
+        meta.put("replacedExisting", replaced);
+        meta.put("bySeller", bySeller);
+        auditService.record(AuditEventType.SELLER_PAYOUT_DESTINATION_CHANGED,
+                caller == null ? null : caller.uuid(), merchantId.toString(), meta);
+
+        // AFTER_COMMIT + async on the other side: the seller must never be
+        // warned about a change that then rolled back, and a dead SMS gateway
+        // must never look like a refused update.
+        eventPublisher.publishEvent(new PayoutDestinationChanged(
+                merchantId, body.method(), replaced, bySeller));
+
+        log.info("Payout destination set merchantId={} method={} replacedExisting={} bySeller={}",
+                merchantId, body.method(), replaced, bySeller);
+        return PayoutDestinationResponse.from(seller);
+    }
+
+    /** Names the offending field so the app can highlight the right input —
+     *  what a class-level Bean Validation constraint could not have done. */
+    private static String requireText(String value, String field) {
+        String trimmed = trimToNull(TextSanitizer.sanitize(value));
+        if (trimmed == null) {
+            throw ApiException.badRequest("payout_field_required",
+                    field + " is required for this payout method");
+        }
+        return trimmed;
     }
 
     // -------------------------------------------------------------------------

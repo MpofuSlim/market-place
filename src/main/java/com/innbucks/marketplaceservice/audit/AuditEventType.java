@@ -16,6 +16,17 @@ public enum AuditEventType {
      *  Metadata carries from, to, the note, and how many live listings a
      *  suspension took down. */
     SELLER_STATUS_CHANGED,
+
+    /**
+     * A seller's payout destination was set or changed (V13). Audited because
+     * redirecting a payout is THE attack on that feature: the tamper-evident
+     * chain is what makes "who moved it, and when" answerable after the money
+     * has gone. The destination's own values are NOT in the metadata — the
+     * method and whether one existed before is enough to investigate with,
+     * and an account number in the audit log is an account number in one more
+     * place (V7's free-text stance, applied to money).
+     */
+    SELLER_PAYOUT_DESTINATION_CHANGED,
     /** A merchant created a listing. */
     LISTING_CREATED,
     /** A merchant updated a listing's content (title/description/price/stock). */

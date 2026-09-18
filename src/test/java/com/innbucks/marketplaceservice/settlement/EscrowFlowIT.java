@@ -127,8 +127,14 @@ class EscrowFlowIT extends PostgresTestContainer {
                 .andExpect(header().string("Content-Disposition",
                         org.hamcrest.Matchers.containsString("marketplace-payout-report-")))
                 .andReturn().getResponse().getContentAsString();
-        assertThat(csv).startsWith("merchantId,displayName,parcels,netCents,currency\n");
+        assertThat(csv).startsWith("merchantId,displayName,parcels,netCents,currency,"
+                + "payoutMethod,payoutAccountName,payoutMsisdn,payoutBankName,"
+                + "payoutAccountNumber,payoutChangedAt\n");
         assertThat(csv).contains(merchantId + ",", ",1,1550,USD");
+        // This seller set no destination, so every destination column is empty
+        // — and the row is still HERE. The money is genuinely owed, and a sheet
+        // that dropped it would hide a seller who cannot be paid.
+        assertThat(csv).contains(",1,1550,USD,,,,,,");
 
         // Finance makes ONE transfer per merchant, then records it here.
         mockMvc.perform(post("/marketplace/settlements/pay-out")

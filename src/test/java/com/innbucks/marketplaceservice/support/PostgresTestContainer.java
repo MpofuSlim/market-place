@@ -107,7 +107,8 @@ public abstract class PostgresTestContainer {
                 TRUNCATE TABLE settlement_dispute, merchant_settlement,
                                market_order_item, market_order_event, order_fulfilment,
                                market_order, listing_image, listing_review, listing_favorite,
-                               listing_report, cart_item, listing, delivery_address,
+                               listing_report, cart_item, listing, marketplace_seller,
+                               delivery_address,
                                idempotency_record, audit_events
                 RESTART IDENTITY""");
         // Back to the V1 genesis head so each test's audit chain is

@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.notify;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.OrderPaid;
+import com.innbucks.marketplaceservice.seller.PayoutMethod;
 
 import java.util.List;
 import java.util.Locale;
@@ -151,6 +152,44 @@ public final class OrderNotificationComposer {
                 ? " A refund of " + money(refundDueCents, currency) + " is being arranged."
                 : " Our support team will be in touch.");
         return message.append(" Ref ").append(orderRef).toString();
+    }
+
+    /** Subject for the payout-destination change warning. */
+    public static String payoutDestinationSubject() {
+        return "Your InnBucks Marketplace payout details changed";
+    }
+
+    /**
+     * Told to a SELLER when their payout destination is set or changed, e.g.
+     * {@code "Your InnBucks Marketplace payout details were changed to a bank
+     * account. If this was not you, contact support now."}.
+     *
+     * <p>Names the METHOD and nothing else — no account number, no phone
+     * number. Enough for the reader to know whether it matches what they just
+     * did; useless to anyone who intercepts it. A message that quoted the new
+     * destination would hand an attacker holding the phone a confirmation
+     * receipt, and hand anyone else who reads it the account.
+     *
+     * <p>The closing line differs by who acted, because "we did this for you"
+     * and "someone did this" call for different reactions — and the FIRST
+     * destination a seller sets is not a change to be alarmed about.
+     */
+    public static String payoutDestinationMessage(PayoutMethod method,
+                                                  boolean replacedAnExistingOne,
+                                                  boolean changedBySeller) {
+        String rail = method == PayoutMethod.BANK ? "a bank account" : "a mobile money number";
+        StringBuilder message = new StringBuilder("Your InnBucks Marketplace payout details ");
+        message.append(replacedAnExistingOne ? "were changed to " : "were set to ").append(rail);
+        message.append('.');
+        if (!changedBySeller) {
+            message.append(" This was done by our support team.");
+        }
+        // Only a CHANGE warrants an alarm; being told to check something you
+        // just created for the first time trains people to ignore the line.
+        if (replacedAnExistingOne) {
+            message.append(" If this was not you, contact support now.");
+        }
+        return message.toString();
     }
 
     /** Subject for the back-in-stock alert. */
