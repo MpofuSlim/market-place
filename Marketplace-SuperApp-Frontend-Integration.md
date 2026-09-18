@@ -36,7 +36,24 @@ Errors carry a slug in `code` — **branch on `code`, never on `message`**, whic
 
 ### Where the customer's token comes from
 
-Super-app customers authenticate at the **InnBucks middleware**, then trade that for a fleet token at `POST /auth/exchange` on user-service. Everything below is gated on `hasRole('CUSTOMER')` and works with that token unchanged — this service never sees how the customer proved themselves.
+Everything from section 3 onward is gated on `hasRole('CUSTOMER')` and needs a **fleet JWT** minted by
+user-service. This service never sees how the customer proved themselves — it only verifies the token.
+
+Super-app customers do not get that token by logging in here. They authenticate at the **InnBucks
+middleware**, which signs a short-lived assertion that the app trades at `POST /auth/exchange` on
+user-service for a normal `CUSTOMER` access + refresh token.
+
+> [!WARNING]
+> **`POST /auth/exchange` is merged and deployed but switched OFF on the ZW cell**
+> (`AUTH_FEDERATION_ENABLED=false`, no public key provisioned), so it returns **`404` today**. It is
+> waiting on the middleware to sign assertions and hand over its public key — that is the documented
+> state, not a bug.
+>
+> **Until it is turned on, nothing in sections 3–13 is reachable with a real ZW session.** Section 2
+> (browsing) is unaffected and works anonymously. The full request/response contract, the token
+> lifetimes and the refresh rules are in `Auth-Exchange-Frontend-Integration.md`; what the middleware
+> side owes is in `Auth-Exchange-Assertion-Signing-Spec.md`. Build against those now — when the switch
+> flips, the `404` becomes a `200` and everything below starts working unchanged.
 
 ---
 
