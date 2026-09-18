@@ -75,6 +75,25 @@ marketplace:
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}
+  public-test:
+    # Unauthenticated PRE-CHECKOUT surface at /marketplace/public/**, for
+    # building the super app before POST /auth/exchange is switched on. The
+    # marketplace sibling of loyalty's /loyalty/public/** and off for exactly
+    # the same reason: the handle in the path is the only identity.
+    #
+    # It deliberately carries cart, addresses, favorites and the checkout QUOTE
+    # and nothing else. An order names the phone that receives a payment PIN
+    # prompt and reserves a merchant's stock, so order/payment/fulfilment stay
+    # behind a real token however convenient it would be. See
+    # PublicTestController for the rule on adding to this prefix.
+    #
+    # DO NOT enable on a production cell. Boot logs an ERROR if you do.
+    enabled: ${MARKETPLACE_PUBLIC_TEST_ENABLED:false}
+    # Optional shared key in front of the whole prefix. Blank = no gate (the
+    # surface's own switch is what fails closed). The key identifies the APP,
+    # not the customer: a throttle and a kill switch. Generate:
+    # openssl rand -base64 32
+    api-key: ${MARKETPLACE_PUBLIC_TEST_API_KEY:}
   checkout:
     # The payment rails GET /marketplace/checkout/options advertises, in
     # the order the app should offer them.

@@ -22,6 +22,7 @@ public class SecurityConfig {
 
     private final JwtFilter jwtFilter;
     private final MetricsScrapeAuthFilter metricsScrapeAuthFilter;
+    private final PublicTestApiKeyFilter publicTestApiKeyFilter;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -36,6 +37,16 @@ public class SecurityConfig {
                         // catalog prefix, so it needs its own exact matcher —
                         // pinned by SecuritySurfaceIT.anonymousCategoryTreeIsPublic.
                         .requestMatchers(HttpMethod.GET, "/marketplace/categories").permitAll()
+                        // Unauthenticated PRE-CHECKOUT test surface, for building
+                        // the app before POST /auth/exchange is switched on.
+                        // Absent (404) unless marketplace.public-test.enabled;
+                        // PublicTestApiKeyFilter optionally gates the prefix by
+                        // shape. Deliberately NOT GET-scoped — the cart and
+                        // address book are writes — which is exactly why the
+                        // surface carries its own switch instead of relying on
+                        // the method. It can create no order, take no payment
+                        // and send no message; see PublicTestController.
+                        .requestMatchers("/marketplace/public/**").permitAll()
                         // S2S surface: gated by X-Internal-Token in the
                         // controllers (InternalTokenAuthorizer), not the user
                         // JWT; the fleet gateway edge-denies the path — "three
@@ -77,6 +88,10 @@ public class SecurityConfig {
                 // MetricsScrapeAuthFilter first: it terminates /actuator/prometheus
                 // itself (fail-closed gate); JwtFilter skips /actuator entirely.
                 .addFilterBefore(metricsScrapeAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                // Inert unless the test surface is on AND a key is configured;
+                // it then terminates the request itself before the (permitAll)
+                // authorization layer is reached.
+                .addFilterBefore(publicTestApiKeyFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
