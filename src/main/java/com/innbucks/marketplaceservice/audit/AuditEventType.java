@@ -72,6 +72,13 @@ public enum AuditEventType {
      *  one. Recorded once: the lock short-circuits every later attempt, so
      *  this can never flood the chain. */
     COLLECT_CODE_LOCKED,
+    /** An operator recorded a refund they sent for a parcel the seller could
+     *  not supply (V12). The dispute path has its own event; this is the one
+     *  nobody argued about. */
+    SETTLEMENT_REFUNDED,
+    /** A seller declared a parcel unfulfillable — the decision that turns a
+     *  buyer's money around. */
+    FULFILMENT_UNFULFILLED,
     SETTLEMENT_DISPUTED,
     /** An operator resolved a dispute (V10) — metadata's {@code action} says
      *  which way (RELEASE to the seller / REFUND to the buyer), with the

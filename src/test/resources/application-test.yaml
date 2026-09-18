@@ -40,6 +40,11 @@ marketplace:
     # The ITs drive SettlementReleaseSweeper directly; a background firing
     # mid-test would race the assertions.
     settlement-release-cron: "-"
+    # The ITs drive StaleEscrowSweeper directly.
+    stale-escrow-cron: "-"
+  settlement:
+    # Short enough that an IT can age a row past it without waiting.
+    stale-after-days: 14
   fulfilment:
     # Lower than production's 10 so the lockout case is three calls rather than
     # ten — the mechanism under test is the budget, not its size.

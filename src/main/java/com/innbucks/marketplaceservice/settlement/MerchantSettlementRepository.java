@@ -37,6 +37,16 @@ public interface MerchantSettlementRepository extends JpaRepository<MerchantSett
     List<MerchantSettlement> findByMerchantIdAndStatus(UUID merchantId, SettlementStatus status);
 
     /**
+     * The stale-escrow scan (V12): money HELD since before {@code cutoff},
+     * oldest first — the rows no timer in the ledger can see, because a parcel
+     * that was never delivered never gets a {@code releasable_at} for the
+     * release sweeper to match. Paged so one pathological backlog cannot pull
+     * an unbounded result set into a scheduled job.
+     */
+    List<MerchantSettlement> findByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+            SettlementStatus status, Instant cutoff, Pageable pageable);
+
+    /**
      * One merchant's money grouped by status — the seller's "where is my
      * money" summary in a single scan.
      */

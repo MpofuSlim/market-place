@@ -159,6 +159,14 @@ public class DisputeService {
                     "This parcel has already been refunded");
             case DISPUTED -> throw ApiException.conflict("dispute_already_raised",
                     "This parcel has already been disputed");
+            // V12: the seller already declared they cannot supply this and the
+            // money is queued to come back. Without this case the open would
+            // reach freeze(), where REFUND_DUE -> DISPUTED is illegal, and the
+            // buyer would be told their settlement was in a bad state instead
+            // of being told they are already getting a refund.
+            case REFUND_DUE -> throw ApiException.conflict("refund_already_due",
+                    "The seller could not supply this parcel - your refund is already being "
+                            + "arranged");
             default -> { /* HELD / RELEASABLE — arguable */ }
         }
         Instant deliveredAt = parcel.getDeliveredAt();

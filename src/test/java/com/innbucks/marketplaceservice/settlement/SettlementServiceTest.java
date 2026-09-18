@@ -21,7 +21,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.Pageable;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -49,6 +51,7 @@ import static org.mockito.Mockito.when;
 class SettlementServiceTest {
 
     private static final long GRACE_HOURS = 48;
+    private static final long STALE_AFTER_DAYS = 14;
     private static final UUID ORDER_ID = UUID.randomUUID();
     private static final UUID MERCHANT_A = UUID.randomUUID();
     private static final UUID MERCHANT_B = UUID.randomUUID();
@@ -73,7 +76,7 @@ class SettlementServiceTest {
         registry = new SimpleMeterRegistry();
         service = new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService,
-                new MarketplaceMetrics(registry), GRACE_HOURS, 0.0);
+                new MarketplaceMetrics(registry), GRACE_HOURS, STALE_AFTER_DAYS, 0.0);
         when(settlementRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
 
@@ -142,7 +145,7 @@ class SettlementServiceTest {
     void commissionComesOffTheTop() {
         service = new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService,
-                new MarketplaceMetrics(registry), GRACE_HOURS, 5.0);
+                new MarketplaceMetrics(registry), GRACE_HOURS, STALE_AFTER_DAYS, 5.0);
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(item(MERCHANT_A, 1000)));
         when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
                 .thenReturn(List.of(parcel(MERCHANT_A, FulfilmentStatus.PREPARING, null)));
@@ -303,6 +306,151 @@ class SettlementServiceTest {
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("nothing_releasable");
         verify(auditService, never()).record(any(), anyString(), anyString(), anyMap());
+    }
+
+    // ------------------------------------------------------------------
+    // Refund due — the seller cannot supply it (V12)
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("markRefundDue turns HELD money around and clears any grace clock")
+    void refundDueTurnsHeldMoneyAround() {
+        MerchantSettlement s = settlement(SettlementStatus.HELD);
+        s.setReleasableAt(Instant.now().plusSeconds(3600));
+
+        service.markRefundDue(s, "out of stock");
+
+        assertThat(s.getStatus()).isEqualTo(SettlementStatus.REFUND_DUE);
+        assertThat(s.getRefundDueAt()).isNotNull();
+        // The grace clock is cleared, or the release sweeper would still see a
+        // due row and try to pay the seller who just said they cannot supply it.
+        assertThat(s.getReleasableAt()).isNull();
+        // Nothing is recorded as MOVED: no refundedAt, no reference. This
+        // service does not send money, and a ledger that stamped one here
+        // would be describing a transfer nobody made.
+        assertThat(s.getRefundedAt()).isNull();
+        assertThat(s.getRefundReference()).isNull();
+    }
+
+    @Test
+    @DisplayName("The seller's own words ride the journal so an operator can read WHY")
+    void refundDueJournalsTheSellersReason() {
+        MerchantSettlement s = settlement(SettlementStatus.HELD);
+
+        service.markRefundDue(s, "warehouse fire");
+
+        ArgumentCaptor<MarketOrderEvent> captor = ArgumentCaptor.forClass(MarketOrderEvent.class);
+        verify(eventRepository, atLeastOnce()).save(captor.capture());
+        assertThat(captor.getValue().getToStatus()).isEqualTo("REFUND_DUE");
+        assertThat(captor.getValue().getDetail()).contains("warehouse fire");
+    }
+
+    @Test
+    @DisplayName("A blank reason still journals a usable line, never a dangling colon")
+    void refundDueWithoutAReasonReadsCleanly() {
+        MerchantSettlement s = settlement(SettlementStatus.HELD);
+
+        service.markRefundDue(s, "   ");
+
+        ArgumentCaptor<MarketOrderEvent> captor = ArgumentCaptor.forClass(MarketOrderEvent.class);
+        verify(eventRepository, atLeastOnce()).save(captor.capture());
+        assertThat(captor.getValue().getDetail()).isEqualTo(
+                "Refund due - seller could not fulfil the parcel");
+    }
+
+    @Test
+    @DisplayName("Money already paid out cannot be turned around — refused, and nothing stamped")
+    void refundDueRefusesPaidOutMoney() {
+        MerchantSettlement s = settlement(SettlementStatus.PAID_OUT);
+
+        assertThatThrownBy(() -> service.markRefundDue(s, "out of stock"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("illegal_settlement_state");
+        assertThat(s.getStatus()).isEqualTo(SettlementStatus.PAID_OUT);
+        assertThat(s.getRefundDueAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("Recording the operator's refund closes the row and audits the reference")
+    void recordRefundPaymentClosesTheRow() {
+        MerchantSettlement s = settlement(SettlementStatus.REFUND_DUE);
+        s.setRefundDueAt(Instant.now().minusSeconds(3600));
+        when(settlementRepository.findById(s.getId())).thenReturn(Optional.of(s));
+
+        MerchantSettlement out = service.recordRefundPayment(OPERATOR, s.getId(), "RFND-77");
+
+        assertThat(out.getStatus()).isEqualTo(SettlementStatus.REFUNDED);
+        assertThat(out.getRefundedAt()).isNotNull();
+        assertThat(out.getRefundReference()).isEqualTo("RFND-77");
+        verify(auditService, times(1)).record(eq(AuditEventType.SETTLEMENT_REFUNDED),
+                eq(OPERATOR.uuid()), eq(s.getId().toString()), anyMap());
+    }
+
+    @Test
+    @DisplayName("An unknown settlement is a 404, never a silently-created refund")
+    void recordRefundPaymentOnAnUnknownRowIs404() {
+        UUID missing = UUID.randomUUID();
+        when(settlementRepository.findById(missing)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.recordRefundPayment(OPERATOR, missing, "RFND-77"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("settlement_not_found");
+        verify(auditService, never()).record(any(), anyString(), anyString(), anyMap());
+    }
+
+    @Test
+    @DisplayName("A refund cannot be recorded against HELD money — only REFUND_DUE or DISPUTED")
+    void recordRefundPaymentRefusesHeldMoney() {
+        MerchantSettlement s = settlement(SettlementStatus.HELD);
+        when(settlementRepository.findById(s.getId())).thenReturn(Optional.of(s));
+
+        assertThatThrownBy(() -> service.recordRefundPayment(OPERATOR, s.getId(), "RFND-77"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("illegal_settlement_state");
+        assertThat(s.getRefundReference()).isNull();
+        verify(auditService, never()).record(any(), anyString(), anyString(), anyMap());
+    }
+
+    // ------------------------------------------------------------------
+    // Stale escrow
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("staleHeld asks for HELD rows older than the configured window, oldest first")
+    void staleHeldScansTheConfiguredWindow() {
+        when(settlementRepository.findByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+                any(), any(), any())).thenReturn(List.of());
+
+        Instant before = Instant.now();
+        service.staleHeld(500);
+
+        ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
+        ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+        verify(settlementRepository).findByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+                eq(SettlementStatus.HELD), cutoff.capture(), page.capture());
+        // The cutoff is now minus the window: anything created before it has
+        // been sitting on the platform's books too long.
+        assertThat(cutoff.getValue())
+                .isAfterOrEqualTo(before.minus(Duration.ofDays(STALE_AFTER_DAYS)).minusSeconds(5))
+                .isBeforeOrEqualTo(Instant.now().minus(Duration.ofDays(STALE_AFTER_DAYS)));
+        assertThat(page.getValue().getPageSize()).isEqualTo(500);
+    }
+
+    @Test
+    @DisplayName("A nonsense limit still yields a bounded query — never an unbounded scan")
+    void staleHeldIsAlwaysBounded() {
+        when(settlementRepository.findByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+                any(), any(), any())).thenReturn(List.of());
+
+        service.staleHeld(0);
+
+        ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+        verify(settlementRepository).findByStatusAndCreatedAtBeforeOrderByCreatedAtAsc(
+                any(), any(), page.capture());
+        assertThat(page.getValue().getPageSize()).isGreaterThanOrEqualTo(1);
     }
 
     // ------------------------------------------------------------------

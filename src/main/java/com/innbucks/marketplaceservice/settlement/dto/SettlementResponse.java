@@ -54,6 +54,12 @@ public record SettlementResponse(
                 + "answered with", example = "PAYOUT-2026-09-30-01", nullable = true)
         String payoutReference,
 
+        @Schema(description = "When this money was queued to go back to the buyer, because the "
+                + "seller declared the parcel unfulfillable. Present on REFUND_DUE and on the "
+                + "REFUNDED rows that came through it.",
+                example = "2026-09-18T09:15:00Z", nullable = true)
+        Instant refundDueAt,
+
         @Schema(nullable = true)
         Instant refundedAt,
 
@@ -68,7 +74,7 @@ public record SettlementResponse(
         return new SettlementResponse(s.getId(), s.getOrderId(), s.getFulfilmentId(),
                 s.getMerchantId(), s.getStatus(), s.getGrossCents(), s.getCommissionCents(),
                 s.getNetCents(), s.getCurrency(), s.getReleasableAt(), s.getReleasedAt(),
-                s.getPaidOutAt(), s.getPayoutReference(), s.getRefundedAt(),
+                s.getPaidOutAt(), s.getPayoutReference(), s.getRefundDueAt(), s.getRefundedAt(),
                 s.getRefundReference(), s.getCreatedAt());
     }
 }

@@ -35,6 +35,31 @@ class FulfilmentStateMachineTest {
     }
 
     @Test
+    @DisplayName("Only a PREPARING parcel can be declined — a dispatched one is a dispute")
+    void unfulfillableOnlyFromPreparing() {
+        assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.PREPARING,
+                FulfilmentStatus.UNFULFILLED)).isTrue();
+        // Once goods are with a courier, "I cannot fulfil this" has stopped
+        // being true. What happens next is a delivery failure, and the buyer's
+        // dispute is the path for it — one an operator looks at, because by
+        // then the two sides can disagree about what happened.
+        assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.DISPATCHED,
+                FulfilmentStatus.UNFULFILLED)).isFalse();
+        assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.DELIVERED,
+                FulfilmentStatus.UNFULFILLED)).isFalse();
+    }
+
+    @Test
+    @DisplayName("UNFULFILLED is terminal: a declined parcel cannot be un-declined")
+    void unfulfilledIsTerminal() {
+        for (FulfilmentStatus to : FulfilmentStatus.values()) {
+            assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.UNFULFILLED, to))
+                    .as("UNFULFILLED -> %s", to)
+                    .isFalse();
+        }
+    }
+
+    @Test
     @DisplayName("DELIVERED is terminal: nothing moves out of it, including to itself")
     void deliveredIsTerminal() {
         for (FulfilmentStatus to : FulfilmentStatus.values()) {
@@ -64,5 +89,11 @@ class FulfilmentStateMachineTest {
                 .isLessThan(FulfilmentStatus.DISPATCHED.ordinal());
         assertThat(FulfilmentStatus.DISPATCHED.ordinal())
                 .isLessThan(FulfilmentStatus.DELIVERED.ordinal());
+        // UNFULFILLED is NOT a stage of that journey, so it must sit outside
+        // the ranked run — rollUp excludes it rather than ordering it, and
+        // placing it anywhere among the three would invite the next reader to
+        // treat it as a stage.
+        assertThat(FulfilmentStatus.UNFULFILLED.ordinal())
+                .isGreaterThan(FulfilmentStatus.DELIVERED.ordinal());
     }
 }

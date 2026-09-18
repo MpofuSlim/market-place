@@ -69,5 +69,14 @@ public record FulfilmentResponse(
         @Schema(description = "When a seller redeemed the collection code — the moment the goods "
                 + "changed hands, and the strongest evidence the platform holds that they did.",
                 example = "2026-09-16T15:40:00Z", nullable = true)
-        Instant collectCodeRedeemedAt) {
+        Instant collectCodeRedeemedAt,
+
+        @Schema(description = "Why the seller could not supply this parcel, in their words. "
+                + "Present only on an UNFULFILLED parcel — show it, because it is the whole "
+                + "explanation the buyer gets for goods that are not coming.",
+                example = "Out of stock - the last one was damaged in storage", nullable = true)
+        String unfulfilledReason,
+
+        @Schema(example = "2026-09-18T09:15:00Z", nullable = true)
+        Instant unfulfilledAt) {
 }

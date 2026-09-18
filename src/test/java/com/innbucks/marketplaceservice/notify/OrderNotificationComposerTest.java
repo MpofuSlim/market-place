@@ -105,6 +105,44 @@ class OrderNotificationComposerTest {
     }
 
     @Test
+    @DisplayName("unfulfilled parcel: names the queued refund amount when money actually turned around")
+    void parcelUnfulfilledMessage_withRefund() {
+        assertThat(OrderNotificationComposer.parcelUnfulfilledMessage(REF, "out of stock", 1550, "USD"))
+                .isEqualTo("Sorry - a seller cannot supply part of your InnBucks Marketplace "
+                        + "order MKT-4F2A9C1B77D0. Reason - out of stock. A refund of USD 15.50 "
+                        + "is being arranged. Ref MKT-4F2A9C1B77D0");
+        assertThat(OrderNotificationComposer.parcelUnfulfilledSubject(REF))
+                .isEqualTo("A problem with order MKT-4F2A9C1B77D0");
+    }
+
+    @Test
+    @DisplayName("unfulfilled parcel: promises NO refund when the ledger queued none")
+    void parcelUnfulfilledMessage_withoutRefund() {
+        // The parcel's money was already disputed, released or paid out, so
+        // nothing turned around. Naming an amount here would be the one
+        // sentence in this file that must never be wrong.
+        assertThat(OrderNotificationComposer.parcelUnfulfilledMessage(REF, "out of stock", 0, "USD"))
+                .isEqualTo("Sorry - a seller cannot supply part of your InnBucks Marketplace "
+                        + "order MKT-4F2A9C1B77D0. Reason - out of stock. Our support team will "
+                        + "be in touch. Ref MKT-4F2A9C1B77D0")
+                .doesNotContain("refund");
+    }
+
+    @Test
+    @DisplayName("unfulfilled parcel: a reason that already ends in a full stop gains no second one")
+    void parcelUnfulfilledMessage_punctuation() {
+        assertThat(OrderNotificationComposer.parcelUnfulfilledMessage(REF,
+                "  Supplier let us down.  ", 1550, "USD"))
+                .contains("Reason - Supplier let us down. A refund")
+                .doesNotContain("down..");
+        // No reason at all still reads as a sentence, never a dangling "Reason -".
+        assertThat(OrderNotificationComposer.parcelUnfulfilledMessage(REF, "   ", 1550, "USD"))
+                .isEqualTo("Sorry - a seller cannot supply part of your InnBucks Marketplace "
+                        + "order MKT-4F2A9C1B77D0. A refund of USD 15.50 is being arranged. "
+                        + "Ref MKT-4F2A9C1B77D0");
+    }
+
+    @Test
     @DisplayName("money renders major units with two decimals, Locale-proof")
     void money_majorUnits() {
         assertThat(OrderNotificationComposer.money(5, "USD")).isEqualTo("USD 0.05");
@@ -134,7 +172,13 @@ class OrderNotificationComposerTest {
                 // around it.
                 OrderNotificationComposer.giftRecipientMessage(REF, "Happy birthday Gogo"),
                 OrderNotificationComposer.collectCodeSubject(),
-                OrderNotificationComposer.collectCodeMessage(REF, "K7Q2-9XMF-3TRW"));
+                OrderNotificationComposer.collectCodeMessage(REF, "K7Q2-9XMF-3TRW"),
+                OrderNotificationComposer.parcelUnfulfilledSubject(REF),
+                // Both branches: the seller's reason is their own free text
+                // (sanitized by the SMS client on the way out), so what is
+                // pinned here is the fixed copy on either side of it.
+                OrderNotificationComposer.parcelUnfulfilledMessage(REF, "out of stock", 1550, "USD"),
+                OrderNotificationComposer.parcelUnfulfilledMessage(REF, null, 0, "USD"));
         for (String template : templates) {
             assertThat(SmsTextSanitizer.toGsmSafe(template))
                     .as("template must be GSM-safe as composed: %s", template)

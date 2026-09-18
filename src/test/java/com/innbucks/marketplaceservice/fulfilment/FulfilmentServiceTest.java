@@ -83,7 +83,9 @@ class FulfilmentServiceTest {
         service = new FulfilmentService(fulfilmentRepository, orderRepository, itemRepository,
                 eventRepository, settlementService, auditService, new MarketplaceMetrics(registry),
                 mock(com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts.class),
-                mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class));
+                mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class),
+                mock(ParcelStockReturner.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

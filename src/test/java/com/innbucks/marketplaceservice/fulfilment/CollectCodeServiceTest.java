@@ -80,7 +80,9 @@ class CollectCodeServiceTest {
         registry = new SimpleMeterRegistry();
         service = new FulfilmentService(fulfilmentRepository, orderRepository, itemRepository,
                 mock(MarketOrderEventRepository.class), settlementService, auditService,
-                new MarketplaceMetrics(registry), attempts, notifier);
+                new MarketplaceMetrics(registry), attempts, notifier,
+                mock(ParcelStockReturner.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
         ReflectionTestUtils.setField(service, "maxCollectAttempts", MAX_ATTEMPTS);
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

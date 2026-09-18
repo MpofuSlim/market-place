@@ -84,6 +84,11 @@ public class MerchantSettlement {
     @Column(name = "payout_reference", length = 64)
     private String payoutReference;
 
+    /** When the parcel behind this money was declared unfulfillable and the
+     *  refund was queued (V12). Null on every other path. */
+    @Column(name = "refund_due_at")
+    private Instant refundDueAt;
+
     @Column(name = "refunded_at")
     private Instant refundedAt;
 

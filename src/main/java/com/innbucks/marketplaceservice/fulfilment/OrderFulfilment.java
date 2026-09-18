@@ -69,6 +69,24 @@ public class OrderFulfilment {
     @Column(name = "delivered_by", length = 16)
     private DeliveryConfirmer deliveredBy;
 
+    // ---- Unfulfillable (V12) -------------------------------------------
+
+    /** When the seller declared they could not supply this parcel. */
+    @Column(name = "unfulfilled_at")
+    private Instant unfulfilledAt;
+
+    /** The seller's own words, shown to the buyer — sanitized free text. The
+     *  buyer is losing something they paid for; "out of stock" is the
+     *  difference between an explanation and a silent disappearance. */
+    @Column(name = "unfulfilled_reason", length = 255)
+    private String unfulfilledReason;
+
+    /** Per-parcel double-return guard, sibling of {@code market_order
+     *  .stock_released} one level up — that flag is per ORDER and owned by
+     *  cancel/expiry, so a parcel released on its own needs its own. */
+    @Column(name = "stock_returned", nullable = false)
+    private boolean stockReturned;
+
     // ---- Collection handover code (V11) --------------------------------
     // Set only on a COLLECTION parcel, and only once the buyer has asked for a
     // code. The plaintext is never stored — see CollectCodes.

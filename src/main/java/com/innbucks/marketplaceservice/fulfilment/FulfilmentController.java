@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.fulfilment;
 import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
+import com.innbucks.marketplaceservice.fulfilment.dto.UnfulfillableRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentStatsResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse;
@@ -279,6 +280,56 @@ public class FulfilmentController {
             @PathVariable UUID id) {
         return ResponseEntity.ok(ApiResult.ok("Parcel marked delivered",
                 fulfilmentService.markDelivered(CurrentUser.get(), id)));
+    }
+
+    @PostMapping("/{id}/unfulfillable")
+    @Operation(summary = "Decline a parcel you cannot supply",
+            description = "Ends a parcel you cannot send — out of stock, damaged, whatever "
+                    + "happened — and puts things right in one step: the units go back on your "
+                    + "shelf, the buyer's money is queued for refund, and the buyer is told why "
+                    + "in your words.\n\n"
+                    + "Available from PREPARING only. Once a parcel is DISPATCHED the goods are "
+                    + "with a courier and this is no longer the truth; a delivery that then "
+                    + "fails is the buyer's dispute to raise, because by then the two of you can "
+                    + "disagree about what happened.\n\n"
+                    + "Use it rather than leaving the parcel open. An open parcel holds the "
+                    + "buyer's money indefinitely and reflects on your fulfilment stats exactly "
+                    + "as badly as it sounds.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Parcel closed, stock returned, "
+                    + "refund queued where the money was still held",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {
+                              "code": "OK",
+                              "message": "Parcel closed - the buyer has been told",
+                              "data": {
+                                "id": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                "orderRef": "MKT-4F9A1C22B7D3",
+                                "status": "UNFULFILLED",
+                                "unfulfilledReason": "Out of stock - the last one was damaged in storage",
+                                "unfulfilledAt": "2026-09-18T09:15:00Z",
+                                "settlementStatus": "REFUND_DUE",
+                                "settlementNetCents": 4798
+                              }
+                            }"""))),
+            @ApiResponse(responseCode = "400", description = "No reason given",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"unfulfilled_reason_required","message":"Tell the buyer why - reason is required"}"""))),
+            @ApiResponse(responseCode = "404", description = "No such parcel for this seller",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404))),
+            @ApiResponse(responseCode = "409", description = "Already dispatched, delivered or "
+                    + "declined — only a PREPARING parcel can be declined",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_ILLEGAL_409)))
+    })
+    public ResponseEntity<ApiResult<MerchantFulfilmentResponse>> unfulfillable(
+            @PathVariable UUID id,
+            @Valid @RequestBody UnfulfillableRequest request) {
+        // The message deliberately does NOT promise a refund: money already
+        // disputed, released or paid out turns around for nobody, and the
+        // settlementStatus in the body is what says which happened.
+        return ResponseEntity.ok(ApiResult.ok(
+                "Parcel closed - the buyer has been told",
+                fulfilmentService.markUnfulfillable(CurrentUser.get(), id, request)));
     }
 
     @PostMapping("/{id}/collect")

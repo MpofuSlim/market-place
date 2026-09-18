@@ -1,8 +1,11 @@
 package com.innbucks.marketplaceservice.metrics;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Business-level metrics for the marketplace domain. Spring Boot Actuator
@@ -25,6 +28,7 @@ public class MarketplaceMetrics {
     private final Counter restockEvents;
     private final Counter auditIntegrityBroken;
     private final Counter auditChainBroken;
+    private final AtomicLong staleSettlements = new AtomicLong();
 
     public MarketplaceMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -77,6 +81,14 @@ public class MarketplaceMetrics {
         this.auditChainBroken = Counter.builder("marketplace.audit.chain.broken")
                 .description("audit_events chain links that failed to recompute (deletion/reorder signal)")
                 .baseUnit("rows")
+                .register(registry);
+        // Registered once at construction: the gauge READS the AtomicLong the
+        // stale sweep writes, so the series exists (and reports 0) from boot
+        // rather than appearing only after the first sweep finds something —
+        // an alert cannot fire on a series that is not there yet.
+        Gauge.builder("marketplace.settlements.stale", staleSettlements, AtomicLong::doubleValue)
+                .description("Settlements HELD past the staleness threshold - money no timer can release")
+                .baseUnit("settlements")
                 .register(registry);
     }
 
@@ -228,6 +240,22 @@ public class MarketplaceMetrics {
                 .tag("outcome", outcome == null ? "unknown" : outcome)
                 .register(registry)
                 .increment();
+    }
+
+    /**
+     * How many settlements are sitting HELD past the staleness threshold right
+     * now: {@code marketplace.settlements.stale}.
+     *
+     * <p>A GAUGE and not a counter, because the question an operator has is
+     * "how much money is stuck today", not "how many ever were". Every one of
+     * these is a buyer who paid, a seller who never delivered and never
+     * declined, and nobody watching — the release sweeper cannot see them at
+     * all, since a parcel that was never delivered never gets the
+     * {@code releasable_at} it matches on. Anything above zero for long is
+     * somebody's to chase; a rising floor means sellers are abandoning orders.
+     */
+    public void staleSettlements(long count) {
+        staleSettlements.set(count);
     }
 
     public void illegalTransition() {

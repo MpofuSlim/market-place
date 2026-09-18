@@ -80,4 +80,35 @@ class SettlementStateMachineTest {
                     .isFalse();
         }
     }
+
+    @Test
+    @DisplayName("HELD may be queued for refund; a DISPUTED row may not — that decision is already being made")
+    void refundDueOnlyFromHeld() {
+        assertThat(SettlementStateMachine.isLegal(SettlementStatus.HELD,
+                SettlementStatus.REFUND_DUE)).isTrue();
+        // An operator resolving a dispute is already looking at it and already
+        // supplies the reference; routing it through a queue of things to
+        // decide would be a second decision about a decision already made.
+        assertThat(SettlementStateMachine.isLegal(SettlementStatus.DISPUTED,
+                SettlementStatus.REFUND_DUE)).isFalse();
+        assertThat(SettlementStateMachine.isLegal(SettlementStatus.RELEASABLE,
+                SettlementStatus.REFUND_DUE)).isFalse();
+        assertThat(SettlementStateMachine.isLegal(SettlementStatus.PAID_OUT,
+                SettlementStatus.REFUND_DUE)).isFalse();
+    }
+
+    @Test
+    @DisplayName("REFUND_DUE leads only to REFUNDED — money owed back cannot become the seller's")
+    void refundDueLeadsOnlyToRefunded() {
+        assertThat(SettlementStateMachine.isLegal(SettlementStatus.REFUND_DUE,
+                SettlementStatus.REFUNDED)).isTrue();
+        for (SettlementStatus to : SettlementStatus.values()) {
+            if (to == SettlementStatus.REFUNDED) {
+                continue;
+            }
+            assertThat(SettlementStateMachine.isLegal(SettlementStatus.REFUND_DUE, to))
+                    .as("REFUND_DUE -> %s", to)
+                    .isFalse();
+        }
+    }
 }

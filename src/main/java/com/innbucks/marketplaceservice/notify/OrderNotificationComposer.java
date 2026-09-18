@@ -115,6 +115,44 @@ public final class OrderNotificationComposer {
                 + " is " + groupedCode + ". Show it when you collect.";
     }
 
+    /** Subject used when the unfulfillable-parcel notice rides a
+     *  subject-bearing channel. */
+    public static String parcelUnfulfilledSubject(String orderRef) {
+        return "A problem with order " + orderRef;
+    }
+
+    /**
+     * Told to the BUYER when a seller declares they cannot supply a parcel,
+     * e.g. {@code "Sorry - a seller cannot supply part of your InnBucks
+     * Marketplace order MKT-4F2A9C1B77D0. Reason - out of stock. A refund of
+     * USD 15.50 is being arranged. Ref MKT-4F2A9C1B77D0"}.
+     *
+     * <p>Says "part of" without qualification because a single-seller order is
+     * still literally part of it, and a buyer reading this will open the app
+     * to see which. Names the amount when money was actually queued for refund
+     * and stays quiet about it when not — a parcel whose money was already
+     * disputed or paid out turns nothing around, and promising a refund the
+     * ledger has not queued is the one sentence here that must never be wrong.
+     *
+     * <p>The seller's reason is THEIR free text; only the fixed parts of this
+     * template are pinned to round-trip {@link SmsTextSanitizer}.
+     */
+    public static String parcelUnfulfilledMessage(String orderRef, String sellerReason,
+                                                  long refundDueCents, String currency) {
+        StringBuilder message = new StringBuilder("Sorry - a seller cannot supply part of your "
+                + "InnBucks Marketplace order " + orderRef + ".");
+        if (sellerReason != null && !sellerReason.isBlank()) {
+            message.append(" Reason - ").append(sellerReason.trim());
+            if (!sellerReason.trim().endsWith(".")) {
+                message.append('.');
+            }
+        }
+        message.append(refundDueCents > 0
+                ? " A refund of " + money(refundDueCents, currency) + " is being arranged."
+                : " Our support team will be in touch.");
+        return message.append(" Ref ").append(orderRef).toString();
+    }
+
     /** Subject for the back-in-stock alert. */
     public static String restockSubject() {
         return "Back in stock on InnBucks Marketplace";

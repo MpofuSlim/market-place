@@ -31,5 +31,23 @@ public enum FulfilmentStatus {
 
     /** Handed over. Terminal — either the buyer confirmed receipt or the seller
      *  marked it delivered. */
-    DELIVERED
+    DELIVERED,
+
+    /**
+     * The seller cannot supply these goods. Terminal, and reachable only from
+     * PREPARING (V12).
+     *
+     * <p>Named UNFULFILLED rather than CANCELLED because {@code OrderStatus}
+     * already spends that word on a BUYER abandoning an order before paying.
+     * This is the opposite direction: goods already paid for that will not
+     * arrive, which is why it is the one parcel state that puts the buyer's
+     * money on a refund path.
+     *
+     * <p><b>Ordinal position is load-bearing but NOT in the usual way.</b> The
+     * other three are ordered by advancement because {@link
+     * FulfilmentService#rollUp} takes the least advanced. This one is not a
+     * stage of that journey at all, so rollUp EXCLUDES it rather than ranking
+     * it — see that method. Keep it last so nothing reads it as a stage.
+     */
+    UNFULFILLED
 }
