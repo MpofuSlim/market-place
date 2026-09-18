@@ -35,14 +35,17 @@ public class MarketplaceNotificationProperties {
     public static class MerchantOrders {
         /**
          * Notify each merchant's admin users when an order containing their
-         * listings is PAID. DISABLED BY DEFAULT: user-service currently has NO
-         * internal lookup that resolves a merchant's admin USERS by merchantId
-         * (verified 2026-08-06 — {@code /users/internal/merchants/assigned}
-         * returns merchant ids by role, not users), so
-         * {@link MerchantAdminResolver} has no real implementation yet. Flip
-         * this on only once user-service ships that small internal endpoint
-         * and a resolver bean backs it. See CLAUDE.md "Notifications".
+         * listings is PAID. ON by default since
+         * {@link UserServiceMerchantAdminResolver} landed — user-service now
+         * serves {@code GET /users/internal/merchants/{id}/admins}, which it
+         * answers by chaining through loyalty's {@code merchants.admin_email}
+         * (a MERCHANT_ADMIN's user row does not name their merchant).
+         *
+         * <p>Safe to have on against a cell whose user-service is older than
+         * that endpoint: the lookup 404s, resolves nobody, and the notifier
+         * meters {@code outcome=no_recipients} — exactly the behaviour this
+         * flag used to produce, and no worse than a seller not being told.
          */
-        private boolean enabled = false;
+        private boolean enabled = true;
     }
 }

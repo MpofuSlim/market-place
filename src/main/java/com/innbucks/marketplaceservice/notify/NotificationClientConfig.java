@@ -66,19 +66,6 @@ public class NotificationClientConfig {
                 .build();
     }
 
-    /**
-     * The shipped {@link MerchantAdminResolver}: resolves nobody, because
-     * user-service has no merchantId→admin-users internal lookup yet (see the
-     * TODO on the interface). {@code @ConditionalOnMissingBean} so the day a
-     * real S2S client lands, defining its bean replaces this one with no other
-     * change.
-     */
-    @Bean
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(MerchantAdminResolver.class)
-    public MerchantAdminResolver merchantAdminResolver() {
-        return new MerchantAdminResolver.Unavailable();
-    }
-
     /** One boot-time line per channel so an unprovisioned cell is visible in
      *  the startup log instead of surfacing as silent {@code outcome=disabled}
      *  metrics. WARN, never a crash — degradation is deliberate. */
