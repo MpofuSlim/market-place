@@ -20,12 +20,12 @@ import java.util.UUID;
  * {@link MerchantAdminResolver} and delivers through
  * {@link UserNotifyGateway} (user-service owns channel selection).
  *
- * <p><b>DISABLED BY DEFAULT</b> ({@code marketplace.notifications
- * .merchant-orders.enabled=false}): user-service has no merchantId→admin-users
- * internal lookup yet, so the shipped {@link MerchantAdminResolver.Unavailable}
- * resolves nobody — see the TODO on {@link MerchantAdminResolver}. The
- * grouping/composition/fan-out here is complete and unit-tested; enabling is a
- * config flip once the resolver is real.
+ * <p><b>ON by default</b> ({@code marketplace.notifications
+ * .merchant-orders.enabled}), since {@link UserServiceMerchantAdminResolver}
+ * gave {@link MerchantAdminResolver} a real implementation. A merchant whose
+ * admins cannot be resolved — no account yet, an inactive one, or a
+ * user-service/loyalty blip — is metered {@code outcome=no_recipients} and
+ * skipped, never retried and never fatal.
  *
  * <p>Called only from the never-throws notification listener, and defensively
  * never throws itself — a notify failure must never surface anywhere near the

@@ -158,11 +158,13 @@ marketplace:
       # metered marketplace.notifications{type=restock_alert,outcome=overflow}.
       max-recipients-per-event: ${MARKETPLACE_RESTOCK_ALERTS_MAX_RECIPIENTS:200}
     merchant-orders:
-      # Merchant new-paid-order alerts. OFF by default: user-service has no
-      # merchantId -> admin-users internal lookup yet (see CLAUDE.md
-      # "Notifications" + notify/MerchantAdminResolver). Flip on only once
-      # that endpoint + a real resolver bean exist.
-      enabled: ${MARKETPLACE_MERCHANT_ORDER_ALERTS_ENABLED:false}
+      # Merchant new-paid-order alerts, via user-service's
+      # GET /users/internal/merchants/{id}/admins (which chains through
+      # loyalty's merchants.admin_email — a MERCHANT_ADMIN's user row does not
+      # name their merchant). ON: against a user-service too old to serve that
+      # endpoint the lookup 404s and the notifier meters
+      # outcome=no_recipients, which is the old behaviour, not a failure.
+      enabled: ${MARKETPLACE_MERCHANT_ORDER_ALERTS_ENABLED:true}
 
 innbucks:
   country: ${INNBUCKS_COUNTRY:ZW}

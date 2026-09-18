@@ -707,17 +707,44 @@ copied from the middleware/ticketing discipline):**
   Metric `marketplace.notifications{type=order_paid,outcome=sent|fallback|
   failed|disabled}`.
 * **RESTOCK ALERTS** — see the V6 invariant above.
-* **MERCHANT NEW-PAID-ORDER** — `notify/MerchantOrderNotifier` groups the
-  order's lines by listing `merchant_id` and notifies each merchant's admin
-  users via `UserNotifyGateway` with THAT merchant's lines + subtotal.
-  **DISABLED BY DEFAULT** (`marketplace.notifications.merchant-orders
-  .enabled=false`): user-service has NO internal merchantId→admin-users
-  lookup (verified 2026-08-06 — `/users/internal/merchants/assigned` returns
-  merchant ids by role, not users), so the shipped `MerchantAdminResolver
-  .Unavailable` resolves nobody. Enabling needs a SMALL user-service internal
-  endpoint (users/uuids by merchantId, three-files-must-agree) + a real
-  contract-tested resolver bean; the marketplace side (grouping, composing,
-  fan-out) is complete and unit-tested.
+* **MERCHANT NEW-PAID-ORDER — LIVE.** `notify/MerchantOrderNotifier` groups
+  the order's lines by the snapshot `merchant_id` and notifies each merchant's
+  admin users via `UserNotifyGateway` with THAT merchant's lines + subtotal.
+  **ON by default** since `UserServiceMerchantAdminResolver` landed.
+  * **It took THREE repos, because the merchantId→person link is in none of
+    the obvious places.** This service stores no user↔merchant link at all
+    (`merchantId` is a loyalty id copied off a JWT claim). user-service cannot
+    answer it either: `users.loyalty_merchant_id` is stamped on SHOP_ADMIN /
+    SHOP_USER rows only, so a **MERCHANT_ADMIN's own row does not name their
+    merchant** — which is exactly why `AuthService.resolveMerchantIdClaim`
+    resolves the JWT claim by asking loyalty at every login. The binding lives
+    in loyalty's `merchants.admin_email`, and until this work it was readable
+    only email→merchant. So the chain is `merchantId` →
+    (`GET /users/internal/merchants/{id}/admins`) → (`GET /loyalty/internal/
+    merchants/{id}/admin-email`) → the user row, and only the first hop is
+    visible from here.
+  * **Not the shop-staff endpoint** (`/users/internal/shop-staff/by-merchant/
+    {id}/contacts`), which already resolves users by `loyalty_merchant_id` and
+    would have needed no loyalty hop. It returns shop STAFF, and the fulfilment
+    queue is `hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')` — answering with staff
+    notifies people who cannot open the screen the notification is about, while
+    still not telling the one person who can.
+  * **Every miss is the same empty list**, by design at both hops: unknown
+    merchant, no admin on file, no account here yet, an inactive account, a
+    non-MERCHANT_ADMIN account, and a user-service or loyalty outage. The
+    caller's next step is identical for all of them, and a distinguishable
+    answer would make an S2S surface an existence oracle for merchants and
+    accounts. user-service logs which one it was.
+  * **Safe to run ahead of the other two repos.** A user-service too old to
+    serve the endpoint 404s, the resolver returns empty and the notifier meters
+    `outcome=no_recipients` — the pre-existing behaviour, not a failure. Same
+    for a loyalty without its endpoint. So the deploy order is free.
+  * **`MerchantAdminResolver.Unavailable` and its `@ConditionalOnMissingBean`
+    fallback are GONE.** That conditional is only reliable in auto-configuration;
+    against a component-scanned bean it can evaluate before the component is
+    registered and leave TWO `MerchantAdminResolver` beans, which is a
+    `NoUniqueBeanDefinitionException` at boot. The interface survives as the
+    seam the notifier's grouping/composition/fan-out are unit-tested over.
 
 **Copy discipline:** every template lives in `OrderNotificationComposer` and
 MUST round-trip `SmsTextSanitizer` unchanged (`Ref MKT-...` and `" - "`,

@@ -27,7 +27,7 @@ import static org.mockito.Mockito.when;
  * per-merchant message with THAT merchant's subtotal, delivery per resolved
  * admin uuid — plus the guard rails: disabled-by-default no-op (zero repo/
  * gateway touches), no-recipients metering (the shipped
- * {@link MerchantAdminResolver.Unavailable} state), and never-throws.
+ * resolver state), and never-throws.
  */
 class MerchantOrderNotifierTest {
 
@@ -78,9 +78,19 @@ class MerchantOrderNotifierTest {
     }
 
     @Test
-    @DisplayName("DISABLED (the default): outcome=disabled, zero repository or gateway touches")
-    void disabledByDefault_noOp() {
-        assertThat(properties.getMerchantOrders().isEnabled()).isFalse();
+    @DisplayName("ON by default — the resolver is real now, so a seller is told")
+    void enabledByDefault() {
+        // Flipped when UserServiceMerchantAdminResolver landed. Pinned because
+        // the whole point of this notifier is lost silently if it reverts: a
+        // disabled notifier and a merchant with no resolvable admin look
+        // identical from outside, both just meaning nobody was told.
+        assertThat(properties.getMerchantOrders().isEnabled()).isTrue();
+    }
+
+    @Test
+    @DisplayName("Switched OFF: outcome=disabled, zero repository or gateway touches")
+    void disabled_noOp() {
+        properties.getMerchantOrders().setEnabled(false);
 
         notifier.notifyMerchants(event);
 
@@ -118,7 +128,7 @@ class MerchantOrderNotifierTest {
     }
 
     @Test
-    @DisplayName("no resolvable admins (the shipped Unavailable resolver): outcome=no_recipients, nothing sent")
+    @DisplayName("no resolvable admins: outcome=no_recipients, nothing sent")
     void enabled_noResolvableAdmins() {
         properties.getMerchantOrders().setEnabled(true);
         UUID listingId = UUID.randomUUID();
