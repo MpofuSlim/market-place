@@ -680,6 +680,60 @@ never change either casually.
   * **V13 backfills nothing** — no destination was ever collected, so every
     existing seller correctly has none.
 
+* **An unauthenticated PRE-CHECKOUT surface, for building the app before login
+  exists (`/marketplace/public/**`).** Super-app customers authenticate at the
+  InnBucks middleware, which does not yet sign the assertion user-service trades
+  at `POST /auth/exchange` for a fleet CUSTOMER token — so every
+  `hasRole('CUSTOMER')` endpoint here is unreachable from a real ZW session and
+  the FE had nothing to build the basket against. This is the marketplace
+  sibling of loyalty's `/loyalty/public/**`, carried deliberately: same
+  `enabled: false` default, same optional `x-api-key` gate by SHAPE (a filter,
+  never a per-method check), same WARN-per-call trail, same
+  never-re-implement-a-service-method rule. **Do not enable on production.**
+  * **The line is drawn at side effects that LEAVE this service**, and that is
+    the whole design. Cart, addresses, favorites and the checkout QUOTE are
+    here; **order, payment, fulfilment, disputes and collect codes are not, and
+    must not be added.** An order carries `buyerMsisdn`, which payment-service
+    treats as the payer and which on the EcoCash rail is the handset an
+    unsolicited PIN prompt is delivered to — an unauthenticated caller who could
+    name that number would have a phishing tool that works on live phones
+    whatever cell fired it. Orders also reserve real merchant stock. Nothing on
+    this rail sends, reserves or moves money.
+  * **The identity is DERIVED, not supplied, and that is what makes it safe.**
+    The free-form `handle` in the path is hashed to a **version-5** UUID
+    (`PublicTestIdentity`); user-service mints `userUuid` with
+    `UUID.randomUUID()`, which is **version 4**. The version nibble differs, so
+    a caller here can never address a real customer's cart, address book or
+    wishlist — structural, not improbable. It is also what defuses favorites,
+    the one endpoint with a downstream notification: a restock alert for a
+    derived buyer resolves to nobody in user-service and reaches no real phone.
+    `PublicTestIdentityTest` pins the version, and it is not a detail to
+    "simplify" later.
+  * **The derived caller is `CUSTOMER` with a NULL phone.** Null phone means
+    even a mistakenly-added order endpoint could not name a payer. Roles are
+    exactly `{CUSTOMER}`, so no seller or operator surface becomes reachable
+    through it.
+  * Test data on this rail is its own island and does NOT carry over to the
+    same person's real account once `/auth/exchange` is live. Correct for a
+    test rail, not a shortcoming.
+  * `marketplace.public-test.enabled` / `.api-key`
+    (`MARKETPLACE_PUBLIC_TEST_*`). Boot says which of off / ungated / gated a
+    cell is in, and logs an **ERROR** when it is on under a deployment profile.
+    Metrics `marketplace.public_test{operation}` (non-zero in production is an
+    incident) and `marketplace.public_test.rejected{reason}`. Needs no gateway
+    change — the existing `/marketplace/**` route already carries it, and it is
+    deliberately NOT an internal surface, so no deny route.
+  * Pinned by `PublicTestIdentityTest`, `PublicTestApiKeyFilterTest`,
+    `PublicTestSurfaceIT` and — the one that matters most —
+    `PublicTestSurfaceDisabledIT`, which runs on the DEFAULT config and proves
+    the surface is absent unless asked for.
+* **An unknown path is a 404, not a 500.** `GlobalExceptionHandler` now maps
+  `NoResourceFoundException`. Without it that exception fell through to the
+  `Exception` catch-all, so **every typo'd URL in the whole service answered
+  `500 INTERNAL_ERROR`** — telling a client its request was fine and our server
+  broke, and logging somebody else's typo at ERROR (a path scanner could fill
+  the error log on its own). Found while proving the public test surface has no
+  order endpoint: the assertion that an unmapped path 404s failed at 500.
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`

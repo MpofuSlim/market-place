@@ -10,6 +10,7 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -93,6 +94,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest()
                 .body(ApiResult.error("image_too_large",
                         "That image is too large. Please use one under 10 MB."));
+    }
+
+    /**
+     * An unknown path is a 404, not a 500.
+     *
+     * <p>Without this, {@code NoResourceFoundException} falls through to the
+     * catch-all below and every typo'd URL answers {@code 500 INTERNAL_ERROR}
+     * — which tells a client its request was fine and our server broke, and
+     * logs somebody else's typo at ERROR. A scanner walking paths could fill
+     * the error log on its own.
+     *
+     * <p>Logged at DEBUG: an unmatched path is ordinary traffic, not a fault.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResult<Void>> noSuchPath(NoResourceFoundException ex) {
+        log.debug("No handler for {}", ex.getResourcePath());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResult.error("not_found", "Not found"));
     }
 
     @ExceptionHandler(Exception.class)

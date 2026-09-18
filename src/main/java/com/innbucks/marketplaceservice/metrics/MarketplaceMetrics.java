@@ -128,6 +128,40 @@ public class MarketplaceMetrics {
                 .increment();
     }
 
+    /**
+     * Calls refused by the {@code /marketplace/public/**} test surface's
+     * {@code x-api-key} gate: reason={missing_key, bad_key}. Both answer the
+     * caller with the same opaque 401 — the split lives here, where an operator
+     * can tell "our own app forgot the header" from "somebody is guessing".
+     *
+     * <p>Any traffic at all on a cell that should not have the surface on is
+     * itself the finding: alert on the sibling {@code marketplace.public_test}
+     * counter being non-zero in production, not on this one.
+     */
+    public void publicTestRejected(String reason) {
+        Counter.builder("marketplace.public_test.rejected")
+                .description("Public test-surface calls refused by the api-key gate, by reason")
+                .tag("reason", reason == null ? "unknown" : reason)
+                .register(registry)
+                .increment();
+    }
+
+    /**
+     * One served call on the public test surface, tagged by operation
+     * (cart_read, cart_add, address_create, favorite_add, checkout_quote, ...).
+     *
+     * <p>Exists so "is anyone actually using this?" and "is this switched on
+     * somewhere it should not be?" are both answerable from metrics rather than
+     * by grepping logs. A non-zero value on a production cell is an incident.
+     */
+    public void publicTestCall(String operation) {
+        Counter.builder("marketplace.public_test")
+                .description("Calls served by the public test surface, by operation")
+                .tag("operation", operation == null ? "unknown" : operation)
+                .register(registry)
+                .increment();
+    }
+
     /** Listing reports by reason (bounded enum vocabulary — never free text,
      *  which would explode cardinality). */
     public void reportCreated(String reason) {
