@@ -107,12 +107,25 @@ class PublicTestIdentityTest {
     }
 
     @Test
-    void theCallerCarriesNoPhoneSoItCanNeverNameAPayer() {
+    void anOpaqueHandleCarriesNoPhoneSoItCannotNameAPayerByItself() {
         // OrderService.resolveBuyerMsisdn reads this claim, and on the EcoCash
-        // rail it is the handset a PIN prompt is delivered to. A null here means
-        // that even a mistakenly-added order endpoint could not aim a payment
-        // request at a stranger.
+        // rail it is the handset a PIN prompt is delivered to. A demo buyer
+        // stays phone-less — it can only name a payer explicitly in the order
+        // body, where the value is validated like any other number.
         assertThat(PublicTestIdentity.buyerFor("alice").phone()).isNull();
+    }
+
+    @Test
+    void aPhoneKeyedBuyerCarriesItsOwnNumberAsThePayer() {
+        // The deliberate opposite: the phone IS the identity (the operator's
+        // loyalty-parity direction, 2026-09-22), so orders under it are
+        // payable by the basket's owner with no body field — the same rule a
+        // real customer token gets, and the body is ignored the same way.
+        AuthenticatedUser buyer = PublicTestIdentity.buyerForPhone("+263771234567");
+        assertThat(buyer.phone()).isEqualTo("+263771234567");
+        assertThat(buyer.roles()).containsExactly("CUSTOMER");
+        assertThat(buyer.uuid())
+                .isEqualTo(PublicTestIdentity.derivedUuid("+263771234567").toString());
     }
 
     @Test

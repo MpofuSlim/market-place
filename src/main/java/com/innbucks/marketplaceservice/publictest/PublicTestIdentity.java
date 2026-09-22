@@ -22,24 +22,43 @@ import java.util.UUID;
  * switch on:
  *
  * <ul>
- *   <li>A caller cannot read or mutate a real customer's cart, address book or
- *       wishlist by guessing or stealing their uuid, because no input to this
- *       function produces a v4 id at all.</li>
- *   <li>A favourite added here belongs to a buyer that does not exist in
+ *   <li>A caller cannot read or mutate data belonging to a real
+ *       <em>authenticated</em> account by guessing or stealing its uuid,
+ *       because no input to this function produces a v4 id at all.</li>
+ *   <li>A favourite added here belongs to a buyer uuid that does not exist in
  *       user-service, so the restock alert it may later trigger resolves to
- *       nobody and reaches no real person's phone. Favourites are the one
- *       endpoint on this rail with a downstream notification, and this is what
- *       defuses it — see {@code RestockAlertListener}.</li>
- *   <li>Test data written here is therefore its own island. It does NOT carry
- *       over to the same person's authenticated account once
- *       {@code POST /auth/exchange} is live, which is the correct behaviour for
- *       a test rail rather than a shortcoming.</li>
+ *       nobody there. Favourites are the one endpoint on this rail with a
+ *       downstream notification — see {@code RestockAlertListener}.</li>
  * </ul>
  *
- * <p>The handle itself is free-form on purpose — {@code alice}, a device id, a
- * uuid the app already has. The app picks one, keeps using it, and gets a
- * stable basket back. It is never stored: only the derived id reaches the
- * database, so nothing a caller types lands in a column.
+ * <h2>Two kinds of handle, one derivation</h2>
+ * Since the operator's 2026-09-22 direction ("customers exist on Veengu, not
+ * my DB — same as loyalty"), the handle is normally the customer's PHONE
+ * NUMBER, normalised to E.164 by {@link PublicBuyerResolver} before it reaches
+ * this class — so every spelling of a number is one buyer, stable across
+ * devices, and no account or linking step exists, exactly like loyalty's
+ * public surface. Opaque handles ({@code alice}, a device id — anything with a
+ * letter in it) remain for demo data and derive exactly as they always did.
+ *
+ * <p>The two flavours differ in ONE field: a phone-keyed buyer carries the
+ * normalised phone, so orders placed under it are payable BY that phone with
+ * no body field — {@code OrderService.resolveBuyerMsisdn} prefers the
+ * identity's phone and ignores the body, the same rule a real customer token
+ * gets. An opaque buyer stays phone-less: it can only name a payer explicitly
+ * in the order body, where the value is validated like any other.
+ *
+ * <p>Either way the handle is never stored: only the derived id (and, for a
+ * phone, the normalised number on the rows that need a payer) reaches the
+ * database.
+ *
+ * <p><b>Carry-over to {@code POST /auth/exchange}, designed but not yet
+ * built:</b> a real account's {@code userUuid} is random (v4), so even a
+ * phone-keyed basket does not automatically follow the customer into their
+ * authenticated session. Because the derivation here is deterministic, the
+ * adoption is one re-key per table — {@code buyer_uuid = derivedUuid(phone) →
+ * userUuid} — runnable the first time an authenticated caller with that phone
+ * claim touches this service. That is the follow-up that makes the switch to
+ * exchange seamless; do not fake it by handing this rail v4 ids.
  */
 public final class PublicTestIdentity {
 
@@ -58,15 +77,14 @@ public final class PublicTestIdentity {
     }
 
     /**
-     * The caller this rail acts as. Always exactly {@code CUSTOMER}: every
+     * The OPAQUE-handle caller. Always exactly {@code CUSTOMER}: every
      * endpoint behind it is a buyer endpoint, and granting anything wider would
      * put a seller or operator surface behind an unauthenticated path.
      *
-     * <p>{@code phone} is deliberately left null. It is what
-     * {@code OrderService.resolveBuyerMsisdn} would treat as the payer — the
-     * number an EcoCash PIN prompt is delivered to — so a rail that cannot set
-     * it cannot aim a payment request at a stranger's handset even if an order
-     * endpoint were one day added here by mistake.
+     * <p>{@code phone} is deliberately left null on this flavour. It is what
+     * {@code OrderService.resolveBuyerMsisdn} treats as the payer, so an
+     * opaque demo buyer can only name one explicitly in the order body, where
+     * it is validated like any other number.
      */
     public static AuthenticatedUser buyerFor(String handle) {
         return new AuthenticatedUser(
@@ -75,6 +93,32 @@ public final class PublicTestIdentity {
                 null,   // merchantId — never a seller
                 null,   // shopId
                 null,   // phone — see the javadoc above
+                null);  // country
+    }
+
+    /**
+     * The PHONE-keyed caller — the customer as the Veengu session knows them.
+     *
+     * @param e164 the ALREADY-normalised number from
+     *             {@link PublicBuyerResolver}; passing a raw spelling here
+     *             would fork one customer into as many baskets as there are
+     *             ways to type their number, which is the bug the resolver
+     *             exists to prevent. The id is derived from this canonical
+     *             form, so {@code 0771234567} and {@code +263771234567} are
+     *             one buyer — and a handle that already WAS canonical E.164
+     *             derives the same id it always has.
+     *
+     * <p>The phone rides on the principal, which is what makes an order
+     * placed under this identity payable by it with no body field: the payer
+     * IS the basket's owner, the same invariant a real customer token has.
+     */
+    public static AuthenticatedUser buyerForPhone(String e164) {
+        return new AuthenticatedUser(
+                derivedUuid(e164).toString(),
+                Set.of("CUSTOMER"),
+                null,   // merchantId — never a seller
+                null,   // shopId
+                e164,   // the payer, by identity rather than by body field
                 null);  // country
     }
 

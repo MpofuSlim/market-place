@@ -1,8 +1,9 @@
 # Marketplace public test surface — frontend integration
 
-**`/marketplace/public/**` — the pre-checkout journey with no login.** Build the
-basket, address book, wishlist and checkout-quote screens now, while the super
-app's login is still being wired to the fleet.
+**`/marketplace/public/**` — the buyer journey, keyed on the customer's phone.**
+Your customers authenticate at the InnBucks middleware (Veengu), not at this
+fleet — so their identity here is their **phone number**, exactly as it is for
+loyalty points and vouchers. No login against us, no account step, no linking.
 
 > [!IMPORTANT]
 > **Staging only, and off unless a cell turns it on.** A cell that has not set
@@ -10,11 +11,12 @@ app's login is still being wired to the fleet.
 > The **order** endpoints additionally need the cell to have an `x-api-key`
 > configured. Ask which cell you are pointed at and what it has set.
 >
-> **This is not a login.** It is the same guest-checkout posture the super app
-> already buys tickets through, scoped to a handle you choose. When
-> `POST /auth/exchange` lands, the same journey is available with a real fleet
-> token, identical bodies — see `Auth-Exchange-Frontend-Integration.md`,
-> `Marketplace-SuperApp-Frontend-Integration.md`, and §11 below.
+> **This is not a login.** The x-api-key authenticates your BROKER; the broker
+> asserts the phone it authenticated at Veengu — the same posture loyalty's
+> public surface has always had, which is why that key must stay in your
+> server-side functions and never in the app binary. When `POST /auth/exchange`
+> lands, the same journey runs on a real fleet token with identical bodies —
+> see `Auth-Exchange-Frontend-Integration.md` and §11 below.
 
 ---
 
@@ -25,10 +27,16 @@ https://<cell-edge>/marketplace/public/...
 ```
 
 - **No `Authorization` header. No `X-Tenant-Id`.** Send nothing but the request.
-- **The `handle` in the path is the identity.** Any string you choose — `alice`,
-  a device id, whatever your test harness generates. Keep using the same one and
-  you get the same basket back. Max 64 characters; blank or longer is a
-  `400 invalid_handle`.
+- **The `handle` in the path is the CUSTOMER'S PHONE NUMBER** — the number your
+  broker got from the Veengu session. Send it in whatever form you hold it
+  (`0771234567`, `+263771234567`, spaced, punctuated): the server normalises
+  it, and **every spelling is the same buyer**. Same phone = same basket,
+  addresses and orders, on every device, forever — exactly how loyalty works.
+  There is **no account step and no linking step**; do not build one.
+- A handle **containing a letter** (`alice`, `demo-3`) still works and keys a
+  disposable demo buyer, as before. Digits that are **not a dialable number**
+  are refused (`400 invalid_msisdn`) rather than silently becoming an empty
+  demo basket. Max 64 characters; blank or longer is `400 invalid_handle`.
 - **Optional `x-api-key`.** Where the cell sets one, every call needs it and a
   missing or wrong value is a `401`. Where it is blank — the default — no header
   is needed.
@@ -46,15 +54,22 @@ call the same code.
 
 ### What a handle actually is
 
-Your handle is hashed server-side into an internal buyer id. Two consequences
-worth knowing before you plan around it:
+The handle is normalised (phones → E.164) and hashed server-side into an
+internal buyer id; the raw value is never stored, and a phone is masked in our
+logs. Three consequences worth knowing:
 
-- **It can never collide with a real customer.** The derived id is a version-5
-  UUID; real customers carry version-4 ids. You cannot reach anyone's real data
-  from here, and nobody can reach yours.
-- **The data does not carry over.** When the app switches to a real fleet token,
-  that customer starts with an empty cart and an empty address book. Test data
-  lives on this rail only. That is deliberate — plan your demo data accordingly.
+- **A phone-keyed basket is the customer's real, durable basket** for as long
+  as the app runs on this rail. It follows the phone across devices and app
+  reinstalls with nothing to link.
+- **The derived id can never collide with an authenticated account's id**
+  (version-5 vs version-4 UUIDs), so nothing on this rail can touch data
+  created under a real fleet token, or vice versa.
+- **When `POST /auth/exchange` goes live**, the plan is a server-side adoption:
+  the first time that customer's real session touches the marketplace, their
+  phone-keyed rows are re-keyed to the real account — invisible to the user.
+  Until that ships, treat exchange cut-over as starting fresh. Either way,
+  **never show the customer an account or linking step**: from their side
+  there is only "open the app, shop".
 
 ---
 
@@ -74,9 +89,10 @@ flow without a fleet token.
   endpoints work on an ungated cell; the order endpoints answer `404` there.
   If your cart works and `POST .../orders` 404s, that is what has happened —
   ask the operator to set `MARKETPLACE_PUBLIC_TEST_API_KEY` and restart.
-- **`buyerMsisdn` is required in the order body.** On the authenticated surface
-  the token supplies the payer and the body field is ignored. Here there is no
-  token, so the body is the only source and omitting it is a `400`.
+- **The payer is the phone in the path.** With a phone handle the payer comes
+  from the identity itself — no `buyerMsisdn` needed, and a body value is
+  ignored, the same rule a real customer token gets. Only a lettered demo
+  handle still supplies `buyerMsisdn` in the body.
 
 **Not here:** anything a seller or an operator does — dispatch, marking
 delivered, moderation, settlements, payouts. Those need a real
@@ -255,29 +271,34 @@ names the payment-service call to make once you have an order.
 | `GET` | `/marketplace/public/buyers/{handle}/orders/{orderId}` |
 | `POST` | `/marketplace/public/buyers/{handle}/orders/{orderId}/cancel` |
 
-**Create.** Same body as the quote, plus the payer's number. **The
-`Idempotency-Key` header is REQUIRED** — a create without one is refused
-`400 idempotency_key_required` before anything else is looked at. Mint a
-fresh key per checkout attempt and retry the same body under the same key
-rather than risking a second order.
+**Create.** Same body as the quote. **The `Idempotency-Key` header is
+REQUIRED** — a create without one is refused `400 idempotency_key_required`
+before anything else is looked at. Mint a fresh key per checkout attempt and
+retry the same body under the same key rather than risking a second order.
+
+**The payer is the handle.** When the handle is a phone, **omit
+`buyerMsisdn`** — the order is payable by the basket's owner, and a body value
+naming a different number is **ignored**, exactly as it is for a real customer
+token. Only a lettered demo handle still needs `buyerMsisdn` in the body
+(`400 invalid_msisdn` without it).
 
 ```http
-POST /marketplace/public/buyers/alice/orders
+POST /marketplace/public/buyers/0771234567/orders
 x-api-key: <the cell's key>
 Idempotency-Key: 9f1c2a77-checkout-attempt-1
 Content-Type: application/json
 
 {
   "fromCart": true,
-  "buyerMsisdn": "0771234567",
   "deliveryMethod": "DELIVERY",
   "deliveryAddressId": "8f2c…"
 }
 ```
 
-- **`buyerMsisdn` is required and is the number that will be prompted to pay.**
-  Send what the user typed; it is normalised to `+263771234567` server-side. A
-  number that is not dialable is a `400 invalid_msisdn`, and nothing is
+- **The number prompted to pay is the handle's phone** — normalised to
+  `+263771234567` server-side, no `buyerMsisdn` needed. A body `buyerMsisdn`
+  is ignored for phone handles; only a lettered demo handle needs it. A handle
+  that is digits but not dialable is a `400 invalid_msisdn`, and nothing is
   reserved on the way to that refusal.
 - **This one DOES reserve stock**, unlike the cart and the quote. An abandoned
   order holds a merchant's inventory until it expires — cancel it if the
@@ -348,7 +369,7 @@ All under `/marketplace/public/buyers/{handle}`, all gated like §7.
 |---|---|
 | `400 invalid_handle` | Blank handle, or longer than 64 characters |
 | `400 VALIDATION_ERROR` | A body field failed validation; `data` names the fields |
-| `400 invalid_msisdn` | The order body had no `buyerMsisdn`, or one that is not dialable |
+| `400 invalid_msisdn` | The handle looked like a phone but is not dialable; or a demo-handle order had no/invalid `buyerMsisdn` |
 | `401` | The cell gates this prefix and your `x-api-key` was missing or wrong |
 | `403 review_requires_purchase` | Reviewing something this handle has not paid for |
 | `404` | **The surface is not enabled**, or **the order half is off because the cell has no api-key**, or the thing does not exist, or belongs to another handle |
@@ -368,14 +389,19 @@ check those two before assuming a bug.
 - [ ] Everything `404`s → the cell has not enabled the surface. Ask an operator.
 - [ ] Only the **order** calls `404` → the cell has no `x-api-key` configured.
 - [ ] Getting `401`s → the cell has an `x-api-key` and you are not sending it.
-- [ ] Use **one stable handle** per test user; a new handle is a new empty basket.
+- [ ] **The handle is the customer's phone** from the Veengu session — any
+      spelling, same basket. Lettered handles remain for demo data only.
+- [ ] **No account or linking step, ever** — the phone IS the identity, same
+      as loyalty. If you are building a "link your account" screen, stop.
 - [ ] Do **not** send `Authorization` or `X-Tenant-Id`.
 - [ ] Money is **cents**, always. Never send or expect a decimal.
 - [ ] Keep out-of-stock cart lines **visible** with their `issue`.
 - [ ] `checkoutReady: false` is a `200` — render it, do not error.
 - [ ] Quantity `0` on the stepper is a refusal; call `DELETE` instead.
 - [ ] `POST /addresses` returns `201`, not `200`; so does `POST /orders`.
-- [ ] **`buyerMsisdn` is required on order create** and is not echoed back.
+- [ ] **Omit `buyerMsisdn` on phone-handle orders** — the payer is the handle
+      and a body value is ignored. Demo (lettered) handles still need it. It
+      is never echoed back either way.
 - [ ] **`Idempotency-Key` is required on order create** — omitting it is a
       `400 idempotency_key_required`. Fresh key per attempt; retry under the
       same one.
@@ -394,10 +420,12 @@ Switching over is a change of **URL and header**, not a rewrite:
 
 | Today | After |
 |---|---|
-| `/marketplace/public/buyers/{handle}/orders` | `/marketplace/orders` |
-| `x-api-key: <cell key>` | `Authorization: Bearer <fleet token>` |
-| `buyerMsisdn` in the body | Taken from the token; body field ignored |
-| Data keyed to your handle | Data keyed to the real customer |
+| `/marketplace/public/buyers/{phone}/orders` | `/marketplace/orders` |
+| `x-api-key: <cell key>` (broker-held) | `Authorization: Bearer <fleet token>` |
+| Payer = the phone in the path | Payer = the token's phone claim — same number, same rule |
+| Data keyed to `hash(phone)` | Data keyed to the account's `userUuid` |
 
-Test data does **not** carry over — the handle's cart, addresses and orders stay
-on this rail. Plan your demo data accordingly.
+The last row is the only real gap: the server-side adoption that re-keys a
+phone's rows onto the real account is designed (see §1) but not built yet.
+Until it ships, cut-over starts the customer fresh; demo (lettered) handles
+never carry over, by design.

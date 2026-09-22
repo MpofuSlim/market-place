@@ -201,6 +201,43 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
     }
 
     @Test
+    @DisplayName("a phone handle is the customer: one basket across spellings, and the payer is the identity")
+    void aPhoneHandleIsTheCustomer() throws Exception {
+        String listingId = publishListing();
+
+        // Added under the local spelling…
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/cart/items", "0772000111"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"listingId\":\"%s\",\"quantity\":2}".formatted(listingId)))
+                .andExpect(status().isOk());
+
+        // …read back under E.164: the SAME basket. This is the loyalty-parity
+        // rule — the customer exists at Veengu, the phone is the identity, and
+        // no spelling of it forks a second cart.
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/cart", "+263772000111")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalQuantity").value(2));
+
+        // The order needs NO buyerMsisdn — the payer is the basket's owner —
+        // and a body naming a DIFFERENT number is ignored, exactly as it is
+        // for a real customer token. This is the line that stops the broker
+        // (or anyone holding the key) aiming a PIN prompt at a third number
+        // while acting as this basket.
+        String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "0772000111"))
+                        .header("Idempotency-Key", "phone-identity-attempt")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"fromCart":true,"buyerMsisdn":"+263779999999"}"""))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+
+        assertThat(jdbc.queryForObject(
+                "SELECT buyer_msisdn FROM market_order WHERE id = ?::uuid", String.class, orderId))
+                .isEqualTo("+263772000111");
+    }
+
+    @Test
     void theApiKeyIsStillRequiredOnEveryOrderCall() throws Exception {
         // The gate is the filter's, by shape over the whole prefix. Pinned here
         // because the order endpoints are the ones where losing it matters.

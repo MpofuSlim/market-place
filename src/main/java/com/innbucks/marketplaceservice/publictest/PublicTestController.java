@@ -147,9 +147,14 @@ import java.util.UUID;
              against real data before the super app's login is wired to the fleet. They are disabled \
              (404) unless the cell sets `MARKETPLACE_PUBLIC_TEST_ENABLED=true`.
 
-             **The `handle` in the path is the identity** — any string you choose (`alice`, a device \
-             id). Keep using the same one and you get the same basket back. It is hashed into an \
-             internal buyer id and never stored as you typed it.
+             **The `handle` in the path is the customer's PHONE NUMBER** — the number the broker \
+             authenticated at the InnBucks middleware (Veengu). Any spelling normalises to the same \
+             buyer (`0771234567` ≡ `+263771234567`), so the same customer gets the same basket on \
+             every device with no account or linking step — the loyalty posture. Orders under a \
+             phone handle are payable BY that phone; a body `buyerMsisdn` is ignored. A handle \
+             containing a letter (`alice`) keys a disposable demo buyer instead, exactly as before, \
+             and that one still names its payer in the order body. Handles are hashed and never \
+             stored as typed.
 
              **Optional `x-api-key`.** A cell MAY put a shared key in front of this whole prefix \
              (`MARKETPLACE_PUBLIC_TEST_API_KEY`). Where one is set, every call needs the header and a \
@@ -229,6 +234,7 @@ public class PublicTestController {
     private final FulfilmentService fulfilmentService;
     private final DisputeService disputeService;
     private final ReviewService reviewService;
+    private final PublicBuyerResolver buyerResolver;
     private final MarketplaceMetrics metrics;
 
     /**
@@ -688,13 +694,15 @@ public class PublicTestController {
      */
     private AuthenticatedUser actAs(String handle, String operation) {
         requireEnabled();
-        AuthenticatedUser buyer = PublicTestIdentity.buyerFor(handle);
+        AuthenticatedUser buyer = buyerResolver.resolve(handle);
         metrics.publicTestCall(operation);
         // WARN, not INFO: every line here is an unauthenticated write or read
         // that would normally have required a token, and the point is that it
-        // stands out in a log nobody was expecting it in. The handle is the
-        // caller's own label, never a real customer's identifier.
-        log.warn("[public-test] {} handle={} buyer={}", operation, handle, buyer.uuid());
+        // stands out in a log nobody was expecting it in. A phone handle is a
+        // real customer's number now, so it is MASKED here (fleet rule: never
+        // log a full MSISDN); an opaque demo handle stays readable.
+        log.warn("[public-test] {} handle={} buyer={}",
+                operation, buyerResolver.loggable(handle), buyer.uuid());
         return buyer;
     }
 
