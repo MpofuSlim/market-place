@@ -50,24 +50,35 @@ public class PublicTestProvisioningCheck {
 
         if (isDeploymentProfile()) {
             log.error("Public test surface is ENABLED ON A DEPLOYMENT PROFILE: /marketplace/public/** "
-                    + "serves carts, address books, wishlists and checkout quotes with NO "
-                    + "authentication. This is a build aid for staging only. Set "
-                    + "MARKETPLACE_PUBLIC_TEST_ENABLED=false unless this cell is deliberately a test "
-                    + "environment.");
+                    + "serves carts, address books, wishlists, checkout quotes AND — where an "
+                    + "api-key is configured — real orders, with NO authentication. This is a build "
+                    + "aid for staging only. Set MARKETPLACE_PUBLIC_TEST_ENABLED=false unless this "
+                    + "cell is deliberately a test environment.");
         }
 
         String key = apiKey == null ? "" : apiKey.trim();
         if (key.isEmpty()) {
-            log.warn("Public test surface is UNGATED: /marketplace/public/** is ENABLED and "
-                    + "MARKETPLACE_PUBLIC_TEST_API_KEY is blank, so any caller who can reach this cell "
-                    + "can use it. To gate it, set the key (openssl rand -base64 32) in this host's "
-                    + "gitignored cell.<iso>.local.env and give the same value to the app.");
+            // Deliberately the LOUDER of the two halves, because an operator
+            // reading "ungated" and an operator wondering why ordering 404s are
+            // the same person, and nothing on the wire distinguishes an ungated
+            // cell from a cell that never enabled the surface.
+            log.warn("Public test surface is UNGATED and its ORDER endpoints are therefore OFF: "
+                    + "/marketplace/public/** is ENABLED but MARKETPLACE_PUBLIC_TEST_API_KEY is "
+                    + "blank, so cart, addresses, favorites and quote are served to any caller who "
+                    + "can reach this cell, while order/cancel/receipt/dispute/collect-code/review "
+                    + "answer 404. To gate the surface and switch ordering on, set the key "
+                    + "(openssl rand -base64 32) in this host's gitignored cell.<iso>.local.env and "
+                    + "give the same value to the app.");
         } else {
-            log.info("Public test surface is enabled and gated by an x-api-key.");
+            log.info("Public test surface is enabled and gated by an x-api-key; the ORDER endpoints "
+                    + "are SERVED. Unauthenticated callers holding the key can reserve real stock, "
+                    + "create orders payable on the live rails, and trigger collect-code SMS.");
         }
 
-        log.info("Public test surface serves PRE-CHECKOUT endpoints only: cart, addresses, favorites "
-                + "and checkout quote. It cannot create an order, take a payment or send a message.");
+        log.info("Public test surface serves the BUYER journey only: cart, addresses, favorites, "
+                + "quote, order, tracking, receipt, dispute, collect code and review. The derived "
+                + "caller holds CUSTOMER and nothing else, so no seller, operator or settlement "
+                + "endpoint is reachable through it.");
     }
 
     /** Mirrors ProductionSecretsGuard: no dev/test/it/local profile — the empty set included. */

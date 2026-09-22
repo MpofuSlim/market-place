@@ -690,15 +690,44 @@ never change either casually.
   `enabled: false` default, same optional `x-api-key` gate by SHAPE (a filter,
   never a per-method check), same WARN-per-call trail, same
   never-re-implement-a-service-method rule. **Do not enable on production.**
-  * **The line is drawn at side effects that LEAVE this service**, and that is
-    the whole design. Cart, addresses, favorites and the checkout QUOTE are
-    here; **order, payment, fulfilment, disputes and collect codes are not, and
-    must not be added.** An order carries `buyerMsisdn`, which payment-service
-    treats as the payer and which on the EcoCash rail is the handset an
-    unsolicited PIN prompt is delivered to — an unauthenticated caller who could
-    name that number would have a phishing tool that works on live phones
-    whatever cell fired it. Orders also reserve real merchant stock. Nothing on
-    this rail sends, reserves or moves money.
+  * **The order journey IS here, and the earlier rule against it was wrong
+    about this fleet.** This surface originally stopped at the checkout quote,
+    reasoning that an order carries `buyerMsisdn` — which payment-service treats
+    as the payer, and which on the EcoCash rail is the handset an unsolicited
+    PIN prompt is delivered to — so an unauthenticated caller naming that number
+    would hold a phishing tool that works on live phones. The risk is real. The
+    conclusion was not, because **booking-service already `permitAll`s
+    `POST /bookings`**: a ticket purchase is created with a client-supplied
+    `phoneNumber` and that number is exactly what payment-service later hands
+    EcoCash. Guest checkout is the fleet's established posture for a super app
+    that authenticates elsewhere, and marketplace refusing it left the ZW app
+    able to fill a basket and unable to buy anything in it — which is precisely
+    the report that came back from the FE. So order / cancel / receipt /
+    dispute / collect-code / review are served here, and the risk is accepted
+    knowingly rather than reasoned away. **If the fleet ever closes guest
+    checkout on booking-service, close this in the same change.**
+  * **Two things make it narrower than ticketing's, not wider.** (1) The order
+    endpoints additionally require the cell to have an api-key CONFIGURED
+    (`requireOrderRail`): the pre-checkout half may run ungated — a leaked cart
+    is a nuisance — but anything that reserves stock or names a payer is 404
+    on a cell with a blank `MARKETPLACE_PUBLIC_TEST_API_KEY`, which is far more
+    often an operator mid-provisioning than a deliberate choice to take orders
+    from the open internet. `POST /bookings` has no equivalent gate at all.
+    (2) Ownership of every order, parcel, dispute and review keys on the DERIVED
+    buyer id, so holding the key buys a caller nothing but their own handle's
+    orders. The refusal is **404, matched to the surface-off refusal**, so an
+    ungated cell is indistinguishable on the wire from one that never enabled
+    the surface; the boot log is where an operator learns which they have.
+  * **`buyerMsisdn` is REQUIRED in the order body here**, where the
+    authenticated twin ignores it. `resolveBuyerMsisdn` prefers the token's
+    phone claim and the derived caller has none, so the body is the only source
+    and a missing one is a clean `400 invalid_msisdn` having reserved nothing.
+    Do NOT give the derived identity a phone to "fix" that — a server-invented
+    payer is the phishing shape, and an explicit refusal is the honest answer.
+  * **Nothing here reaches a seller or operator surface**, and not by an
+    accident of routing: the derived caller holds `CUSTOMER` and nothing else,
+    so dispatch, delivery marking, moderation, settlement and payout are all
+    refused by their own `@PreAuthorize`.
   * **The identity is DERIVED, not supplied, and that is what makes it safe.**
     The free-form `handle` in the path is hashed to a **version-5** UUID
     (`PublicTestIdentity`); user-service mints `userUuid` with
@@ -724,9 +753,15 @@ never change either casually.
     change — the existing `/marketplace/**` route already carries it, and it is
     deliberately NOT an internal surface, so no deny route.
   * Pinned by `PublicTestIdentityTest`, `PublicTestApiKeyFilterTest`,
-    `PublicTestSurfaceIT` and — the one that matters most —
+    `PublicTestSurfaceIT` (enabled but UNGATED — proves the cart works and the
+    order rail is off), `PublicTestOrderRailIT` (enabled AND gated — proves the
+    order journey works, the payer is validated, and one handle cannot touch
+    another's order) and — the one that matters most —
     `PublicTestSurfaceDisabledIT`, which runs on the DEFAULT config and proves
-    the surface is absent unless asked for.
+    the surface is absent unless asked for. The first two are deliberately
+    SEPARATE classes: they prove opposite halves of the same rule and cannot
+    share a configuration, and a single class flipping the property mid-run is
+    how a gate stops being tested.
 * **An unknown path is a 404, not a 500.** `GlobalExceptionHandler` now maps
   `NoResourceFoundException`. Without it that exception fell through to the
   `Exception` catch-all, so **every typo'd URL in the whole service answered
