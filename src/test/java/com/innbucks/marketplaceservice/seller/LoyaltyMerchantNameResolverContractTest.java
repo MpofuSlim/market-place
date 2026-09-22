@@ -100,8 +100,13 @@ class LoyaltyMerchantNameResolverContractTest {
     }
 
     @Test
-    @DisplayName("A merchant with a null name is absent, not an empty string")
+    @DisplayName("DEFENSIVE (not an observed shape): a null name is absent, not an empty string")
     void nullNameIsAbsent() {
+        // Loyalty CANNOT currently emit this: merchants.name is VARCHAR(200)
+        // NOT NULL, so a known merchant always carries a name and a missing
+        // row means the id names nothing. Kept as client hardening against a
+        // future nullable column -- and labelled, because a stub of a shape
+        // nobody has observed pins our assumption rather than their contract.
         wireMock.stubFor(get(urlPathEqualTo(PATH))
                 .willReturn(okJson("""
                         {"merchants":[{"merchantId":"%s","name":null}]}""".formatted(A))));

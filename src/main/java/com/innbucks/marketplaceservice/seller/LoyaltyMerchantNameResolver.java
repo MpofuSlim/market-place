@@ -152,9 +152,11 @@ public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
             }
             String name = row.name() == null || row.name().isBlank() ? null : row.name().trim();
             if (name == null) {
-                // The merchant exists and has no name on file. Nothing to
-                // render and nothing to cache — a name added later should
-                // appear on the next page, not after a TTL.
+                // Defensive only: loyalty's merchants.name is NOT NULL, so a
+                // known merchant always carries one and a missing row means
+                // the id names nothing. Should that ever change, a blank is
+                // nothing to render and nothing to cache — a name added later
+                // should appear on the next page, not after a TTL.
                 continue;
             }
             try {
