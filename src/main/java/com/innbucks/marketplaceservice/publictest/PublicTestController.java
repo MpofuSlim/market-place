@@ -15,8 +15,20 @@ import com.innbucks.marketplaceservice.delivery.DeliveryAddressService;
 import com.innbucks.marketplaceservice.delivery.dto.AddressRequest;
 import com.innbucks.marketplaceservice.delivery.dto.AddressResponse;
 import com.innbucks.marketplaceservice.favorite.FavoriteService;
+import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
+import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.order.OrderService;
+import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
+import com.innbucks.marketplaceservice.order.dto.OrderPageResponse;
+import com.innbucks.marketplaceservice.order.dto.OrderResponse;
+import com.innbucks.marketplaceservice.review.ReviewService;
+import com.innbucks.marketplaceservice.review.dto.ReviewRequest;
+import com.innbucks.marketplaceservice.review.dto.ReviewResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.settlement.DisputeService;
+import com.innbucks.marketplaceservice.settlement.dto.DisputeRequest;
+import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
@@ -28,6 +40,9 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +50,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -55,23 +71,41 @@ import java.util.UUID;
  * meantime. It is the marketplace sibling of loyalty's
  * {@code /loyalty/public/**}, and follows its rules deliberately.
  *
- * <h2>What is NOT here, and will not be</h2>
- * <b>Order creation, payment, fulfilment, disputes and collect codes are
- * absent by design.</b> The line is drawn at anything with an effect that
- * leaves this service:
- * <ul>
- *   <li>An order carries {@code buyerMsisdn}, which payment-service treats as
- *       the payer, and on the EcoCash rail that is the handset an unsolicited
- *       PIN prompt is delivered to. An unauthenticated caller who could name
- *       that number would have a phishing tool that works on live phones
- *       whatever cell it was fired from.</li>
- *   <li>An order also reserves real merchant stock, and escrow, settlement and
- *       dispute all key on a buyer identity that must be real to mean anything.</li>
- * </ul>
- * Everything on this rail writes only rows this service owns, sends nothing,
- * reserves nothing, and moves no money. Keep it that way: if a new endpoint
- * here would cause an SMS, a payment or a stock hold, it does not belong on
- * this surface.
+ * <h2>The order rail, and the price of it</h2>
+ * This surface originally stopped at the checkout quote, on the reasoning that
+ * an order carries {@code buyerMsisdn} — which payment-service treats as the
+ * payer, and which on the EcoCash rail is the handset an unsolicited PIN prompt
+ * is delivered to — so an unauthenticated caller who could name that number
+ * would hold a phishing tool that works on live phones.
+ *
+ * <p><b>That reasoning was right about the risk and wrong about this fleet.</b>
+ * booking-service already {@code permitAll}s {@code POST /bookings}: a ticket
+ * purchase is created with a client-supplied {@code phoneNumber}, and that
+ * number is what payment-service later hands EcoCash as the payer. Guest
+ * checkout is the fleet's established posture for a super app that
+ * authenticates elsewhere, and marketplace refusing it left the ZW app able to
+ * fill a basket and unable to buy anything in it. So the order journey lives
+ * here now, and the risk is accepted knowingly rather than reasoned away.
+ *
+ * <p><b>Two things make it narrower than ticketing's, not wider:</b>
+ * <ol>
+ *   <li><b>The order endpoints require a configured api-key</b>
+ *       ({@link #requireOrderRail()}). The pre-checkout endpoints may run
+ *       ungated — a leaked cart is a nuisance — but anything that reserves
+ *       stock or names a payer is 404 on a cell that has not set
+ *       {@code MARKETPLACE_PUBLIC_TEST_API_KEY}. {@code POST /bookings} has no
+ *       equivalent gate at all.</li>
+ *   <li><b>The payer is still never a free choice of the caller's alone.</b>
+ *       Ownership of every order, parcel, dispute and review keys on the
+ *       DERIVED buyer id below, so a caller can only ever act on orders their
+ *       own handle created.</li>
+ * </ol>
+ *
+ * <p><b>Still absent, and still deliberate:</b> nothing here reaches a seller's
+ * or an operator's surface — no dispatch, no delivery marking, no moderation,
+ * no settlement, no payout. Those are not blocked by an accident of routing:
+ * the derived caller holds {@code CUSTOMER} and nothing else, so the
+ * {@code @PreAuthorize} on each of them refuses it.
  *
  * <h2>Rules for anything added under this prefix</h2>
  * <ol>
@@ -123,13 +157,23 @@ import java.util.UUID;
              Ask which applies to the cell you are pointed at. The key identifies the APP, not the \
              customer.
 
-             **There is no order, payment or fulfilment endpoint here, and there will not be.** Placing \
-             an order names the phone that receives a payment PIN prompt and reserves a merchant's \
-             stock; neither belongs behind an unauthenticated path. Those ship against \
-             `POST /auth/exchange` — see `Auth-Exchange-Frontend-Integration.md`.
+             **The order journey is here too — browse, cart, address, quote, order, pay, track, \
+             confirm, review** — mirroring booking-service's guest checkout, which the super app \
+             already buys tickets through. Because ordering names a payer and reserves real stock, \
+             **those endpoints additionally require the cell to have an `x-api-key` configured**: \
+             on an ungated cell the pre-checkout endpoints work and the order endpoints are `404`.
 
-             Every other tag in this document requires a bearer token. If you are looking for the \
-             endpoint you will SHIP against, it is there, not here.""")
+             `buyerMsisdn` is **required** in the order body here — the derived caller carries no \
+             phone claim of its own, so there is nothing to fall back to. It is validated to E.164 \
+             and it is the number payment-service will prompt to pay.
+
+             Nothing here reaches a seller or operator surface. The derived caller is a `CUSTOMER` \
+             and nothing else.
+
+             When `POST /auth/exchange` goes live the same journey is available with a real fleet \
+             token and no api-key — see `Auth-Exchange-Frontend-Integration.md`. The request and \
+             response bodies are identical, so switching over is a change of URL and header, not a \
+             rewrite.""")
 @SecurityRequirements   // documents "no auth" — overrides the global bearerAuth requirement
 public class PublicTestController {
 
@@ -181,6 +225,10 @@ public class PublicTestController {
     private final DeliveryAddressService addressService;
     private final FavoriteService favoriteService;
     private final CheckoutService checkoutService;
+    private final OrderService orderService;
+    private final FulfilmentService fulfilmentService;
+    private final DisputeService disputeService;
+    private final ReviewService reviewService;
     private final MarketplaceMetrics metrics;
 
     /**
@@ -190,6 +238,15 @@ public class PublicTestController {
      */
     @Value("${marketplace.public-test.enabled:false}")
     private boolean enabled;
+
+    /**
+     * Read here only to decide whether the ORDER endpoints are served — the
+     * header itself is checked by {@code PublicTestApiKeyFilter}, by shape,
+     * for the whole prefix. Duplicating the compare in this class is exactly
+     * the mistake that rule exists to prevent.
+     */
+    @Value("${marketplace.public-test.api-key:}")
+    private String apiKey;
 
     // ---------------------------------------------------------------- cart
 
@@ -438,6 +495,184 @@ public class PublicTestController {
         return ResponseEntity.ok(ApiResult.ok(checkoutService.options()));
     }
 
+    // -------------------------------------------------------------- orders
+
+    @PostMapping("/buyers/{handle}/orders")
+    @Operation(summary = "[TEST] Place an order",
+            description = "Creates a real order: it reserves real merchant stock and it names the "
+                    + "phone payment-service will prompt to pay. Same service call, same rules and "
+                    + "the same response body as the authenticated `POST /marketplace/orders`.\n\n"
+                    + "**`buyerMsisdn` is required here.** On the authenticated surface the payer "
+                    + "comes from the token's phone claim and the body field is ignored; the "
+                    + "derived caller has no phone claim, so the body is the only source and a "
+                    + "missing one is a 400. It is normalised to E.164 and a number that is not "
+                    + "dialable is refused rather than stored.\n\n"
+                    + "**Requires the cell to have an `x-api-key` configured** — on an ungated "
+                    + "cell this endpoint is 404 while the cart still works. Send "
+                    + "`Idempotency-Key` and retry the same body under the same key to replay the "
+                    + "original response rather than buying twice.\n\n"
+                    + "The response carries the `payment` block naming what to POST to "
+                    + "payment-service next.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Order placed; stock reserved, awaiting payment"),
+            @ApiResponse(responseCode = "400", description = "Missing or invalid `buyerMsisdn`, or a malformed basket",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"invalid_msisdn","message":"buyerMsisdn is required","data":null}"""))),
+            @ApiResponse(responseCode = "404", description = "The surface is off, or this cell has no api-key configured",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "A line lost the stock race, or the key is in flight"),
+            @ApiResponse(responseCode = "422", description = "Lines unavailable or short-stocked; `data.rejections` names every one")
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> createOrder(
+            @PathVariable String handle,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @Valid @RequestBody CreateOrderRequest request) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_create");
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ApiResult.created(orderService.createOrder(buyer, request, idempotencyKey)));
+    }
+
+    @GetMapping("/buyers/{handle}/orders")
+    @Operation(summary = "[TEST] This handle's orders",
+            description = "Newest first. Only orders this handle placed — ownership is the derived "
+                    + "buyer id, so there is no parameter that could name someone else's.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The order page"),
+            @ApiResponse(responseCode = "404", description = "The surface is off, or this cell has no api-key configured",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404)))
+    })
+    public ResponseEntity<ApiResult<OrderPageResponse>> myOrders(
+            @PathVariable String handle,
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
+            Pageable pageable) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_list");
+        return ResponseEntity.ok(ApiResult.ok(
+                OrderPageResponse.from(orderService.getMine(buyer, pageable))));
+    }
+
+    @GetMapping("/buyers/{handle}/orders/{orderId}")
+    @Operation(summary = "[TEST] One order, with its parcels and payment block",
+            description = "The tracking screen's single read. Another handle's order is a **404**, "
+                    + "the same owner-masked answer the authenticated surface gives.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The order"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404)))
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> myOrder(
+            @PathVariable String handle, @PathVariable String orderId) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_read");
+        return ResponseEntity.ok(ApiResult.ok(
+                orderService.getOrder(buyer, parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"))));
+    }
+
+    @PostMapping("/buyers/{handle}/orders/{orderId}/cancel")
+    @Operation(summary = "[TEST] Cancel an unpaid order",
+            description = "Only a PENDING_PAYMENT order can be cancelled; its reserved stock is "
+                    + "returned exactly once.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Cancelled; stock returned"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "The order has moved on and cannot be cancelled")
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> cancelOrder(
+            @PathVariable String handle, @PathVariable String orderId) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_cancel");
+        return ResponseEntity.ok(ApiResult.ok("Order cancelled", orderService.cancelOrder(
+                buyer, parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"))));
+    }
+
+    // ---------------------------------------------------------- after the sale
+
+    @PostMapping("/buyers/{handle}/orders/{orderId}/fulfilments/{fulfilmentId}/received")
+    @Operation(summary = "[TEST] Confirm a parcel arrived",
+            description = "Closes ONE parcel — a multi-seller order is confirmed a seller at a "
+                    + "time, because that is how the goods arrive. A buyer's own confirmation "
+                    + "releases that seller's escrow immediately.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Parcel closed; the whole order is returned"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "The parcel is already closed")
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> confirmReceived(
+            @PathVariable String handle, @PathVariable String orderId,
+            @PathVariable String fulfilmentId) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_confirm_receipt");
+        return ResponseEntity.ok(ApiResult.ok("Thanks - receipt confirmed",
+                orderService.confirmReceived(buyer,
+                        parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"),
+                        parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
+    }
+
+    @PostMapping("/buyers/{handle}/orders/{orderId}/fulfilments/{fulfilmentId}/collect-code")
+    @Operation(summary = "[TEST] Mint a collection handover code",
+            description = "COLLECTION parcels only. **The response is the only place the code is "
+                    + "ever readable** — no seller surface can see it. Calling again mints a fresh "
+                    + "code and kills the previous one.\n\n"
+                    + "Note this endpoint SENDS AN SMS to whoever is collecting, so it costs money "
+                    + "per call on a live cell.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "A live code for this parcel"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "A delivery order, or a parcel already handed over")
+    })
+    public ResponseEntity<ApiResult<CollectCodeResponse>> collectCode(
+            @PathVariable String handle, @PathVariable String orderId,
+            @PathVariable String fulfilmentId) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_collect_code");
+        return ResponseEntity.ok(ApiResult.ok("Collection code ready - show it when you collect",
+                fulfilmentService.mintCollectCode(buyer,
+                        parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"),
+                        parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
+    }
+
+    @PostMapping("/buyers/{handle}/orders/{orderId}/fulfilments/{fulfilmentId}/dispute")
+    @Operation(summary = "[TEST] Dispute a parcel",
+            description = "Freezes THIS parcel's money until an operator decides. One dispute per "
+                    + "parcel, ever. Disputing an undelivered parcel is legal on purpose — \"it "
+                    + "never arrived\" is the refund path.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Dispute opened"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "Already disputed, or a refund is already due")
+    })
+    public ResponseEntity<ApiResult<DisputeResponse>> dispute(
+            @PathVariable String handle, @PathVariable String orderId,
+            @PathVariable String fulfilmentId, @Valid @RequestBody DisputeRequest request) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_dispute");
+        return ResponseEntity.ok(ApiResult.ok("Dispute opened - we will review it and get back to you",
+                disputeService.open(buyer,
+                        parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"),
+                        parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"),
+                        request.reason(), request.detail())));
+    }
+
+    @PostMapping("/buyers/{handle}/listings/{listingId}/reviews")
+    @Operation(summary = "[TEST] Review something this handle bought",
+            description = "Verified purchase only: the handle needs a PAID order containing this "
+                    + "listing, or it is a 403. That gate is the same query the authenticated "
+                    + "surface runs, so a handle can only review what it actually paid for.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Review posted"),
+            @ApiResponse(responseCode = "403", description = "No paid order of this handle contains the listing"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or no such listing",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "This handle has already reviewed this listing")
+    })
+    public ResponseEntity<ApiResult<ReviewResponse>> review(
+            @PathVariable String handle, @PathVariable String listingId,
+            @Valid @RequestBody ReviewRequest request) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "review_create");
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.created(
+                reviewService.create(buyer,
+                        parseUuid(listingId, "invalid_listing_id", "Listing id must be a UUID"),
+                        request)));
+    }
+
     // ------------------------------------------------------------ internals
 
     /**
@@ -459,6 +694,17 @@ public class PublicTestController {
     }
 
     /**
+     * {@link #actAs} plus the second gate the money-adjacent half of this
+     * surface carries. Every endpoint that reserves stock, names a payer,
+     * moves escrow or sends an SMS goes through this one and not through
+     * {@code actAs} directly.
+     */
+    private AuthenticatedUser actAsOrderingBuyer(String handle, String operation) {
+        requireOrderRail();
+        return actAs(handle, operation);
+    }
+
+    /**
      * 404, never 403 — "this endpoint does not exist here" is the honest answer
      * on a cell that has not enabled the surface, and it tells a prober nothing
      * about what the build is capable of.
@@ -470,6 +716,43 @@ public class PublicTestController {
             // which would make a cell that simply has the feature off look
             // broken.
             throw ApiException.notFound("not_found", "Not found");
+        }
+    }
+
+    /**
+     * The order half of this surface needs the cell to be GATED, not merely
+     * enabled.
+     *
+     * <p>The two halves carry different consequences, so they get different
+     * bars. An ungated cart is a nuisance — the worst a stranger does is fill
+     * somebody's basket. An ungated order reserves a merchant's real stock and
+     * writes a phone number that payment-service will later prompt to pay, and
+     * a blank {@code MARKETPLACE_PUBLIC_TEST_API_KEY} is much more often an
+     * operator who has not finished provisioning than a deliberate choice to
+     * run wide open.
+     *
+     * <p>So the refusal is 404, matched to {@link #requireEnabled()}: a cell
+     * that has not finished provisioning answers exactly as a cell that never
+     * enabled the surface, and the boot log — not the wire — is where an
+     * operator learns which of the two they are looking at.
+     */
+    private void requireOrderRail() {
+        requireEnabled();
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            metrics.publicTestRejected("order_rail_ungated");
+            log.warn("[public-test] order endpoint refused: the surface is enabled but "
+                    + "MARKETPLACE_PUBLIC_TEST_API_KEY is blank, so ordering stays off");
+            throw ApiException.notFound("not_found", "Not found");
+        }
+    }
+
+    /** GlobalExceptionHandler has no MethodArgumentTypeMismatch mapping, so a
+     *  UUID-typed {@code @PathVariable} would 500 on garbage — parse here. */
+    private static UUID parseUuid(String raw, String code, String message) {
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest(code, message);
         }
     }
 }

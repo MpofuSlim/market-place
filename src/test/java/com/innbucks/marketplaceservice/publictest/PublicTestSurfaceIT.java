@@ -119,16 +119,35 @@ class PublicTestSurfaceIT extends PostgresTestContainer {
     }
 
     @Test
-    void thereIsNoWayToPlaceAnOrderFromThisSurface() throws Exception {
-        // The boundary. Order creation names the phone a payment PIN prompt is
-        // delivered to and reserves a merchant's stock, so it stays behind a
-        // real token however convenient a public twin would be.
+    void theOrderRailIsOffOnAnUNGATEDCellEvenThoughTheSurfaceIsOn() throws Exception {
+        // This class runs enabled-but-ungated (no api-key property), which is
+        // the state an operator lands in by setting one env var and stopping.
+        // The cart above works. Ordering must not: it reserves a merchant's
+        // real stock and writes the number payment-service will prompt to pay,
+        // and an operator mid-provisioning is far more likely than a deliberate
+        // choice to take orders from anyone on the internet.
         mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders", "alice")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"fromCart\":true}"))
+                        .content("""
+                                {"fromCart":true,"buyerMsisdn":"0771234567"}"""))
                 .andExpect(status().isNotFound());
 
-        // And the real one is still refused without a token.
+        mockMvc.perform(get("/marketplace/public/buyers/{handle}/orders", "alice"))
+                .andExpect(status().isNotFound());
+
+        UUID someId = UUID.randomUUID();
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders/{o}/cancel", "alice", someId))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders/{o}/fulfilments/{f}/received",
+                        "alice", someId, someId))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders/{o}/fulfilments/{f}/collect-code",
+                        "alice", someId, someId))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void theRealOrderEndpointIsStillRefusedWithoutAToken() throws Exception {
         mockMvc.perform(post("/marketplace/orders")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"fromCart\":true}"))

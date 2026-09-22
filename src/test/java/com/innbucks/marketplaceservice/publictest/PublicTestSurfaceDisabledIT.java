@@ -53,6 +53,35 @@ class PublicTestSurfaceDisabledIT extends PostgresTestContainer {
 
         mockMvc.perform(get("/marketplace/public/checkout/options"))
                 .andExpect(status().isNotFound());
+
+        // The order half is absent on the default config for TWO independent
+        // reasons — the surface is off AND no api-key is configured — and this
+        // asserts the outcome, so it keeps holding if either one is ever
+        // loosened by accident.
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders", "alice")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"fromCart":true,"buyerMsisdn":"0771234567"}"""))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/marketplace/public/buyers/{handle}/orders", "alice"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders/{o}/cancel", "alice", listingId))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders/{o}/fulfilments/{f}/received",
+                        "alice", listingId, listingId))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/orders/{o}/fulfilments/{f}/collect-code",
+                        "alice", listingId, listingId))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/listings/{id}/reviews", "alice", listingId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":5}"))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -68,6 +97,12 @@ class PublicTestSurfaceDisabledIT extends PostgresTestContainer {
         mockMvc.perform(post("/marketplace/checkout/quote")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"fromCart\":true}"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/marketplace/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromCart\":true}"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/marketplace/orders/mine"))
                 .andExpect(status().isUnauthorized());
     }
 
