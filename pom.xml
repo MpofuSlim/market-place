@@ -34,7 +34,7 @@
              already pins — this bump brings marketplace back in step with the
              fleet's fix-line. Drop on the next Boot upgrade if the BOM has
              caught up. -->
-        <tomcat.version>11.0.25</tomcat.version>
+        <tomcat.version>11.0.26</tomcat.version>
         <!-- postgres JDBC: CVE-2026-42198 (HIGH) fixed in 42.7.11+. -->
         <postgresql.version>42.7.13</postgresql.version>
         <!-- httpcore5 5.4.2 arrives transitively through httpclient5 (the Apache
