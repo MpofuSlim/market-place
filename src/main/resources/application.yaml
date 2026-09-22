@@ -81,18 +81,26 @@ marketplace:
     # marketplace sibling of loyalty's /loyalty/public/** and off for exactly
     # the same reason: the handle in the path is the only identity.
     #
-    # It deliberately carries cart, addresses, favorites and the checkout QUOTE
-    # and nothing else. An order names the phone that receives a payment PIN
-    # prompt and reserves a merchant's stock, so order/payment/fulfilment stay
-    # behind a real token however convenient it would be. See
-    # PublicTestController for the rule on adding to this prefix.
+    # It carries the whole BUYER journey: cart, addresses, favorites, checkout
+    # quote, AND order / cancel / receipt / dispute / collect-code / review.
+    # The order half is gated a second time (see api-key below) because it
+    # reserves a merchant's real stock and names the phone that receives a
+    # payment PIN prompt. See PublicTestController for the rule on adding to
+    # this prefix.
     #
     # DO NOT enable on a production cell. Boot logs an ERROR if you do.
     enabled: ${MARKETPLACE_PUBLIC_TEST_ENABLED:false}
-    # Optional shared key in front of the whole prefix. Blank = no gate (the
-    # surface's own switch is what fails closed). The key identifies the APP,
-    # not the customer: a throttle and a kill switch. Generate:
+    # Shared key in front of the whole prefix. The key identifies the APP, not
+    # the customer: a throttle and a kill switch. Generate:
     # openssl rand -base64 32
+    #
+    # BLANK IS NOT NEUTRAL — it is the switch for the order half. Blank means
+    # the pre-checkout endpoints (cart, addresses, favorites, quote) are served
+    # to ANY caller who can reach this cell, while every ORDER endpoint answers
+    # 404, identically to a cell that never enabled the surface. That is the
+    # deliberate fail-safe for an operator who has enabled the surface and not
+    # finished provisioning, and it is the single most likely reason ordering
+    # 404s while the cart works. The boot log says which state this cell is in.
     api-key: ${MARKETPLACE_PUBLIC_TEST_API_KEY:}
   checkout:
     # The payment rails GET /marketplace/checkout/options advertises, in
