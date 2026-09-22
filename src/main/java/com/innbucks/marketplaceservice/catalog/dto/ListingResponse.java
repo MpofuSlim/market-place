@@ -111,6 +111,13 @@ public record ListingResponse(
 
     public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
                                        MarketplaceSeller seller) {
+        return from(listing, images, categoryName, seller, null);
+    }
+
+    /** {@code resolvedName} is the registry's trading name for this listing's
+     *  merchant, used only where no operator-set name exists. */
+    public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
+                                       MarketplaceSeller seller, String resolvedName) {
         boolean hasPrimary = images.stream().anyMatch(ImageMeta::isPrimaryImage);
         List<String> urls = images.stream()
                 .map(meta -> "/marketplace/catalog/" + listing.getId() + "/images/" + meta.getId())
@@ -138,8 +145,8 @@ public record ListingResponse(
                         : null,
                 urls,
                 seller == null
-                        ? SellerBadge.unknown(listing.getMerchantId())
-                        : SellerBadge.from(seller));
+                        ? SellerBadge.unknown(listing.getMerchantId(), resolvedName)
+                        : SellerBadge.from(seller, resolvedName));
     }
 
     /** One-decimal average from the denormalized V5 aggregates — zero extra

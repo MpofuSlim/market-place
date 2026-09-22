@@ -44,10 +44,11 @@ public class ListingViewAssembler {
         String categoryName = categoryRepository.findById(listing.getCategoryCode())
                 .map(Category::getName)
                 .orElse(null);
-        MarketplaceSeller seller = sellerService
-                .findAllByMerchantIds(List.of(listing.getMerchantId()))
-                .get(listing.getMerchantId());
-        return ListingResponse.from(listing, images, categoryName, seller);
+        List<UUID> merchantIds = List.of(listing.getMerchantId());
+        Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(merchantIds);
+        MarketplaceSeller seller = sellers.get(listing.getMerchantId());
+        return ListingResponse.from(listing, images, categoryName, seller,
+                sellerService.displayNames(merchantIds, sellers).get(listing.getMerchantId()));
     }
 
     /** Page assembly: exactly THREE extra queries for the whole page —
@@ -90,6 +91,9 @@ public class ListingViewAssembler {
         List<UUID> merchantIds = content.stream()
                 .map(Listing::getMerchantId).distinct().toList();
         Map<UUID, MarketplaceSeller> sellersByMerchant = sellerService.findAllByMerchantIds(merchantIds);
+        // Fourth batch, and only for the merchants with no name of their own:
+        // one call for the whole page, never one per listing.
+        Map<UUID, String> merchantNames = sellerService.displayNames(merchantIds, sellersByMerchant);
         List<String> codes = content.stream()
                 .map(Listing::getCategoryCode).distinct().toList();
         Map<String, String> categoryNames = codes.isEmpty()
@@ -102,7 +106,8 @@ public class ListingViewAssembler {
                     listing,
                     imagesByListing.getOrDefault(listing.getId(), List.of()),
                     categoryNames.get(listing.getCategoryCode()),
-                    sellersByMerchant.get(listing.getMerchantId())));
+                    sellersByMerchant.get(listing.getMerchantId()),
+                    merchantNames.get(listing.getMerchantId())));
         }
         return byId;
     }

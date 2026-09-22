@@ -142,15 +142,21 @@ public class SettlementQueryService {
     @Transactional(readOnly = true)
     public Csv payoutReportCsv() {
         List<PayoutRow> rows = settlementRepository.payoutReport();
-        Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(
-                rows.stream().map(PayoutRow::getMerchantId).toList());
+        List<UUID> merchantIds = rows.stream().map(PayoutRow::getMerchantId).toList();
+        Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(merchantIds);
+        // The name finance checks a transfer against. Operator-set wins; the
+        // loyalty registry fills the gap, so a seller who was never approved
+        // is no longer a bare UUID on the sheet money is paid from. One batch
+        // for the whole report, and an unreachable registry just leaves the
+        // column as it was.
+        Map<UUID, String> names = sellerService.displayNames(merchantIds, sellers);
         StringBuilder csv = new StringBuilder("merchantId,displayName,parcels,netCents,currency,"
                 + "payoutMethod,payoutAccountName,payoutMsisdn,payoutBankName,"
                 + "payoutAccountNumber,payoutChangedAt\n");
         for (PayoutRow row : rows) {
             MarketplaceSeller seller = sellers.get(row.getMerchantId());
             csv.append(row.getMerchantId()).append(',')
-                    .append(csvField(seller == null ? null : seller.getDisplayName())).append(',')
+                    .append(csvField(names.get(row.getMerchantId()))).append(',')
                     .append(row.getParcels()).append(',')
                     .append(row.getNetCents()).append(',')
                     .append(row.getCurrency()).append(',')

@@ -162,14 +162,12 @@ public class OrderViewAssembler {
         if (merchantIds.isEmpty()) {
             return Map.of();
         }
+        // Operator-set name wins; the loyalty registry fills the gaps, so a
+        // buyer's order no longer names an unapproved seller by UUID. Still
+        // one batch for the page, and still best-effort: an unreachable
+        // registry leaves the name absent exactly as before.
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(merchantIds);
-        Map<UUID, String> names = new java.util.LinkedHashMap<>();
-        sellers.forEach((id, seller) -> {
-            if (seller.getDisplayName() != null) {
-                names.put(id, seller.getDisplayName());
-            }
-        });
-        return names;
+        return sellerService.displayNames(merchantIds, sellers);
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {
