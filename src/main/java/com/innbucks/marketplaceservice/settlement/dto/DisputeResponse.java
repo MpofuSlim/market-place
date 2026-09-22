@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.settlement.dto;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.settlement.DisputeReason;
 import com.innbucks.marketplaceservice.settlement.DisputeStatus;
+import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.settlement.SettlementDispute;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -37,6 +38,15 @@ public record DisputeResponse(
         @Schema(description = "The operator's note, once resolved", nullable = true)
         String resolutionNote,
 
+        @Schema(description = "The frozen parcel's money, minor units - what a RELEASE clears "
+                + "for the seller's next payout run or a REFUND returns to the buyer. Always the "
+                + "WHOLE parcel: there are no partial outcomes.",
+                example = "4798", nullable = true)
+        Long netCents,
+
+        @Schema(example = "USD", nullable = true)
+        String currency,
+
         @Schema(example = "2026-09-15T10:00:00Z")
         Instant createdAt,
 
@@ -44,8 +54,19 @@ public record DisputeResponse(
         Instant resolvedAt) {
 
     public static DisputeResponse from(SettlementDispute d) {
+        return from(d, null);
+    }
+
+    /** With the settlement in hand, the row also names the money at stake -
+     *  the queue batch-loads settlements so this never costs a per-row read.
+     *  A missing settlement (never expected) simply omits the amount rather
+     *  than failing the whole page. */
+    public static DisputeResponse from(SettlementDispute d, MerchantSettlement settlement) {
         return new DisputeResponse(d.getId(), d.getOrderId(), d.getFulfilmentId(),
                 d.getMerchantId(), d.getReason(), d.getDetail(), d.getStatus(),
-                d.getResolutionNote(), d.getCreatedAt(), d.getResolvedAt());
+                d.getResolutionNote(),
+                settlement == null ? null : settlement.getNetCents(),
+                settlement == null ? null : settlement.getCurrency(),
+                d.getCreatedAt(), d.getResolvedAt());
     }
 }

@@ -27,6 +27,8 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Disputes: the buyer's half of the escrow.
@@ -143,7 +145,7 @@ public class DisputeService {
                 dispute.getId().toString(), metadata);
         log.info("dispute opened id={} orderRef={} parcel={} reason={}",
                 dispute.getId(), order.getOrderRef(), parcel.getId(), reason);
-        return DisputeResponse.from(dispute);
+        return DisputeResponse.from(dispute, settlement);
     }
 
     /**
@@ -189,7 +191,15 @@ public class DisputeService {
         Page<SettlementDispute> result = status == null
                 ? disputeRepository.findAllByOrderByCreatedAtAsc(pageable)
                 : disputeRepository.findByStatusOrderByCreatedAtAsc(status, pageable);
-        return result.map(DisputeResponse::from);
+        // ONE grouped read for the page's settlements (the assembler
+        // discipline), so every row can carry the money at stake without a
+        // per-row query.
+        Map<UUID, MerchantSettlement> settlements = settlementRepository
+                .findAllById(result.getContent().stream()
+                        .map(SettlementDispute::getSettlementId).toList())
+                .stream()
+                .collect(Collectors.toMap(MerchantSettlement::getId, Function.identity()));
+        return result.map(d -> DisputeResponse.from(d, settlements.get(d.getSettlementId())));
     }
 
     /**
@@ -242,7 +252,7 @@ public class DisputeService {
         eventPublisher.publishEvent(DisputeResolved.of(dispute, settlement, orderRef));
         log.info("dispute resolved id={} action={} orderId={}",
                 dispute.getId(), request.action(), dispute.getOrderId());
-        return DisputeResponse.from(dispute);
+        return DisputeResponse.from(dispute, settlement);
     }
 
     private static String blankToNull(String value) {

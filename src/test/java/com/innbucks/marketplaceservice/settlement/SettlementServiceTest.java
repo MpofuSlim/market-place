@@ -401,7 +401,7 @@ class SettlementServiceTest {
     }
 
     @Test
-    @DisplayName("A refund cannot be recorded against HELD money — only REFUND_DUE or DISPUTED")
+    @DisplayName("A refund cannot be recorded against HELD money — only REFUND_DUE")
     void recordRefundPaymentRefusesHeldMoney() {
         MerchantSettlement s = settlement(SettlementStatus.HELD);
         when(settlementRepository.findById(s.getId())).thenReturn(Optional.of(s));
@@ -410,6 +410,26 @@ class SettlementServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("illegal_settlement_state");
+        assertThat(s.getRefundReference()).isNull();
+        verify(auditService, never()).record(any(), anyString(), anyString(), anyMap());
+    }
+
+    @Test
+    @DisplayName("A DISPUTED row is refused toward the dispute queue — a direct refund would "
+            + "orphan the OPEN dispute")
+    void recordRefundPaymentRefusesADisputedRow() {
+        // DISPUTED -> REFUNDED is a legal machine edge (the dispute resolve
+        // rides it), so without the explicit guard this call would succeed —
+        // and the OPEN dispute would then be unresolvable: both resolve
+        // actions become illegal transitions from REFUNDED.
+        MerchantSettlement s = settlement(SettlementStatus.DISPUTED);
+        when(settlementRepository.findById(s.getId())).thenReturn(Optional.of(s));
+
+        assertThatThrownBy(() -> service.recordRefundPayment(OPERATOR, s.getId(), "RFND-77"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("settlement_disputed");
+        assertThat(s.getStatus()).isEqualTo(SettlementStatus.DISPUTED);
         assertThat(s.getRefundReference()).isNull();
         verify(auditService, never()).record(any(), anyString(), anyString(), anyMap());
     }

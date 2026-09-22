@@ -106,6 +106,8 @@ public class SettlementController {
               "reason": "NOT_RECEIVED",
               "detail": "Paid five days ago, the seller has stopped answering.",
               "status": "OPEN",
+              "netCents": 4798,
+              "currency": "USD",
               "createdAt": "2026-09-15T10:00:00Z"
             }""";
 
@@ -210,6 +212,8 @@ public class SettlementController {
                                 "id": "5c8d1e2f-9a34-4b67-8c01-2d3e4f5a6b7c",
                                 "status": "REFUNDED",
                                 "resolutionNote": "Courier photo shows the parcel left at the wrong address.",
+                                "netCents": 4798,
+                                "currency": "USD",
                                 "resolvedAt": "2026-09-16T09:00:00Z"
                               }
                             }"""))),
@@ -321,9 +325,15 @@ public class SettlementController {
                     content = @Content(examples = @ExampleObject(value = """
                             {"code":"settlement_not_found","message":"Settlement not found"}"""))),
             @ApiResponse(responseCode = "409", description = "This money is not owed back — only "
-                    + "a REFUND_DUE settlement can be refunded this way",
-                    content = @Content(examples = @ExampleObject(value = """
-                            {"code":"illegal_settlement_state","message":"This settlement is HELD and cannot move to REFUNDED"}""")))
+                    + "a REFUND_DUE settlement can be refunded this way. A DISPUTED row gets its "
+                    + "own code: recording its refund here would leave the OPEN dispute "
+                    + "unresolvable, so it is pointed at the dispute queue instead.",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "not refund-due", value = """
+                                    {"code":"illegal_settlement_state","message":"This settlement is HELD and cannot move to REFUNDED"}"""),
+                            @ExampleObject(name = "disputed", value = """
+                                    {"code":"settlement_disputed","message":"This settlement is DISPUTED - resolve the dispute (PATCH /marketplace/settlements/disputes/{id}, action REFUND) instead of refunding it directly"}""")
+                    }))
     })
     public ResponseEntity<ApiResult<SettlementResponse>> refund(
             @PathVariable UUID id, @Valid @RequestBody RefundRequest request) {

@@ -21,9 +21,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -37,6 +40,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -330,5 +334,28 @@ class DisputeServiceTest {
         verify(settlementService, never()).releaseByOperator(any());
         verify(settlementService, never()).recordRefund(any(), any());
         verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("The queue names each row's frozen money, from ONE batched settlement read")
+    void queueCarriesTheFrozenMoney() {
+        MerchantSettlement s = settlement(UUID.randomUUID(), SettlementStatus.DISPUTED);
+        SettlementDispute withMoney = dispute(s, DisputeStatus.OPEN);
+        SettlementDispute orphaned = dispute(
+                settlement(UUID.randomUUID(), SettlementStatus.DISPUTED), DisputeStatus.OPEN);
+        when(disputeRepository.findByStatusOrderByCreatedAtAsc(eq(DisputeStatus.OPEN), any()))
+                .thenReturn(new PageImpl<>(List.of(withMoney, orphaned)));
+        when(settlementRepository.findAllById(any())).thenReturn(List.of(s));
+
+        Page<DisputeResponse> page = service.queue(DisputeStatus.OPEN, 0, 20);
+
+        assertThat(page.getContent().get(0).netCents()).isEqualTo(4798L);
+        assertThat(page.getContent().get(0).currency()).isEqualTo("USD");
+        // A settlement the batch could not find (never expected) costs that
+        // row its amount, never the whole page.
+        assertThat(page.getContent().get(1).netCents()).isNull();
+        assertThat(page.getContent().get(1).currency()).isNull();
+        // The assembler discipline: one grouped read, never one per row.
+        verify(settlementRepository, times(1)).findAllById(any());
     }
 }
