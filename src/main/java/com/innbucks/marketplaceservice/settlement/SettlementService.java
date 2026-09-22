@@ -291,6 +291,17 @@ public class SettlementService {
         MerchantSettlement settlement = settlementRepository.findById(settlementId)
                 .orElseThrow(() -> ApiException.notFound("settlement_not_found",
                         "Settlement not found"));
+        if (settlement.getStatus() == SettlementStatus.DISPUTED) {
+            // DISPUTED -> REFUNDED is a legal machine edge, but only the
+            // dispute resolve may take it: refunding a disputed row HERE
+            // would orphan the OPEN dispute - once the settlement is
+            // REFUNDED, both resolve actions become illegal transitions and
+            // the dispute can never close, pinning the FIFO queue forever.
+            throw ApiException.conflict("settlement_disputed",
+                    "This settlement is DISPUTED - resolve the dispute"
+                            + " (PATCH /marketplace/settlements/disputes/{id}, action REFUND)"
+                            + " instead of refunding it directly");
+        }
         transition(settlement, SettlementStatus.REFUNDED,
                 "Refund paid - " + refundReference, s -> {
                     s.setRefundedAt(Instant.now());

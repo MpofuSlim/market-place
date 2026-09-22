@@ -590,7 +590,15 @@ never change either casually.
     against that reference, **per parcel rather than batched like the payout
     run**: a payout is one transfer to one merchant covering everything
     cleared, while a refund goes back to the individual buyer of one order, and
-    a single batched reference would be proof to none of them.
+    a single batched reference would be proof to none of them. **It accepts
+    REFUND_DUE only**: DISPUTED → REFUNDED is a legal machine edge, but only
+    the dispute resolve may take it — refunding a DISPUTED row here would
+    orphan the OPEN dispute (both resolve actions then become illegal
+    transitions from REFUNDED and the FIFO queue is pinned forever), so it is
+    refused 409 `settlement_disputed` pointing at the dispute queue. Dispute
+    rows (queue, open, resolve responses) carry `netCents`/`currency` from a
+    batched settlement read — the operator decides over a named amount, and
+    there are NO partial outcomes: RELEASE or REFUND, always the whole parcel.
   * **Only HELD money turns around.** A parcel whose settlement is already
     DISPUTED, RELEASABLE or PAID_OUT still CLOSES — refusing would leave the
     parcel open, which is the exact state being fixed — but the money is left
