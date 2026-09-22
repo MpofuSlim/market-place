@@ -411,6 +411,12 @@ class CatalogServiceTest {
                         .displayName("Rudo Traders")
                         .createdAt(since)
                         .build()));
+        // The name now comes through SellerService, which layers the
+        // operator-set name over the loyalty registry's — the profile reads
+        // the resolved answer rather than the column, so a seller nobody has
+        // approved is still named.
+        when(sellerService.displayNames(eq(List.of(merchantId)), org.mockito.ArgumentMatchers.anyMap()))
+                .thenReturn(Map.of(merchantId, "Rudo Traders"));
         when(reviewService.merchantRating(merchantId))
                 .thenReturn(new MerchantRatingResponse(merchantId, 4.5, 12));
         when(listingRepository.countByMerchantIdAndStatus(merchantId, ListingStatus.ACTIVE))

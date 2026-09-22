@@ -45,10 +45,23 @@ public record SellerResponse(
         Instant decidedAt
 ) {
     public static SellerResponse from(MarketplaceSeller s) {
+        return from(s, null);
+    }
+
+    /**
+     * With the trading name already resolved — the operator-set one when there
+     * is one, otherwise the loyalty registry's. Passed in rather than looked
+     * up here so a page of sellers resolves its names in ONE batch, and so the
+     * DTO stays free of a network dependency.
+     */
+    public static SellerResponse from(MarketplaceSeller s, String resolvedName) {
+        String name = s.getDisplayName() != null && !s.getDisplayName().isBlank()
+                ? s.getDisplayName()
+                : resolvedName;
         return new SellerResponse(
                 s.getMerchantId(),
                 s.getStatus(),
-                s.getDisplayName(),
+                name,
                 s.getStatus().isVerified(),
                 s.getStatus().canPublish(),
                 s.getDecidedBy(),

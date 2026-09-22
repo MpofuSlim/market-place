@@ -196,12 +196,16 @@ public class CatalogService {
      */
     @Transactional(readOnly = true)
     public MerchantProfileResponse merchantProfile(UUID merchantId) {
-        MarketplaceSeller seller = sellerService.findAllByMerchantIds(List.of(merchantId))
-                .get(merchantId);
+        Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(List.of(merchantId));
+        MarketplaceSeller seller = sellers.get(merchantId);
+        // An operator-set name wins; the loyalty registry fills the gap, so a
+        // seller nobody has approved yet is still named rather than a bare
+        // UUID. Unreachable registry = no name, which is the prior behaviour.
+        String name = sellerService.displayNames(List.of(merchantId), sellers).get(merchantId);
         MerchantRatingResponse rating = reviewService.merchantRating(merchantId);
         return new MerchantProfileResponse(
                 merchantId,
-                seller == null ? null : seller.getDisplayName(),
+                name,
                 seller != null && seller.getStatus().isVerified(),
                 seller == null ? null : seller.getCreatedAt(),
                 rating.ratingAvg(),

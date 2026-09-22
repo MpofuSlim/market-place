@@ -56,7 +56,10 @@ class SellerServiceTest {
         when(sellers.save(any(MarketplaceSeller.class))).thenAnswer(inv -> inv.getArgument(0));
         service = new SellerService(sellers, listings, audit,
                 new com.innbucks.marketplaceservice.api.Msisdns("ZW"),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                // No registry in a plain unit test: names resolve locally only,
+                // which is exactly the pre-feature behaviour these cases pin.
+                ids -> java.util.Map.of());
     }
 
     private MarketplaceSeller existing(SellerStatus status) {

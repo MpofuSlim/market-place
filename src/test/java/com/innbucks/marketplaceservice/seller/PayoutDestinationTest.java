@@ -54,7 +54,9 @@ class PayoutDestinationTest {
         auditService = mock(AuditService.class);
         eventPublisher = mock(ApplicationEventPublisher.class);
         service = new SellerService(sellers, mock(ListingRepository.class), auditService,
-                new Msisdns("ZW"), eventPublisher);
+                new Msisdns("ZW"), eventPublisher,
+                // No registry in a plain unit test: names resolve locally only.
+                ids -> java.util.Map.of());
         when(sellers.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
 

@@ -688,6 +688,60 @@ never change either casually.
   * **V13 backfills nothing** — no destination was ever collected, so every
     existing seller correctly has none.
 
+* **A seller's NAME comes from loyalty when nobody here has set one.** This
+  service stores merchant IDS and no merchant NAMES — `Listing.merchantId` and
+  `MarketOrderItem.merchantId` are loyalty ids copied off a JWT claim — and
+  `display_name` is written by exactly ONE path: `approve(...)` with an
+  optional `displayName`. So until an operator approved a seller *with a name
+  typed in*, the admin queue rendered "Unnamed merchant", the finance payout
+  CSV carried an empty name column beside an amount about to be transferred,
+  and the public catalogue showed shoppers an unnamed seller. `ensureExists`
+  creates the row nameless, which is every seller's starting state.
+  * **`MerchantNameResolver` is BATCH by construction** (`namesFor(Collection)`),
+    because every caller is a page: a catalogue page, a moderation queue, a
+    payout run. A per-id signature would have made an N+1 of all three, and the
+    one that matters is the catalogue — a shopper's browse must not cost a
+    round trip per listing. Same discipline as `ListingViewAssembler`'s grouped
+    image query, and it is the reason the seam is an interface rather than a
+    call inside a DTO factory.
+  * **The operator-set name WINS and costs no lookup.** `SellerService.displayNames`
+    takes the local `display_name` where there is one and asks the registry
+    ONLY about the gaps — a name somebody typed while vouching for a seller is
+    a deliberate choice the registry must not overrule, and an approved, named
+    seller never leaves the box. That scoping is also what keeps the resolver
+    off the catalogue's critical path as sellers get approved: the ask shrinks.
+  * **Never mutate the entity with a resolved name.** These are JPA entities;
+    writing loyalty's value onto `MarketplaceSeller.displayName` inside an open
+    transaction would let dirty-checking PERSIST it, silently turning our
+    column into a stale copy of the registry and defeating operator-wins. The
+    resolved name is passed to the DTO factories (`SellerResponse.from(s, name)`,
+    `SellerBadge.from(seller, name)`) and never written back.
+  * **Best-effort, and it must be**: nothing here DECIDES on a name — ownership
+    comes from our own `merchant_id` columns, money from the settlement ledger,
+    authorization from the JWT. A 401, a 404 (a loyalty too old to serve the
+    endpoint), a 5xx, a timeout and a blank `INTERNAL_API_TOKEN` all yield the
+    same empty map, which every caller already renders as no name. So
+    **marketplace can deploy ahead of loyalty** — the deploy order is free,
+    exactly as with `MerchantAdminResolver`.
+  * **The cache is names ONLY, and that is the whole safety argument.** A
+    cached balance or a cached ownership would be a correctness bug no TTL
+    makes safe; a cached label is at worst minutes stale (the same narrow
+    licence as the middleware's `CustomerNameResolver`). **Successes only** —
+    a failed lookup is never cached, so a loyalty blip cannot pin every
+    merchant as nameless for a whole TTL. The TTL
+    (`marketplace.merchant-names.ttl-seconds`, default 300) is a staleness
+    budget, and since this service has no name-write path it is the complete
+    invalidation story — **if one is ever added, it must evict**. Do NOT widen
+    this into a general cache in front of loyalty.
+  * Loyalty side is `GET /loyalty/internal/merchants/names?ids=` (InnRewards),
+    plain-map body, unknown ids omitted rather than 404ing the batch, capped at
+    200 ids per call and chunked here above that. No gateway or SecurityConfig
+    change — `/loyalty/internal/**` is already permitAll there and edge-denied
+    by `loyalty-internal-deny`.
+  * Pinned by `MerchantNameResolutionTest` (local-wins, gap-scoping, batching,
+    absent-not-placeholder) and `LoyaltyMerchantNameResolverContractTest`
+    (the wire shape, every failure mode, the cache, and `verify(0, ...)` on a
+    blank token).
 * **An unauthenticated PRE-CHECKOUT surface, for building the app before login
   exists (`/marketplace/public/**`).** Super-app customers authenticate at the
   InnBucks middleware, which does not yet sign the assertion user-service trades

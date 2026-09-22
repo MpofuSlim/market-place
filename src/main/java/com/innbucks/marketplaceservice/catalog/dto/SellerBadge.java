@@ -41,13 +41,33 @@ public record SellerBadge(
 ) {
     /** The badge for a merchant with no trust record yet: identified, not vetted. */
     public static SellerBadge unknown(UUID merchantId) {
-        return new SellerBadge(merchantId, null, false, null);
+        return unknown(merchantId, null);
+    }
+
+    /**
+     * A merchant with no trust record here but a name in the loyalty registry:
+     * still not vetted — {@code verified} is the platform's own claim and is
+     * never inferred from a merchant merely existing — but no longer anonymous
+     * to the shopper.
+     */
+    public static SellerBadge unknown(UUID merchantId, String resolvedName) {
+        return new SellerBadge(merchantId, resolvedName, false, null);
     }
 
     public static SellerBadge from(MarketplaceSeller seller) {
+        return from(seller, null);
+    }
+
+    /**
+     * {@code resolvedName} is the loyalty registry's trading name, used ONLY
+     * when no operator has set one here — a name somebody typed while vouching
+     * for this seller is a deliberate choice and outranks the registry.
+     */
+    public static SellerBadge from(MarketplaceSeller seller, String resolvedName) {
+        String own = seller.getDisplayName();
         return new SellerBadge(
                 seller.getMerchantId(),
-                seller.getDisplayName(),
+                own != null && !own.isBlank() ? own : resolvedName,
                 seller.getStatus().isVerified(),
                 seller.getCreatedAt());
     }

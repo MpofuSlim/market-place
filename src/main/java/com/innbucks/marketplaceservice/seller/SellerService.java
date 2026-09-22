@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +54,64 @@ public class SellerService {
     private final AuditService auditService;
     private final Msisdns msisdns;
     private final ApplicationEventPublisher eventPublisher;
+    private final MerchantNameResolver merchantNameResolver;
+
+    /**
+     * The name to SHOW for each of these merchants: the operator-set trading
+     * name when there is one, otherwise the loyalty registry's, best-effort.
+     *
+     * <h2>Why local wins</h2>
+     * {@code display_name} is only ever written by {@code approve}, and an
+     * operator who typed a name was correcting or choosing one deliberately —
+     * a registry value must never overwrite that on screen. So the registry
+     * fills GAPS and never overrules.
+     *
+     * <h2>Why only the gaps are asked for</h2>
+     * An approved, named seller costs no network call at all. The lookup is
+     * scoped to the ids that have no local name, which on a mature cell is a
+     * shrinking minority — and it is the reason this can sit on the catalogue
+     * path without making a browse depend on loyalty being up.
+     *
+     * <p>Nothing here throws. A merchant with no name anywhere is simply
+     * absent from the map, which every caller already renders as no name —
+     * the behaviour before this existed.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, String> displayNames(List<UUID> merchantIds) {
+        return displayNames(merchantIds, findAllByMerchantIds(merchantIds));
+    }
+
+    /**
+     * {@link #displayNames(List)} for a caller that has ALREADY loaded the
+     * seller rows — the catalogue assembler and the payout report both have
+     * them in hand, and re-reading would undo the batching they exist for.
+     */
+    public Map<UUID, String> displayNames(List<UUID> merchantIds,
+                                          Map<UUID, MarketplaceSeller> localByMerchant) {
+        if (merchantIds == null || merchantIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, String> names = new HashMap<>();
+        List<UUID> unnamed = new ArrayList<>();
+        for (UUID id : merchantIds) {
+            if (id == null || names.containsKey(id)) {
+                continue;
+            }
+            MarketplaceSeller local = localByMerchant == null ? null : localByMerchant.get(id);
+            String own = local == null ? null : local.getDisplayName();
+            if (own != null && !own.isBlank()) {
+                names.put(id, own.trim());
+            } else if (!unnamed.contains(id)) {
+                unnamed.add(id);
+            }
+        }
+        if (unnamed.isEmpty()) {
+            return names;
+        }
+        // The registry fills gaps only, and a failure leaves them unfilled.
+        names.putAll(merchantNameResolver.namesFor(unnamed));
+        return names;
+    }
 
     /**
      * The record for a merchant, creating a PENDING one on first sight.
@@ -118,7 +177,16 @@ public class SellerService {
         Page<MarketplaceSeller> result = status == null
                 ? sellers.findAllByOrderByCreatedAtAsc(pageable)
                 : sellers.findByStatusOrderByCreatedAtAsc(status, pageable);
-        return SellerPageResponse.from(result.map(SellerResponse::from));
+        // ONE batch for the page's names, not one call per row. The rows are
+        // already loaded, so this resolves gaps only — a queue of sellers the
+        // operator has already named costs nothing.
+        Map<UUID, MarketplaceSeller> loaded = new HashMap<>();
+        for (MarketplaceSeller row : result.getContent()) {
+            loaded.put(row.getMerchantId(), row);
+        }
+        Map<UUID, String> names = displayNames(List.copyOf(loaded.keySet()), loaded);
+        return SellerPageResponse.from(
+                result.map(row -> SellerResponse.from(row, names.get(row.getMerchantId()))));
     }
 
     /** Vouch for a seller: the only status that earns the badge. */
