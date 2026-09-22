@@ -508,16 +508,21 @@ public class PublicTestController {
                     + "missing one is a 400. It is normalised to E.164 and a number that is not "
                     + "dialable is refused rather than stored.\n\n"
                     + "**Requires the cell to have an `x-api-key` configured** — on an ungated "
-                    + "cell this endpoint is 404 while the cart still works. Send "
-                    + "`Idempotency-Key` and retry the same body under the same key to replay the "
+                    + "cell this endpoint is 404 while the cart still works. **`Idempotency-Key` "
+                    + "is required** (400 `idempotency_key_required` without it, checked before "
+                    + "anything else): retry the same body under the same key to replay the "
                     + "original response rather than buying twice.\n\n"
                     + "The response carries the `payment` block naming what to POST to "
                     + "payment-service next.")
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order placed; stock reserved, awaiting payment"),
-            @ApiResponse(responseCode = "400", description = "Missing or invalid `buyerMsisdn`, or a malformed basket",
-                    content = @Content(examples = @ExampleObject(value = """
-                            {"code":"invalid_msisdn","message":"buyerMsisdn is required","data":null}"""))),
+            @ApiResponse(responseCode = "400", description = "Missing `Idempotency-Key` (checked first), "
+                    + "missing or invalid `buyerMsisdn`, or a malformed basket",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "No idempotency key", value = """
+                                    {"code":"idempotency_key_required","message":"Idempotency-Key header is required","data":null}"""),
+                            @ExampleObject(name = "No payer number", value = """
+                                    {"code":"invalid_msisdn","message":"buyerMsisdn is required","data":null}""")})),
             @ApiResponse(responseCode = "404", description = "The surface is off, or this cell has no api-key configured",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
             @ApiResponse(responseCode = "409", description = "A line lost the stock race, or the key is in flight"),

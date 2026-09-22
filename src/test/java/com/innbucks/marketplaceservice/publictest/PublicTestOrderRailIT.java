@@ -125,11 +125,15 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
+        // Extracted BEFORE the matcher: JsonPath.read is generic and inlining it
+        // into .value(...) makes the compiler pick the value(Matcher) overload,
+        // which ClassCastExceptions at runtime.
+        String firstId = JsonPath.read(first, "$.data.id");
 
         mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
                         .header("Idempotency-Key", "retry-me")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(jsonPath("$.data.id").value(JsonPath.read(first, "$.data.id")));
+                .andExpect(jsonPath("$.data.id").value(firstId));
 
         // One order's worth of stock held, not two.
         mockMvc.perform(get("/marketplace/catalog/{id}", listingId))
@@ -143,7 +147,11 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
 
         // An order with no payer cannot be paid, and inventing one is the
         // phishing shape this rail must never have. So it is a clean refusal.
+        // The Idempotency-Key is sent because the service checks IT first
+        // (400 idempotency_key_required) — this test is about the payer check
+        // one step further in.
         mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "no-payer-attempt")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"fromCart\":true}"))
                 .andExpect(status().isBadRequest())
@@ -159,6 +167,7 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
         addToCart("alice", listingId, 1);
 
         mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "bad-number-attempt")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"fromCart":true,"buyerMsisdn":"not-a-number"}"""))
@@ -171,6 +180,7 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
         String listingId = publishListing();
         addToCart("alice", listingId, 1);
         String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "isolation-attempt")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"fromCart":true,"buyerMsisdn":"0771234567"}"""))
@@ -213,6 +223,7 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
         String listingId = publishListing();
         addToCart("alice", listingId, 3);
         String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "cancel-attempt")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"fromCart":true,"buyerMsisdn":"0771234567"}"""))
@@ -260,11 +271,22 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
         mockMvc.perform(get("/marketplace/listings/mine"))
                 .andExpect(status().isUnauthorized());
 
-        // And there is no public twin of any of them.
+        // And there is no public twin of any of them. WITH the key, so the
+        // refusal is the router's 404 (no such mapping) and not the filter's
+        // 401 — the filter gates the whole prefix by shape, nonexistent paths
+        // included, which the unkeyed probes below pin on their own.
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/fulfilments", "alice")))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/settlements", "alice")))
+                .andExpect(status().isNotFound());
+
+        // Unkeyed, the same paths are 401 before routing even looks: on a gated
+        // cell the api-key filter answers for everything under the prefix, so a
+        // prober without the key cannot even map which endpoints exist.
         mockMvc.perform(get("/marketplace/public/buyers/{handle}/fulfilments", "alice"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/marketplace/public/buyers/{handle}/settlements", "alice"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isUnauthorized());
     }
 
     // ------------------------------------------------------------- helpers

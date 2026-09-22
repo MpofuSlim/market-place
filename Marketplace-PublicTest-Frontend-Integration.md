@@ -255,9 +255,11 @@ names the payment-service call to make once you have an order.
 | `GET` | `/marketplace/public/buyers/{handle}/orders/{orderId}` |
 | `POST` | `/marketplace/public/buyers/{handle}/orders/{orderId}/cancel` |
 
-**Create.** Same body as the quote, plus the payer's number. Send
-`Idempotency-Key` and retry the same body under the same key rather than
-risking a second order.
+**Create.** Same body as the quote, plus the payer's number. **The
+`Idempotency-Key` header is REQUIRED** — a create without one is refused
+`400 idempotency_key_required` before anything else is looked at. Mint a
+fresh key per checkout attempt and retry the same body under the same key
+rather than risking a second order.
 
 ```http
 POST /marketplace/public/buyers/alice/orders
@@ -374,7 +376,9 @@ check those two before assuming a bug.
 - [ ] Quantity `0` on the stepper is a refusal; call `DELETE` instead.
 - [ ] `POST /addresses` returns `201`, not `200`; so does `POST /orders`.
 - [ ] **`buyerMsisdn` is required on order create** and is not echoed back.
-- [ ] Send an **`Idempotency-Key`** on order create and retry under the same one.
+- [ ] **`Idempotency-Key` is required on order create** — omitting it is a
+      `400 idempotency_key_required`. Fresh key per attempt; retry under the
+      same one.
 - [ ] An abandoned order **holds stock** — cancel it when the shopper backs out.
 - [ ] `collect-code` **sends an SMS** on every call; do not poll it.
 - [ ] Pay at **payment-service**, not here: `POST /payments` with
