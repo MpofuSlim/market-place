@@ -728,23 +728,38 @@ never change either casually.
     accident of routing: the derived caller holds `CUSTOMER` and nothing else,
     so dispatch, delivery marking, moderation, settlement and payout are all
     refused by their own `@PreAuthorize`.
-  * **The identity is DERIVED, not supplied, and that is what makes it safe.**
-    The free-form `handle` in the path is hashed to a **version-5** UUID
-    (`PublicTestIdentity`); user-service mints `userUuid` with
-    `UUID.randomUUID()`, which is **version 4**. The version nibble differs, so
-    a caller here can never address a real customer's cart, address book or
-    wishlist — structural, not improbable. It is also what defuses favorites,
-    the one endpoint with a downstream notification: a restock alert for a
-    derived buyer resolves to nobody in user-service and reaches no real phone.
-    `PublicTestIdentityTest` pins the version, and it is not a detail to
-    "simplify" later.
-  * **The derived caller is `CUSTOMER` with a NULL phone.** Null phone means
-    even a mistakenly-added order endpoint could not name a payer. Roles are
-    exactly `{CUSTOMER}`, so no seller or operator surface becomes reachable
-    through it.
-  * Test data on this rail is its own island and does NOT carry over to the
-    same person's real account once `/auth/exchange` is live. Correct for a
-    test rail, not a shortcoming.
+  * **The handle is the CUSTOMER'S PHONE (operator's direction, 2026-09-22:
+    "customers exist on Veengu, not my DB — same as loyalty").**
+    `PublicBuyerResolver` splits handles by SHAPE: digits-and-phone-punctuation
+    → normalised to E.164 by the same `Msisdns` every payer goes through, THEN
+    hashed — so every spelling of a number is ONE buyer, stable across devices,
+    with no account or linking step (the FE had started building one; it must
+    not exist). Anything containing a letter stays the original opaque demo
+    handle. Digits that don't normalise are REFUSED (`400 invalid_msisdn`),
+    never silently hashed — a typo'd phone forking into its own empty basket
+    presents as "my cart disappeared". A handle already in canonical E.164
+    derives the id it always did, so no existing basket was orphaned.
+  * **A phone-keyed buyer CARRIES its phone; the payer is the identity.**
+    `resolveBuyerMsisdn` prefers the principal's phone and ignores the body —
+    the same rule a real CUSTOMER token gets — so an order under a phone handle
+    is payable by the basket's owner and a body `buyerMsisdn` naming a third
+    number does nothing (pinned at rest in `PublicTestOrderRailIT`). The
+    trade accepted with eyes open: whoever holds the cell's api-key can act as
+    any phone's basket. That is loyalty's long-standing public-surface posture
+    — the key authenticates the BROKER (held server-side in the FE's Firebase
+    functions, never the binary), the broker asserts the phone it authenticated
+    at Veengu — and `/auth/exchange` is what retires it. Opaque demo buyers
+    keep a NULL phone and must name a payer in the body, validated as ever.
+  * **Both flavours stay version-5** — user-service mints `userUuid` v4, so a
+    derived id can never address AUTHENTICATED-surface data, and a restock
+    alert for a derived buyer still resolves to nobody in user-service.
+    `PublicTestIdentityTest` + `PublicBuyerResolverTest` pin all of it.
+  * **Carry-over to `/auth/exchange` is DESIGNED, not built**: the derivation
+    is deterministic, so adoption is one re-key per table
+    (`buyer_uuid = v5(phone) → userUuid`) the first time an authenticated
+    session with that phone claim touches this service. That is the follow-up
+    that makes cut-over seamless; do not fake it by handing this rail v4 ids.
+    Demo-handle data never carries over, by design.
   * `marketplace.public-test.enabled` / `.api-key`
     (`MARKETPLACE_PUBLIC_TEST_*`). Boot says which of off / ungated / gated a
     cell is in, and logs an **ERROR** when it is on under a deployment profile.
