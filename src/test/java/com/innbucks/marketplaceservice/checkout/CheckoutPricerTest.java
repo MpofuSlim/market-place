@@ -121,6 +121,48 @@ class CheckoutPricerTest {
     }
 
     @Test
+    @DisplayName("An unavailable listing's option line still names the option, so the app can find the line")
+    void unavailableOptionLineCarriesTheLabel() {
+        Listing offSale = listing(A, 1999, 10, ListingStatus.INACTIVE, "USD");
+        offSale.setHasVariants(true);
+        offSale.setOption1Name("Size");
+        offSale.setOption2Name("Colour");
+        UUID variantId = UUID.randomUUID();
+        var xl = com.innbucks.marketplaceservice.catalog.variant.ListingVariant.builder()
+                .id(variantId).listingId(A).stockQty(6).position(0).build();
+        xl.setValues("XL", "Black");
+        when(listingRepository.findAllById(any())).thenReturn(List.of(offSale));
+        when(variantRepository.findAllById(any())).thenReturn(List.of(xl));
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1, variantId)));
+
+        OrderLineRejection issue = priced.issues().getFirst();
+        assertThat(issue.reason()).isEqualTo(OrderLineRejection.REASON_UNAVAILABLE);
+        // The message is the pre-V19 one, byte for byte; only the echo is new.
+        assertThat(issue.message()).isEqualTo("Listing " + A + " is not available");
+        assertThat(issue.variantId()).isEqualTo(variantId);
+        assertThat(issue.variantLabel()).isEqualTo("XL - Black");
+    }
+
+    @Test
+    @DisplayName("An option of ANOTHER listing is never echoed as this line's label")
+    void unavailableLineNeverEchoesAForeignOption() {
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(listing(A, 1999, 10, ListingStatus.INACTIVE, "USD")));
+        UUID foreignId = UUID.randomUUID();
+        var foreign = com.innbucks.marketplaceservice.catalog.variant.ListingVariant.builder()
+                .id(foreignId).listingId(B).stockQty(3).position(0).build();
+        foreign.setValues("Secret", null);
+        when(variantRepository.findAllById(any())).thenReturn(List.of(foreign));
+
+        OrderLineRejection issue = pricer.price(List.of(new BasketLine(A, 1, foreignId)))
+                .issues().getFirst();
+
+        assertThat(issue.variantId()).isEqualTo(foreignId);
+        assertThat(issue.variantLabel()).isNull();
+    }
+
+    @Test
     @DisplayName("A foreign-currency listing is unavailable, not mispriced")
     void foreignCurrencyIsUnavailable() {
         when(listingRepository.findAllById(any()))

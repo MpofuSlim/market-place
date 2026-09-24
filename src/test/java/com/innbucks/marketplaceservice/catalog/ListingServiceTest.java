@@ -135,6 +135,11 @@ class ListingServiceTest {
                 });
         when(listingRepository.stockQtyOf(any())).thenAnswer(inv ->
                 stock.getOrDefault(inv.<UUID>getArgument(0), 10));
+        // The lock-free seller read the editor checks ownership with, BEFORE
+        // the lock: the seller of whatever findById is stubbed to return.
+        when(listingRepository.merchantIdOf(any())).thenAnswer(inv ->
+                listingRepository.findById(inv.<UUID>getArgument(0))
+                        .map(Listing::getMerchantId).orElse(null));
     }
 
     static StockRow stockRow(int qty) {
@@ -471,6 +476,9 @@ class ListingServiceTest {
         assertEquals(HttpStatus.FORBIDDEN, ex.status());
         assertEquals("listing_not_owned", ex.code());
         verify(listingRepository, never()).save(any());
+        // Refused BEFORE the row lock: a merchant must not be able to stall a
+        // competitor's orders by editing their listing id.
+        verify(listingRepository, never()).lockForStock(any());
     }
 
     @Test

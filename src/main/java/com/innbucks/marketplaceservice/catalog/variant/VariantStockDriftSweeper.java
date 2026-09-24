@@ -29,6 +29,12 @@ import java.util.UUID;
  * </pre>
  *
  * Gauge {@code marketplace.stock.aggregate_drift}: 0 when healthy, from boot.
+ *
+ * <p>{@link #sweep} returns {@code void} ON PURPOSE, like every sweeper here:
+ * ShedLock's default {@code PROXY_METHOD} mode refuses a method returning a
+ * primitive ({@code LockingNotSupportedException}), so an {@code int} return
+ * made every scheduled run throw before the query, and the gauge could never
+ * leave 0. Tests read the gauge.
  */
 @Slf4j
 @Component
@@ -41,7 +47,7 @@ public class VariantStockDriftSweeper {
     @Scheduled(cron = "${marketplace.scheduler.variant-stock-drift-cron}")
     @SchedulerLock(name = "variantStockDriftSweeper")
     @Transactional(readOnly = true)
-    public int sweep() {
+    public void sweep() {
         List<UUID> drifted = listingRepository.findStockDrift();
         metrics.stockDrift(drifted.size());
         if (!drifted.isEmpty()) {
@@ -50,6 +56,5 @@ public class VariantStockDriftSweeper {
                             + "cause this; the next movement of each heals it.",
                     drifted.size(), drifted.getFirst());
         }
-        return drifted.size();
     }
 }

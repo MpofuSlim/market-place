@@ -135,10 +135,11 @@ public record OrderLineRejection(
 
     /** {@link #unavailable} on a line that named an option — the message is
      *  unchanged, the option is echoed so the app can find the line. */
-    public static OrderLineRejection unavailable(UUID listingId, int requestedQty, UUID variantId) {
+    public static OrderLineRejection unavailable(UUID listingId, int requestedQty, UUID variantId,
+                                                 String variantLabel) {
         return new OrderLineRejection(listingId, REASON_UNAVAILABLE,
                 "Listing " + listingId + " is not available", requestedQty, null, null,
-                variantId, null);
+                variantId, variantLabel);
     }
 
     /** {@link #notDeliveredToTown} on a line that named an option. */

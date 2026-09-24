@@ -215,7 +215,8 @@ public class CheckoutPricer {
                 || !currency.equals(listing.getCurrency())) {
             return line.variantId() == null
                     ? OrderLineRejection.unavailable(line.listingId(), line.quantity())
-                    : OrderLineRejection.unavailable(line.listingId(), line.quantity(), line.variantId());
+                    : OrderLineRejection.unavailable(line.listingId(), line.quantity(), line.variantId(),
+                            variant == null ? null : variant.label());
         }
         if (listing.isHasVariants() && line.variantId() == null) {
             return OrderLineRejection.variantRequired(listing.getId(), listing.getTitle(),

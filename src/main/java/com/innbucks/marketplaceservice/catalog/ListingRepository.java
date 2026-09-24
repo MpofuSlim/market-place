@@ -131,6 +131,14 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
     @Query("select l.stockQty from Listing l where l.id = :id")
     Integer stockQtyOf(@Param("id") UUID id);
 
+    /** The listing's seller, read WITHOUT a lock and without loading the
+     *  entity — so an editor can refuse a listing that is not the caller's
+     *  BEFORE taking its row lock (V19). Null when there is no such listing.
+     *  Safe to check ahead of the lock because no path changes a listing's
+     *  seller. */
+    @Query("select l.merchantId from Listing l where l.id = :id")
+    UUID merchantIdOf(@Param("id") UUID id);
+
     long countByMerchantId(UUID merchantId);
 
     /** How many of a merchant's listings a shopper can actually see — the

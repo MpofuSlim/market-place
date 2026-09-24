@@ -1675,6 +1675,15 @@ beans, real Postgres + security chain).
 * Unit tests (`*Test`) run with Surefire, no Docker.
 * Integration tests (`*IT`) run with Failsafe during `verify` and use the
   shared Postgres Testcontainer — they need Docker (CI has it).
+* **A `@SchedulerLock` method must return `void`** (or a boxed type).
+  `@EnableSchedulerLock` runs in ShedLock's default `PROXY_METHOD` mode, which
+  refuses a method returning a primitive with `LockingNotSupportedException`
+  BEFORE the body runs. The scheduler logs and swallows it, so the job simply
+  never happens. V19's `VariantStockDriftSweeper` first shipped as `int
+  sweep()`, which left its drift gauge at 0 forever. A unit test over a
+  `new`-built sweeper skips the proxy and stays green through that bug:
+  drive a sweeper through its Spring bean at least once
+  (`VariantStockDriftSweeperIT`).
 * Every future external-HTTP client MUST get a standalone-WireMock contract
   test per the fleet convention.
 

@@ -824,22 +824,32 @@ public class ListingService {
 
     /**
      * {@link #managedListing} for a write that may move stock: the same scope
-     * and ownership rules, but the listing's ROW LOCK is taken FIRST — before
-     * the entity is loaded — so the edit serialises with any order on the same
+     * and ownership rules, but the listing's ROW LOCK is taken before the
+     * entity is loaded, so the edit serialises with any order on the same
      * listing and the entity it loads is the latest committed one.
+     *
+     * <p>Ownership is checked BEFORE the lock, off a lock-free projection:
+     * otherwise any merchant could take the row lock on a competitor's listing
+     * by id — stalling that listing's orders — for as long as it took their
+     * own request to fail with a 403. The seller of a listing never changes,
+     * so the early read cannot be overtaken.
      */
     private Locked managedListingForUpdate(AuthenticatedUser caller, UUID listingId) {
         UUID merchantId = caller.isSuperAdmin() ? null : requireMerchantId(caller);
+        UUID owner = listingRepository.merchantIdOf(listingId);
+        if (owner == null) {
+            throw ApiException.notFound("listing_not_found", "Listing not found");
+        }
+        if (merchantId != null && !owner.equals(merchantId)) {
+            throw ApiException.forbidden("listing_not_owned",
+                    "Listing does not belong to the caller's merchant");
+        }
         StockRow row = listingStock.lock(listingId);
         if (row == null) {
             throw ApiException.notFound("listing_not_found", "Listing not found");
         }
         Listing listing = listingRepository.findById(listingId)
                 .orElseThrow(() -> ApiException.notFound("listing_not_found", "Listing not found"));
-        if (merchantId != null && !listing.getMerchantId().equals(merchantId)) {
-            throw ApiException.forbidden("listing_not_owned",
-                    "Listing does not belong to the caller's merchant");
-        }
         return new Locked(listing, row.getStockQty() == null ? 0 : row.getStockQty());
     }
 
