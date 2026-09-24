@@ -98,8 +98,8 @@ public class CheckoutController {
                   "area": "Avondale",
                   "landmark": "Opposite the clinic, blue gate",
                   "defaultAddress": true,
-                  "createdAt": "2026-09-12T08:10:22Z",
-                  "updatedAt": "2026-09-12T08:10:22Z"
+                  "createdAt": "2026-08-01T08:10:22Z",
+                  "updatedAt": "2026-08-01T08:10:22Z"
                 },
                 "checkoutReady": true,
                 "paymentMethods": [

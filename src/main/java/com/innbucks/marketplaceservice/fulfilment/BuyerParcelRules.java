@@ -30,6 +30,13 @@ import java.time.Instant;
  *
  * <p>The refusal codes and messages are the ones these endpoints have always
  * returned, byte for byte, so moving the rules here changed no response.
+ *
+ * <p><b>A refusal is a VALUE, not an exception.</b> A view asks every rule of
+ * every parcel on a page, and most of the answers are "no" (a delivered parcel
+ * refuses three of the four actions). Building an {@link ApiException} per
+ * answer would capture a full stack trace only to throw it away; a
+ * {@link Refusal} costs a record, and the endpoint turns it into the exception
+ * ({@link Refusal#toException()}) only on the one path that actually throws.
  */
 @Component
 public class BuyerParcelRules {
@@ -52,9 +59,9 @@ public class BuyerParcelRules {
      * close cannot be "upgraded" by the buyer (the money then waits for the
      * grace window — see {@code SettlementService.onParcelDelivered}).
      */
-    public ApiException confirmReceiptRefusal(OrderFulfilment parcel, DeliveryMethod method) {
+    public Refusal confirmReceiptRefusal(OrderFulfilment parcel, DeliveryMethod method) {
         if (!FulfilmentStateMachine.isLegal(parcel.getStatus(), FulfilmentStatus.DELIVERED, method)) {
-            return ApiException.conflict("illegal_fulfilment_state", "This parcel is "
+            return new Refusal("illegal_fulfilment_state", "This parcel is "
                     + parcel.getStatus() + " and cannot move to " + FulfilmentStatus.DELIVERED);
         }
         return null;
@@ -66,17 +73,17 @@ public class BuyerParcelRules {
      * (cancelled, or never collected) would send the collector an SMS for
      * goods that are no longer theirs to collect.
      */
-    public ApiException collectCodeRefusal(OrderFulfilment parcel, DeliveryMethod method) {
+    public Refusal collectCodeRefusal(OrderFulfilment parcel, DeliveryMethod method) {
         if (method != DeliveryMethod.COLLECTION) {
-            return ApiException.conflict("collect_code_not_applicable",
+            return new Refusal("collect_code_not_applicable",
                     "This is a delivery order - there is nothing to collect in person");
         }
         if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
-            return ApiException.conflict("illegal_fulfilment_state",
+            return new Refusal("illegal_fulfilment_state",
                     "This parcel has already been handed over");
         }
         if (parcel.getStatus() == FulfilmentStatus.UNFULFILLED) {
-            return ApiException.conflict("illegal_fulfilment_state",
+            return new Refusal("illegal_fulfilment_state",
                     "This parcel was cancelled - there is nothing to collect");
         }
         return null;
@@ -89,22 +96,22 @@ public class BuyerParcelRules {
      *
      * @param settlement the parcel's settlement row, or null when none exists
      */
-    public ApiException cancelRefusal(OrderFulfilment parcel, MerchantSettlement settlement) {
+    public Refusal cancelRefusal(OrderFulfilment parcel, MerchantSettlement settlement) {
         if (parcel.getStatus() != FulfilmentStatus.PREPARING) {
-            return ApiException.conflict("parcel_not_cancellable", parcel.getStatus()
+            return new Refusal("parcel_not_cancellable", parcel.getStatus()
                     == FulfilmentStatus.DISPATCHED
                     ? "The seller has already sent this parcel - contact them, or open a dispute "
                             + "if it does not arrive"
                     : "This parcel is " + parcel.getStatus() + " and can no longer be cancelled");
         }
         if (settlement != null && settlement.getStatus() == SettlementStatus.DISPUTED) {
-            return ApiException.conflict("parcel_disputed",
+            return new Refusal("parcel_disputed",
                     "This parcel is under dispute - our support team will settle it");
         }
         if (settlement == null || settlement.getStatus() != SettlementStatus.HELD) {
             // No row is a pre-V10 parcel: nothing recorded to turn around, so
             // cancelling would promise a refund the ledger cannot queue.
-            return ApiException.conflict("parcel_not_cancellable",
+            return new Refusal("parcel_not_cancellable",
                     "This parcel can no longer be cancelled - contact support");
         }
         return null;
@@ -124,35 +131,35 @@ public class BuyerParcelRules {
      * @param settlement      the parcel's settlement row, or null when none exists
      * @param alreadyDisputed whether a dispute row exists for the parcel
      */
-    public ApiException disputeRefusal(OrderStatus orderStatus, OrderFulfilment parcel,
+    public Refusal disputeRefusal(OrderStatus orderStatus, OrderFulfilment parcel,
                                        MerchantSettlement settlement, boolean alreadyDisputed,
                                        Instant now) {
         if (orderStatus != OrderStatus.PAID) {
             // An unpaid order has no money to argue over; cancel/expiry is its path.
-            return ApiException.conflict("order_not_paid", "Only a paid order can be disputed");
+            return new Refusal("order_not_paid", "Only a paid order can be disputed");
         }
         if (settlement == null) {
-            return ApiException.conflict("settlement_missing",
+            return new Refusal("settlement_missing",
                     "No settlement is recorded for this parcel yet - please contact support");
         }
         switch (settlement.getStatus()) {
             case PAID_OUT -> {
-                return ApiException.conflict("settlement_already_paid_out",
+                return new Refusal("settlement_already_paid_out",
                         "The seller has already been paid for this parcel - please contact support");
             }
             case REFUNDED -> {
-                return ApiException.conflict("settlement_already_refunded",
+                return new Refusal("settlement_already_refunded",
                         "This parcel has already been refunded");
             }
             case DISPUTED -> {
-                return ApiException.conflict("dispute_already_raised",
+                return new Refusal("dispute_already_raised",
                         "This parcel has already been disputed");
             }
             // V12: the seller already declared they cannot supply this and the
             // money is queued to come back — say so, rather than letting the
             // open reach an illegal REFUND_DUE -> DISPUTED transition.
             case REFUND_DUE -> {
-                return ApiException.conflict("refund_already_due",
+                return new Refusal("refund_already_due",
                         "The seller could not supply this parcel - your refund is already being "
                                 + "arranged");
             }
@@ -160,13 +167,13 @@ public class BuyerParcelRules {
         }
         Instant until = disputableUntil(parcel);
         if (until != null && until.isBefore(now)) {
-            return ApiException.conflict("dispute_window_closed",
+            return new Refusal("dispute_window_closed",
                     "This parcel was delivered more than "
                             + disputeWindow.toDays() + " days ago and can no longer be disputed");
         }
         if (alreadyDisputed) {
             // One dispute per parcel, EVER — see SettlementDispute.
-            return ApiException.conflict("dispute_already_raised",
+            return new Refusal("dispute_already_raised",
                     "This parcel has already been disputed");
         }
         return null;
@@ -228,6 +235,19 @@ public class BuyerParcelRules {
             case BUYER, RECIPIENT -> parcel.getDeliveredAt();
             case MERCHANT -> null;
         };
+    }
+
+    /**
+     * Why an action is not allowed right now: the 409 its endpoint returns.
+     * Every rule here refuses with a conflict — the request was well formed,
+     * the parcel's state says no.
+     */
+    public record Refusal(String code, String message) {
+
+        /** The error the endpoint throws; built only when it is thrown. */
+        public ApiException toException() {
+            return ApiException.conflict(code, message);
+        }
     }
 
     /**

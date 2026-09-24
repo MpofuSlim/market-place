@@ -100,7 +100,10 @@ public record OrderResponse(
         List<SellerCollectionPoint> collectionPoints,
 
         @Schema(description = "What you may do with the order as a whole right now, decided by "
-                + "the server (per-parcel actions are on each fulfilment).")
+                + "the server (per-parcel actions are on each fulfilment). An idempotent retry "
+                + "of POST /orders returns the original response unchanged, so it can be absent "
+                + "there for an order placed before this field existed - re-read the order.",
+                nullable = true)
         OrderActions actions) {
 
     @Schema(description = "The person this order was bought for")

@@ -339,7 +339,8 @@ public class OrderController {
                                                 "quantity": 1,
                                                 "lineTotalCents": 450
                                               }
-                                            ]
+                                            ],
+                                            "actions": { "canCancel": true }
                                           }
                                         ],
                                         "page": 0,
@@ -412,7 +413,8 @@ public class OrderController {
                                                 "quantity": 1,
                                                 "lineTotalCents": 450
                                               }
-                                            ]
+                                            ],
+                                            "actions": { "canCancel": true }
                                           }
                                         ],
                                         "page": 0,
@@ -610,7 +612,8 @@ public class OrderController {
                                             "quantity": 1,
                                             "lineTotalCents": 450
                                           }
-                                        ]
+                                        ],
+                                        "actions": { "canCancel": false }
                                       }
                                     }
                                     """))),
@@ -864,8 +867,11 @@ public class OrderController {
                                                   "recipientName": "Tariro Moyo",
                                                   "recipientMsisdn": "+263771234567",
                                                   "line1": "14 Samora Machel Ave",
+                                                  "line2": "Flat 3B",
                                                   "city": "Harare",
-                                                  "area": "Avondale"
+                                                  "area": "Avondale",
+                                                  "landmark": "Opposite the clinic, blue gate",
+                                                  "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
                                                 },
                                                 "liveLocation": {
                                                   "latitude": -17.82922,
@@ -1036,7 +1042,9 @@ public class OrderController {
                                     {"code":"fulfilment_not_found","message":"Fulfilment not found"}
                                     """))),
             @ApiResponse(responseCode = "409", description = "Nothing to collect: a delivery "
-                    + "order, or a parcel already handed over",
+                    + "order, a parcel already handed over, or a cancelled one (declined, "
+                    + "cancelled or not collected). `actions.canRequestCollectCode` is false in "
+                    + "all three",
                     content = @Content(mediaType = "application/json",
                             examples = {
                                     @ExampleObject(name = "Delivery order", value = """
@@ -1044,6 +1052,9 @@ public class OrderController {
                                             """),
                                     @ExampleObject(name = "Already collected", value = """
                                             {"code":"illegal_fulfilment_state","message":"This parcel has already been handed over"}
+                                            """),
+                                    @ExampleObject(name = "Cancelled parcel", value = """
+                                            {"code":"illegal_fulfilment_state","message":"This parcel was cancelled - there is nothing to collect"}
                                             """)}))
     })
     public ResponseEntity<ApiResult<CollectCodeResponse>> collectCode(

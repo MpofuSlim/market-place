@@ -41,10 +41,10 @@ public record AddressResponse(
                 example = "true")
         boolean defaultAddress,
 
-        @Schema(example = "2026-09-12T08:10:22Z")
+        @Schema(example = "2026-08-01T08:10:22Z")
         Instant createdAt,
 
-        @Schema(example = "2026-09-12T08:10:22Z")
+        @Schema(example = "2026-08-01T08:10:22Z")
         Instant updatedAt,
 
         @Schema(description = "The town code. Null on an old address whose city matched no town — "

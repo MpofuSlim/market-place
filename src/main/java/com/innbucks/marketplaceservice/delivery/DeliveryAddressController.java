@@ -59,8 +59,8 @@ public class DeliveryAddressController {
               "area": "Avondale",
               "landmark": "Opposite the clinic, blue gate",
               "defaultAddress": true,
-              "createdAt": "2026-09-12T08:10:22Z",
-              "updatedAt": "2026-09-12T08:10:22Z"
+              "createdAt": "2026-08-01T08:10:22Z",
+              "updatedAt": "2026-08-01T08:10:22Z"
             }""";
 
     private static final String EXAMPLE_UNKNOWN_TOWN_400 = """
@@ -86,8 +86,8 @@ public class DeliveryAddressController {
                   "area": "Avondale",
                   "landmark": "Opposite the clinic, blue gate",
                   "defaultAddress": true,
-                  "createdAt": "2026-09-12T08:10:22Z",
-                  "updatedAt": "2026-09-12T08:10:22Z"
+                  "createdAt": "2026-08-01T08:10:22Z",
+                  "updatedAt": "2026-08-01T08:10:22Z"
                 },
                 {
                   "id": "b81f3c64-9d05-4a72-8e13-7c4a2b9d6e08",

@@ -108,10 +108,10 @@ public class DisputeService {
         MerchantSettlement settlement = settlementRepository.findByFulfilmentId(parcel.getId())
                 .orElse(null);
         boolean alreadyDisputed = disputeRepository.findByFulfilmentId(parcel.getId()).isPresent();
-        ApiException refusal = buyerRules.disputeRefusal(order.getStatus(), parcel, settlement,
-                alreadyDisputed, Instant.now());
+        BuyerParcelRules.Refusal refusal = buyerRules.disputeRefusal(order.getStatus(), parcel,
+                settlement, alreadyDisputed, Instant.now());
         if (refusal != null) {
-            throw refusal;
+            throw refusal.toException();
         }
 
         settlementService.freeze(settlement, reason);

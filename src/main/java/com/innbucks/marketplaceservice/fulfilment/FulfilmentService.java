@@ -295,10 +295,11 @@ public class FulfilmentService {
         // is still an illegal move, so it is counted and logged exactly as
         // transition() would: a buyer's "received" losing a race to the
         // seller's "delivered" is what that counter exists to show.
-        ApiException refused = buyerRules.confirmReceiptRefusal(parcel, order.getDeliveryMethod());
+        BuyerParcelRules.Refusal refused =
+                buyerRules.confirmReceiptRefusal(parcel, order.getDeliveryMethod());
         if (refused != null) {
             countIllegal(parcel, parcel.getStatus(), FulfilmentStatus.DELIVERED);
-            throw refused;
+            throw refused.toException();
         }
         close(parcel, order, DeliveryConfirmer.BUYER, "Receipt confirmed by buyer", buyer);
         return parcel;
@@ -598,9 +599,9 @@ public class FulfilmentService {
         return toMerchantView(parcel);
     }
 
-    private static void throwIfRefused(ApiException refusal) {
+    private static void throwIfRefused(BuyerParcelRules.Refusal refusal) {
         if (refusal != null) {
-            throw refusal;
+            throw refusal.toException();
         }
     }
 

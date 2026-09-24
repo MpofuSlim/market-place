@@ -44,7 +44,8 @@ public record FulfilmentDestination(
         @Schema(example = "Opposite the clinic, blue gate", nullable = true)
         String landmark,
 
-        @Schema(description = "BUYER VIEWS ONLY: the address-book entry this destination was "
+        @Schema(description = "On the order and tracking views (the buyer's own, and an "
+                + "operator's read of the order): the address-book entry this destination was "
                 + "copied from, to link back to it. Provenance only - the entry may since have "
                 + "been edited or deleted (GET /marketplace/addresses/{id} then 404s "
                 + "address_not_found), and this destination is always what the order uses. Never "
@@ -54,16 +55,20 @@ public record FulfilmentDestination(
 
     /** Null for a COLLECTION order, which has no destination by construction —
      *  the V9 CHECK constraint refuses a DELIVERY order without one. The
-     *  seller's, courier's and admin's copy: no {@code addressId}. */
+     *  seller card's copy (whoever reads it, an admin included) and the
+     *  courier's: no {@code addressId}. */
     public static FulfilmentDestination from(MarketOrder order) {
         return of(order, null);
     }
 
     /**
      * The BUYER's own copy, which also names the address-book entry it came
-     * from. Kept off every other surface: the id means nothing to anyone but
-     * the buyer (their book is theirs alone), and on a seller's card it would
-     * let a seller correlate one buyer's orders by address entry.
+     * from. Kept off the seller's and courier's surfaces: the id means nothing
+     * to anyone but the buyer (their book is theirs alone), and on a seller's
+     * card it would let a seller correlate one buyer's orders by address
+     * entry. A SUPER_ADMIN's oversight read of an order shares the buyer's
+     * shape and so carries it — harmlessly, since that reader already sees the
+     * buyer, the full address and every order, and cannot open the book.
      */
     public static FulfilmentDestination forBuyer(MarketOrder order) {
         return of(order, order.getDeliveryAddressId());

@@ -19,13 +19,18 @@ import io.swagger.v3.oas.annotations.media.Schema;
 public record ParcelActions(
 
         @Schema(description = "\"I have received it\" - POST .../fulfilments/{id}/received. True "
-                + "while the parcel is open (PREPARING or DISPATCHED). Releases the seller's "
-                + "payment at once - unless it is under dispute, when support decides.",
+                + "while the parcel is open (PREPARING or DISPATCHED). If the payment is still "
+                + "held, confirming releases it to the seller at once; if it is under dispute or "
+                + "already decided (refunded, released), confirming closes the parcel and leaves "
+                + "the money where it is.",
                 example = "true")
         boolean canConfirmReceipt,
 
-        @Schema(description = "Show a collection code - POST .../fulfilments/{id}/collect-code. "
-                + "COLLECTION parcels that are still open.", example = "false")
+        @Schema(description = "Get a collection code - POST .../fulfilments/{id}/collect-code. "
+                + "COLLECTION parcels that are still open. Minting always issues a FRESH code and "
+                + "retires the previous one - including one locked after too many wrong tries - "
+                + "so this says a working code can be had, not that an earlier one still works.",
+                example = "false")
         boolean canRequestCollectCode,
 
         @Schema(description = "Cancel this parcel - POST .../fulfilments/{id}/cancel. Only while "

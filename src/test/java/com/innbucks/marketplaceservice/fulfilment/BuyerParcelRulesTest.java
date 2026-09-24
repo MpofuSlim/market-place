@@ -1,6 +1,5 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
-import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.dto.ParcelActions;
 import com.innbucks.marketplaceservice.order.OrderStatus;
@@ -56,7 +55,7 @@ class BuyerParcelRulesTest {
                 .build();
     }
 
-    private static String code(ApiException refusal) {
+    private static String code(BuyerParcelRules.Refusal refusal) {
         return refusal == null ? null : refusal.code();
     }
 
@@ -120,10 +119,10 @@ class BuyerParcelRulesTest {
         for (DeliveryMethod method : DeliveryMethod.values()) {
             assertThat(rules.confirmReceiptRefusal(open(FulfilmentStatus.PREPARING), method)).isNull();
             assertThat(rules.confirmReceiptRefusal(open(FulfilmentStatus.DISPATCHED), method)).isNull();
-            ApiException closed = rules.confirmReceiptRefusal(
+            BuyerParcelRules.Refusal closed = rules.confirmReceiptRefusal(
                     parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, NOW), method);
             assertThat(closed.code()).isEqualTo("illegal_fulfilment_state");
-            assertThat(closed.getMessage())
+            assertThat(closed.message())
                     .isEqualTo("This parcel is DELIVERED and cannot move to DELIVERED");
             assertThat(code(rules.confirmReceiptRefusal(open(FulfilmentStatus.UNFULFILLED), method)))
                     .isEqualTo("illegal_fulfilment_state");
@@ -147,12 +146,12 @@ class BuyerParcelRulesTest {
         assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.DISPATCHED),
                 DeliveryMethod.COLLECTION)).isNull();
         assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.DELIVERED),
-                DeliveryMethod.COLLECTION).getMessage())
+                DeliveryMethod.COLLECTION).message())
                 .isEqualTo("This parcel has already been handed over");
-        ApiException cancelled = rules.collectCodeRefusal(open(FulfilmentStatus.UNFULFILLED),
+        BuyerParcelRules.Refusal cancelled = rules.collectCodeRefusal(open(FulfilmentStatus.UNFULFILLED),
                 DeliveryMethod.COLLECTION);
         assertThat(cancelled.code()).isEqualTo("illegal_fulfilment_state");
-        assertThat(cancelled.getMessage())
+        assertThat(cancelled.message())
                 .isEqualTo("This parcel was cancelled - there is nothing to collect");
     }
 
@@ -166,19 +165,19 @@ class BuyerParcelRulesTest {
         OrderFulfilment preparing = open(FulfilmentStatus.PREPARING);
         assertThat(rules.cancelRefusal(preparing, money(SettlementStatus.HELD, null))).isNull();
 
-        ApiException sent = rules.cancelRefusal(open(FulfilmentStatus.DISPATCHED),
+        BuyerParcelRules.Refusal sent = rules.cancelRefusal(open(FulfilmentStatus.DISPATCHED),
                 money(SettlementStatus.HELD, null));
         assertThat(sent.code()).isEqualTo("parcel_not_cancellable");
-        assertThat(sent.getMessage()).isEqualTo("The seller has already sent this parcel - "
+        assertThat(sent.message()).isEqualTo("The seller has already sent this parcel - "
                 + "contact them, or open a dispute if it does not arrive");
-        assertThat(rules.cancelRefusal(open(FulfilmentStatus.UNFULFILLED), null).getMessage())
+        assertThat(rules.cancelRefusal(open(FulfilmentStatus.UNFULFILLED), null).message())
                 .isEqualTo("This parcel is UNFULFILLED and can no longer be cancelled");
 
         assertThat(code(rules.cancelRefusal(preparing, money(SettlementStatus.DISPUTED, null))))
                 .isEqualTo("parcel_disputed");
         for (SettlementStatus s : SettlementStatus.values()) {
             if (s != SettlementStatus.HELD && s != SettlementStatus.DISPUTED) {
-                assertThat(rules.cancelRefusal(preparing, money(s, null)).getMessage())
+                assertThat(rules.cancelRefusal(preparing, money(s, null)).message())
                         .as(s.name())
                         .isEqualTo("This parcel can no longer be cancelled - contact support");
             }
@@ -234,10 +233,10 @@ class BuyerParcelRulesTest {
         MerchantSettlement held = money(SettlementStatus.HELD, null);
 
         assertThat(rules.disputeRefusal(OrderStatus.PAID, delivered, held, false, NOW)).isNull();
-        ApiException late = rules.disputeRefusal(OrderStatus.PAID, delivered, held, false,
-                NOW.plusMillis(1));
+        BuyerParcelRules.Refusal late = rules.disputeRefusal(OrderStatus.PAID, delivered, held,
+                false, NOW.plusMillis(1));
         assertThat(late.code()).isEqualTo("dispute_window_closed");
-        assertThat(late.getMessage()).isEqualTo(
+        assertThat(late.message()).isEqualTo(
                 "This parcel was delivered more than 7 days ago and can no longer be disputed");
     }
 

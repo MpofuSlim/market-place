@@ -1039,9 +1039,13 @@ never change either casually.
   carries `actions: {canConfirmReceipt, canRequestCollectCode, canCancel,
   canDispute}`, and the order carries `actions.canCancel`.
   * **One rule, two readers.** Each `BuyerParcelRules` method returns the
-    refusal the endpoint throws (or null when allowed): `confirmReceiptRefusal`
-    (the state machine's own check), `collectCodeRefusal`, `cancelRefusal`,
-    `disputeRefusal`. The endpoints (`FulfilmentService.confirmReceived` /
+    refusal the endpoint throws (or null when allowed) — as a `Refusal` VALUE
+    that the endpoint turns into its `ApiException` only when it throws. A view
+    asks every rule of every parcel on a page and most answers are "no", so an
+    exception per answer would capture a full stack trace per refused action
+    only to discard it, on the hottest read in the service. The rules:
+    `confirmReceiptRefusal` (the state machine's own check),
+    `collectCodeRefusal`, `cancelRefusal`, `disputeRefusal`. The endpoints (`FulfilmentService.confirmReceived` /
     `cancelByBuyer` / `mintCollectCode`, `DisputeService.open`) throw exactly
     that; `stateOf` sets each flag to "that refusal is null". So a flag cannot
     disagree with the endpoint it advertises, and moving the rules here
@@ -1060,7 +1064,10 @@ never change either casually.
     Buyer order reads (and their public mirrors) are `Cache-Control: no-store`,
     because `canDispute` changes with time. On a SUPER_ADMIN read the flags
     still describe the order's BUYER. An idempotent replay returns the stored
-    creation response, flags frozen as they were then.
+    creation response verbatim: flags frozen as they were then, and NO
+    `actions` at all on a body stored before this change (the replay contract
+    is the original bytes, so it is documented rather than patched — the app
+    re-reads the order after creating it anyway).
   * **Beside the flags, the buyer view now says how a parcel ended and what the
     money will do**, all derived, nothing stored: `closedAt` / `closedBy`
     (`ParcelCloseMethod`, the seller card's vocabulary — present means
@@ -1072,12 +1079,21 @@ never change either casually.
     disputed) and `paymentReleasesAt` (the HELD settlement's `releasable_at` —
     the same rule as the seller card's `settlementClearsAt`; the grace is only
     guaranteed to be at least the window, so it can be later than
-    `disputableUntil`, never earlier).
+    `disputableUntil`, and earlier only if the window is widened on a live
+    cell: `releasable_at` is STORED at the seller's close, while
+    `disputableUntil` is recomputed from today's window, so a parcel closed
+    under the old window keeps its old clock — never rewritten, like the 48h
+    rows before the grace fix).
   * **Endpoint fixes that had to ship with the flags, or the flags would lie**:
     minting a collection code for an UNFULFILLED parcel is refused (it sent the
     collector an SMS for goods that were no longer theirs); a seller presenting
-    a code for an UNFULFILLED parcel is refused BEFORE the compare (a wrong code
-    used to spend budget first); and `OrderService.confirmReceived` checks the
+    a code for a closed parcel (DELIVERED or UNFULFILLED) is refused on the
+    parcel's STATE first — before the no-code check, whose "ask the buyer to
+    generate one" would send the buyer to a mint that now refuses, and before
+    the compare, so no budget is spent; a buyer's refused "received" is still
+    counted as `illegal_transition` and logged, exactly as `transition()`
+    would (it is the buyer's half of the race that counter shows); and
+    `OrderService.confirmReceived` checks the
     parcel is on the order BEFORE closing it (a wrong-order 404 used to leave a
     FULFILMENT_DELIVERED audit row behind, since the audit commits in its own
     transaction). The seller's "mark delivered" Swagger no longer promises that

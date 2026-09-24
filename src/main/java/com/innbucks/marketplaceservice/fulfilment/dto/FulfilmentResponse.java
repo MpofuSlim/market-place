@@ -66,9 +66,11 @@ public record FulfilmentResponse(
         DisputeResponse dispute,
 
         @Schema(description = "When a collection code was last minted for this parcel. It stays "
-                + "after the parcel closes, so it does not by itself mean a live code - "
-                + "`actions.canRequestCollectCode` says whether one can still be used. The code "
-                + "itself is never returned here; mint a fresh one to see it again.",
+                + "after the parcel closes, and the code it names may since have been locked "
+                + "after too many wrong tries, so it does not by itself mean a working code. "
+                + "`actions.canRequestCollectCode` says whether a fresh one can be issued (which "
+                + "always works). The code itself is never returned here; mint a fresh one to see "
+                + "it again.",
                 example = "2026-09-16T14:05:00Z", nullable = true)
         Instant collectCodeIssuedAt,
 
@@ -147,7 +149,9 @@ public record FulfilmentResponse(
 
         @Schema(description = "When your payment is released to the seller automatically, unless "
                 + "you report a problem first. The clock runs only after the seller marked a "
-                + "delivery delivered, and never ends before `disputableUntil`. Absent when there "
+                + "delivery delivered; it is set then, never shorter than the dispute window in "
+                + "force at that moment, so it is normally the same as `disputableUntil` or "
+                + "later. Show the report button from `actions.canDispute`. Absent when there "
                 + "is no clock: the parcel is not delivered yet, your own confirmation or a "
                 + "collection code already released it, or the money is disputed or being "
                 + "refunded.",

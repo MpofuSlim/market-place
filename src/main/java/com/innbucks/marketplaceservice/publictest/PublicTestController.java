@@ -659,7 +659,9 @@ public class PublicTestController {
             @ApiResponse(responseCode = "200", description = "A live code for this parcel"),
             @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
-            @ApiResponse(responseCode = "409", description = "A delivery order, or a parcel already handed over")
+            @ApiResponse(responseCode = "409", description = "A delivery order, a parcel already "
+                    + "handed over, or a cancelled one - `collect_code_not_applicable` / "
+                    + "`illegal_fulfilment_state`, as on the authenticated endpoint")
     })
     public ResponseEntity<ApiResult<CollectCodeResponse>> collectCode(
             @PathVariable String handle, @PathVariable String orderId,

@@ -94,7 +94,9 @@ public record ParcelTrackingResponse(
 
         @Schema(description = "When your payment is released to the seller automatically, unless "
                 + "you report a problem first. The clock runs only after the seller marked a "
-                + "delivery delivered, and never ends before `disputableUntil`. Absent when there "
+                + "delivery delivered; it is set then, never shorter than the dispute window in "
+                + "force at that moment, so it is normally the same as `disputableUntil` or "
+                + "later. Show the report button from `actions.canDispute`. Absent when there "
                 + "is no clock: the parcel is not delivered yet, your own confirmation or a "
                 + "collection code already released it, or the money is disputed or being "
                 + "refunded.",
