@@ -719,18 +719,31 @@ never change either casually.
     destination for the same reason — there is no partial update, and "change
     just my account number" is not a smaller action than "change where my money
     goes".
-    **V17 closed a NULL hole in it.** As V13 wrote it, a row with NO method but
-    with account details passed: `payout_method = 'MOBILE_MONEY'` is UNKNOWN
-    when the method is NULL, so the whole CHECK was UNKNOWN, and a CHECK that
-    evaluates to UNKNOWN passes. The method branches now open with
-    `payout_method IS NOT NULL`, which makes every branch definite. The impact
-    was low: no write path produces that shape, and every read path gates on
-    the method, so such a row read as "not configured". V17 clears any stray
-    details it finds before re-adding the CHECK, and logs a WARNING if it
-    touched a row; it leaves the `payout_updated_*` stamps. **When you write a
-    CHECK over nullable columns, put an explicit `IS NOT NULL` wherever a
-    branch compares one** (V16's `chk_fulfilment_unfulfilled_by` needed the
-    same fix). Pinned by `PayoutDestinationFlowIT.detailsWithoutAMethodAreRefused`.
+    **V17 closed a NULL hole in it.** As V13 wrote it, a row with NO method
+    but carrying ONE rail's COMPLETE details (`payout_account_name` +
+    `payout_msisdn`, or `payout_account_name` + `payout_bank_name` +
+    `payout_account_number`) passed. With the method NULL,
+    `payout_method = 'MOBILE_MONEY'` / `= 'BANK'` is UNKNOWN; every other
+    conjunct in that branch was TRUE, so the whole CHECK was UNKNOWN, and a
+    CHECK that evaluates to UNKNOWN passes. Exactly those two shapes: a
+    partial set was always refused (`FALSE AND UNKNOWN` is FALSE), confirmed
+    over all 48 method × detail combinations on real Postgres. The method
+    branches now open with `payout_method IS NOT NULL`, which makes every
+    branch definite. The impact was low: no write path produces either shape,
+    and every read path gates on the method, so such a row read as "not
+    configured". V17 clears any stray details it finds before re-adding the
+    CHECK, and logs a WARNING if it touched a row (printed before commit, so
+    trust it only beside V17's success row in `flyway_schema_history`); it
+    leaves the `payout_updated_*` stamps. **V17's own header comment says "account
+    details with no method" generally. That overstates it, and this note is
+    the precise statement.** The file cannot be corrected in place: it has
+    shipped, and Flyway checksums comments too, so any edit makes every
+    database that already ran it refuse to boot. **When you write a CHECK over
+    nullable columns, put an explicit `IS NOT NULL` wherever a branch compares
+    one** (V16's `chk_fulfilment_unfulfilled_by` was written with the same
+    explicit `IS NOT NULL` for the same reason). Pinned by
+    `PayoutDestinationFlowIT.detailsWithoutAMethodAreRefused`, whose two
+    regression pins are exactly the two hole shapes.
   * **The seller sets their own** (`PUT /marketplace/sellers/me/payout-destination`,
     scoped by SHAPE — no path or query parameter names a merchant, so there is
     nothing to point at someone else's bank details). SUPER_ADMIN has an
