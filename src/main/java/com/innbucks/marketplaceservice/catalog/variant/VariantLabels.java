@@ -41,13 +41,17 @@ public final class VariantLabels {
 
     /**
      * Sanitises one option name or value: HTML stripped, whitespace collapsed
-     * and trimmed. Refused (400 {@code invalid_variant_option}, naming
+     * and trimmed. "Whitespace" is Unicode's, not just ASCII's: a value pasted
+     * with a non-breaking space would otherwise keep it, look identical to
+     * "M" on every screen, and still be a different {@link #key} — slipping
+     * past the duplicate check and failing to match the existing option on a
+     * replace. Refused (400 {@code invalid_variant_option}, naming
      * {@code field}) when blank, containing a comma or longer than
      * {@code maxLength}.
      */
     public static String normalize(String raw, String field, int maxLength) {
         String sanitized = TextSanitizer.sanitize(raw);
-        String value = sanitized == null ? "" : sanitized.replaceAll("\\s+", " ").trim();
+        String value = sanitized == null ? "" : sanitized.replaceAll("(?U)\\s+", " ").strip();
         if (value.isEmpty()) {
             throw ApiException.badRequest("invalid_variant_option", field + " must not be blank");
         }
