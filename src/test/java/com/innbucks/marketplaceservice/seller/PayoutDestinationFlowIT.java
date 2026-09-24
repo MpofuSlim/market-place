@@ -102,18 +102,27 @@ class PayoutDestinationFlowIT extends PostgresTestContainer {
     }
 
     @Test
-    @DisplayName("Account details with NO method are refused by the DB, whichever rail they look like (V17)")
+    @DisplayName("One rail's complete details with NO method are refused by the DB (V17)")
     void detailsWithoutAMethodAreRefused() throws Exception {
-        // The seller row exists with no destination — all five columns NULL.
+        // The GET creates the seller row (ensureExists) with no destination:
+        // all five columns NULL. Without the row every UPDATE below would
+        // match nothing and the failure would point at the wrong thing.
         mockMvc.perform(get("/marketplace/sellers/me/payout-destination")
                         .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.configured").value(false));
         String id = merchantId.toString();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM marketplace_seller WHERE merchant_id = ?::uuid",
+                Integer.class, id)).isEqualTo(1);
 
-        // V13's CHECK let these through: with payout_method NULL the method
-        // comparison is UNKNOWN, the whole expression is UNKNOWN, and a CHECK
-        // that evaluates to UNKNOWN passes. Written as raw SQL on purpose — no
-        // app path produces this shape, so only the constraint can stop it.
+        // V13's CHECK let EXACTLY these two through: one rail's COMPLETE
+        // details with no method. With payout_method NULL that branch's method
+        // comparison is UNKNOWN and every other conjunct is TRUE, so the whole
+        // expression is UNKNOWN, and a CHECK that evaluates to UNKNOWN passes.
+        // (A partial set was always refused: FALSE AND UNKNOWN is FALSE.)
+        // Raw SQL on purpose: no app path produces this shape, so only the
+        // constraint can stop it. Both of these succeed on a V13-only schema.
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE marketplace_seller
                    SET payout_account_name = 'Rudo Chikwanha', payout_msisdn = '+263771234567'
@@ -127,12 +136,6 @@ class PayoutDestinationFlowIT extends PostgresTestContainer {
                  WHERE merchant_id = ?::uuid""", id))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining("chk_seller_payout_destination");
-        // One stray column is as much a half-destination as all of them.
-        assertThatThrownBy(() -> jdbc.update("""
-                UPDATE marketplace_seller SET payout_account_number = '01123456789012'
-                 WHERE merchant_id = ?::uuid""", id))
-                .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("chk_seller_payout_destination");
 
         // Nothing landed: the row is still the honest "none on file".
         assertThat(jdbc.queryForMap("""
@@ -141,25 +144,38 @@ class PayoutDestinationFlowIT extends PostgresTestContainer {
                   FROM marketplace_seller WHERE merchant_id = ?::uuid""", id))
                 .allSatisfy((column, value) -> assertThat(value).as(column).isNull());
 
-        // The shapes V13 already refused are still refused: a method with its
-        // account missing is the dangerous one (it reads as configured).
+        // Shapes V13 already refused stay refused, BY THIS constraint (the
+        // column has a second CHECK, on the method's values, so the name is
+        // asserted): a stray partial detail, and a method with its account
+        // missing, which is the dangerous one because it reads as configured.
+        assertThatThrownBy(() -> jdbc.update("""
+                UPDATE marketplace_seller SET payout_account_number = '01123456789012'
+                 WHERE merchant_id = ?::uuid""", id))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("chk_seller_payout_destination");
         assertThatThrownBy(() -> jdbc.update("""
                 UPDATE marketplace_seller
                    SET payout_method = 'MOBILE_MONEY', payout_account_name = 'Rudo Chikwanha'
                  WHERE merchant_id = ?::uuid""", id))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("chk_seller_payout_destination");
 
-        // And the legal shapes are untouched — a complete destination, then
-        // back to none, both stored.
-        jdbc.update("""
+        // And the legal shapes are untouched: a complete destination is
+        // stored, then cleared back to none.
+        assertThat(jdbc.update("""
                 UPDATE marketplace_seller
                    SET payout_method = 'MOBILE_MONEY', payout_account_name = 'Rudo Chikwanha',
                        payout_msisdn = '+263771234567'
-                 WHERE merchant_id = ?::uuid""", id);
-        jdbc.update("""
+                 WHERE merchant_id = ?::uuid""", id)).isEqualTo(1);
+        assertThat(jdbc.queryForMap("""
+                SELECT payout_method, payout_msisdn FROM marketplace_seller
+                 WHERE merchant_id = ?::uuid""", id))
+                .containsEntry("payout_method", "MOBILE_MONEY")
+                .containsEntry("payout_msisdn", "+263771234567");
+        assertThat(jdbc.update("""
                 UPDATE marketplace_seller
                    SET payout_method = NULL, payout_account_name = NULL, payout_msisdn = NULL
-                 WHERE merchant_id = ?::uuid""", id);
+                 WHERE merchant_id = ?::uuid""", id)).isEqualTo(1);
         assertThat(jdbc.queryForObject(
                 "SELECT payout_method FROM marketplace_seller WHERE merchant_id = ?::uuid",
                 String.class, id)).isNull();
