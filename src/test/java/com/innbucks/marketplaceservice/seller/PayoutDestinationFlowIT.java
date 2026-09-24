@@ -6,11 +6,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -97,6 +99,70 @@ class PayoutDestinationFlowIT extends PostgresTestContainer {
                 .containsEntry("payout_msisdn", "+263771234567")
                 .containsEntry("payout_bank_name", null)
                 .containsEntry("payout_account_number", null);
+    }
+
+    @Test
+    @DisplayName("Account details with NO method are refused by the DB, whichever rail they look like (V17)")
+    void detailsWithoutAMethodAreRefused() throws Exception {
+        // The seller row exists with no destination — all five columns NULL.
+        mockMvc.perform(get("/marketplace/sellers/me/payout-destination")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(jsonPath("$.data.configured").value(false));
+        String id = merchantId.toString();
+
+        // V13's CHECK let these through: with payout_method NULL the method
+        // comparison is UNKNOWN, the whole expression is UNKNOWN, and a CHECK
+        // that evaluates to UNKNOWN passes. Written as raw SQL on purpose — no
+        // app path produces this shape, so only the constraint can stop it.
+        assertThatThrownBy(() -> jdbc.update("""
+                UPDATE marketplace_seller
+                   SET payout_account_name = 'Rudo Chikwanha', payout_msisdn = '+263771234567'
+                 WHERE merchant_id = ?::uuid""", id))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("chk_seller_payout_destination");
+        assertThatThrownBy(() -> jdbc.update("""
+                UPDATE marketplace_seller
+                   SET payout_account_name = 'Rudo Chikwanha', payout_bank_name = 'CBZ Bank',
+                       payout_account_number = '01123456789012'
+                 WHERE merchant_id = ?::uuid""", id))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("chk_seller_payout_destination");
+        // One stray column is as much a half-destination as all of them.
+        assertThatThrownBy(() -> jdbc.update("""
+                UPDATE marketplace_seller SET payout_account_number = '01123456789012'
+                 WHERE merchant_id = ?::uuid""", id))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("chk_seller_payout_destination");
+
+        // Nothing landed: the row is still the honest "none on file".
+        assertThat(jdbc.queryForMap("""
+                SELECT payout_method, payout_account_name, payout_msisdn, payout_bank_name,
+                       payout_account_number
+                  FROM marketplace_seller WHERE merchant_id = ?::uuid""", id))
+                .allSatisfy((column, value) -> assertThat(value).as(column).isNull());
+
+        // The shapes V13 already refused are still refused: a method with its
+        // account missing is the dangerous one (it reads as configured).
+        assertThatThrownBy(() -> jdbc.update("""
+                UPDATE marketplace_seller
+                   SET payout_method = 'MOBILE_MONEY', payout_account_name = 'Rudo Chikwanha'
+                 WHERE merchant_id = ?::uuid""", id))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // And the legal shapes are untouched — a complete destination, then
+        // back to none, both stored.
+        jdbc.update("""
+                UPDATE marketplace_seller
+                   SET payout_method = 'MOBILE_MONEY', payout_account_name = 'Rudo Chikwanha',
+                       payout_msisdn = '+263771234567'
+                 WHERE merchant_id = ?::uuid""", id);
+        jdbc.update("""
+                UPDATE marketplace_seller
+                   SET payout_method = NULL, payout_account_name = NULL, payout_msisdn = NULL
+                 WHERE merchant_id = ?::uuid""", id);
+        assertThat(jdbc.queryForObject(
+                "SELECT payout_method FROM marketplace_seller WHERE merchant_id = ?::uuid",
+                String.class, id)).isNull();
     }
 
     @Test

@@ -719,6 +719,18 @@ never change either casually.
     destination for the same reason — there is no partial update, and "change
     just my account number" is not a smaller action than "change where my money
     goes".
+    **V17 closed a NULL hole in it.** As V13 wrote it, a row with NO method but
+    with account details passed: `payout_method = 'MOBILE_MONEY'` is UNKNOWN
+    when the method is NULL, so the whole CHECK was UNKNOWN, and a CHECK that
+    evaluates to UNKNOWN passes. The method branches now open with
+    `payout_method IS NOT NULL`, which makes every branch definite. The impact
+    was low: no write path produces that shape, and every read path gates on
+    the method, so such a row read as "not configured". V17 clears any stray
+    details it finds before re-adding the CHECK, and logs a WARNING if it
+    touched a row; it leaves the `payout_updated_*` stamps. **When you write a
+    CHECK over nullable columns, put an explicit `IS NOT NULL` wherever a
+    branch compares one** (V16's `chk_fulfilment_unfulfilled_by` needed the
+    same fix). Pinned by `PayoutDestinationFlowIT.detailsWithoutAMethodAreRefused`.
   * **The seller sets their own** (`PUT /marketplace/sellers/me/payout-destination`,
     scoped by SHAPE — no path or query parameter names a merchant, so there is
     nothing to point at someone else's bank details). SUPER_ADMIN has an
