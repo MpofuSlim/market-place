@@ -17,6 +17,7 @@ import com.innbucks.marketplaceservice.order.OrderStatus;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFee;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
+import com.innbucks.marketplaceservice.support.TestParcelViews;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -92,7 +93,8 @@ class FulfilmentServiceTest {
                 mock(com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts.class),
                 mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class),
                 mock(ParcelStockReturner.class),
-                eventPublisher, deliveryFees);
+                eventPublisher, deliveryFees,
+                TestParcelViews.over(orderRepository, itemRepository, settlementService));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

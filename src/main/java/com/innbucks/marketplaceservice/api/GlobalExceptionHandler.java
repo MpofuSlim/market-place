@@ -12,6 +12,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
@@ -112,6 +113,20 @@ public class GlobalExceptionHandler {
         log.debug("No handler for {}", ex.getResourcePath());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResult.error("not_found", "Not found"));
+    }
+
+    /**
+     * A query or path parameter the client sent in the wrong shape — a status
+     * that is not one of the enum's values, a malformed UUID — is the client's
+     * mistake, and says which parameter. Without this it fell into the
+     * catch-all as a 500, telling the client our server broke over their typo
+     * (several controllers had taken their ids as Strings purely to avoid it).
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResult<Void>> parameterMismatch(MethodArgumentTypeMismatchException ex) {
+        return ResponseEntity.badRequest()
+                .body(ApiResult.error("invalid_parameter",
+                        "'" + ex.getName() + "' has a value we cannot read"));
     }
 
     @ExceptionHandler(Exception.class)

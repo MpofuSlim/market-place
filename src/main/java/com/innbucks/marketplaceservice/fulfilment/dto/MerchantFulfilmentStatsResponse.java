@@ -23,9 +23,26 @@ public record MerchantFulfilmentStatsResponse(
                 + "moved yet. The number to keep at zero.", example = "3")
         long awaitingDispatch,
 
-        @Schema(description = "Parcels DISPATCHED but not yet delivered", example = "5")
+        @Schema(description = "Parcels DISPATCHED but not yet delivered - both kinds together "
+                + "(onTheWay + readyToCollect)", example = "5")
         long inTransit,
 
         @Schema(description = "Parcels delivered, all time", example = "128")
-        long completedOrders) {
+        long completedOrders,
+
+        @Schema(description = "DELIVERY parcels on the road", example = "3")
+        long onTheWay,
+
+        @Schema(description = "COLLECTION parcels ready at your counter, waiting for the buyer",
+                example = "2")
+        long readyToCollect,
+
+        @Schema(description = "Of readyToCollect, those waiting longer than "
+                + "collectionOverdueDays. Chase the buyer, or close them as not collected, "
+                + "before the operator's stale-money list does it for you.", example = "1")
+        long readyToCollectOverdue,
+
+        @Schema(description = "The age (days) at which a waiting collection counts as overdue",
+                example = "7")
+        int collectionOverdueDays) {
 }

@@ -20,6 +20,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -33,6 +35,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -55,6 +58,7 @@ public class SettlementController {
     private final SettlementQueryService queryService;
     private final SettlementService settlementService;
     private final DisputeService disputeService;
+    private final SettlementViewAssembler views;
 
     private static final String EXAMPLE_SETTLEMENT_PAGE_200 = """
             {
@@ -68,12 +72,36 @@ public class SettlementController {
                     "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
                     "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                     "status": "RELEASABLE",
-                    "grossCents": 4798,
+                    "grossCents": 5598,
                     "commissionCents": 0,
-                    "netCents": 4798,
+                    "netCents": 5598,
+                    "deliveryFeeCents": 800,
                     "currency": "USD",
                     "releasedAt": "2026-09-16T14:05:00Z",
-                    "createdAt": "2026-09-14T11:20:10Z"
+                    "createdAt": "2026-09-14T11:20:10Z",
+                    "orderRef": "MKT-4F9A1C22B7D3",
+                    "itemSummary": "2 x Wireless Bluetooth Speaker",
+                    "closedBy": "BUYER_CONFIRMED",
+                    "closedAt": "2026-09-16T14:05:00Z"
+                  },
+                  {
+                    "id": "0b7e3c91-2d48-4f5a-9c6e-1a2b3c4d5e6f",
+                    "orderId": "c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                    "fulfilmentId": "6e5d4c3b-2a19-4f8e-b7d6-c5b4a3928170",
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "status": "REFUND_DUE",
+                    "grossCents": 1550,
+                    "commissionCents": 0,
+                    "netCents": 1550,
+                    "deliveryFeeCents": 0,
+                    "currency": "USD",
+                    "refundDueAt": "2026-09-18T09:15:00Z",
+                    "createdAt": "2026-09-17T16:40:00Z",
+                    "orderRef": "MKT-9B3E7D10A4C2",
+                    "itemSummary": "1 x Solar Lantern 20W",
+                    "closedBy": "CANNOT_SUPPLY",
+                    "closedAt": "2026-09-18T09:15:00Z",
+                    "refundReason": "Out of stock - the last one was damaged in storage"
                   }
                 ],
                 "page": 0,
@@ -89,11 +117,21 @@ public class SettlementController {
               "message": "Success",
               "data": {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "payoutDestinationConfigured": true,
                 "totals": [
                   { "status": "HELD", "parcels": 3, "netCents": 12500 },
                   { "status": "RELEASABLE", "parcels": 12, "netCents": 185000 },
                   { "status": "PAID_OUT", "parcels": 113, "netCents": 1730000 }
-                ]
+                ],
+                "nextClearingAt": "2026-09-29T14:05:00Z",
+                "clearingNext7DaysCents": 8200,
+                "lastPayout": {
+                  "paidOutAt": "2026-09-30T10:00:00Z",
+                  "netCents": 48500,
+                  "currency": "USD",
+                  "parcels": 9,
+                  "payoutReference": "PAYOUT-2026-09-30-01"
+                }
               }
             }""";
 
@@ -126,29 +164,102 @@ public class SettlementController {
     @Operation(summary = "My settlements",
             description = "One row per parcel: what the platform holds, has cleared, has paid, or "
                     + "has refunded. Newest first. A MERCHANT_ADMIN always reads their own — "
-                    + "`merchantId` is IGNORED for them; SUPER_ADMIN reads all and may narrow.")
+                    + "`merchantId` is IGNORED for them; SUPER_ADMIN reads all and may narrow.\n\n"
+                    + "Each row carries what a person needs to recognise it: the buyer's "
+                    + "`orderRef`, an `itemSummary`, `closedBy` (how the parcel ended — which is "
+                    + "why one row cleared at once and another waits out the dispute window), "
+                    + "`refundReason` on refund rows and `dispute` where the buyer raised one.\n\n"
+                    + "`from` / `to` are calendar days in this market (inclusive), matched on "
+                    + "when the buyer paid. The same filters export as CSV at `/statement`.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of settlements",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SETTLEMENT_PAGE_200))),
+            @ApiResponse(responseCode = "400", description = "'to' before 'from', or a value "
+                    + "that is not a date / state",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"invalid_date_range","message":"'to' is before 'from'"}"""))),
             @ApiResponse(responseCode = "403", description = "Merchant token with no merchant scope",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SCOPE_403)))
     })
     public ResponseEntity<ApiResult<SettlementPageResponse>> list(
             @Parameter(description = "Narrow to one escrow state")
             @RequestParam(required = false) SettlementStatus status,
+            @Parameter(description = "First day, inclusive (yyyy-MM-dd, this market's calendar)",
+                    example = "2026-09-01")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate from,
+            @Parameter(description = "Last day, inclusive", example = "2026-09-30")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate to,
             @Parameter(description = "SUPER_ADMIN only; ignored for a MERCHANT_ADMIN")
             @RequestParam(required = false) UUID merchantId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(ApiResult.ok(queryService.list(
-                CurrentUser.get(), status, merchantId, page, size)));
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResult.ok(queryService.list(CurrentUser.get(),
+                        new SettlementQueryService.EarningsQuery(status, from, to, merchantId,
+                                page, size))));
+    }
+
+    @GetMapping(value = "/statement", produces = "text/csv")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')")
+    @Operation(summary = "My statement (CSV)",
+            description = "The same rows as `GET /marketplace/settlements`, same filters, oldest "
+                    + "first, as a spreadsheet. Dates and times are this market's wall clock; the "
+                    + "period is in the FILENAME (never a header row above the columns). Money is "
+                    + "in minor units, like every other surface. Refused past 5000 rows — choose "
+                    + "a shorter period.\n\n"
+                    + "A MERCHANT_ADMIN always exports their own; SUPER_ADMIN must name a "
+                    + "`merchantId`.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "CSV attachment",
+                    content = @Content(mediaType = "text/csv", examples = @ExampleObject(value =
+                            "date,orderRef,items,status,closedBy,closedAt,grossCents,deliveryFeeCents,"
+                                    + "commissionCents,netCents,currency,clearsAt,releasedAt,paidOutAt,"
+                                    + "payoutReference,refundedAt,refundReference,refundReason,"
+                                    + "disputeStatus,disputeReason\n"
+                                    + "2026-09-14,MKT-4F9A1C22B7D3,2 x Wireless Bluetooth Speaker,PAID_OUT,"
+                                    + "BUYER_CONFIRMED,2026-09-16T16:05:00+02:00,5598,800,0,5598,USD,,"
+                                    + "2026-09-16T16:05:00+02:00,2026-09-30T12:00:00+02:00,PAYOUT-2026-09-30-01,"
+                                    + ",,,,\n"))),
+            @ApiResponse(responseCode = "400", description = "SUPER_ADMIN without a merchantId, or "
+                    + "'to' before 'from'",
+                    content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """
+                            {"code":"merchant_id_required","message":"merchantId is required when a SUPER_ADMIN exports a merchant's statement"}"""))),
+            @ApiResponse(responseCode = "422", description = "More rows than a statement carries",
+                    content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """
+                            {"code":"statement_too_large","message":"More than 5000 rows - choose a shorter period"}""")))
+    })
+    public ResponseEntity<String> statement(
+            @RequestParam(required = false) SettlementStatus status,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate to,
+            @Parameter(description = "SUPER_ADMIN only (required for them); ignored for a "
+                    + "MERCHANT_ADMIN")
+            @RequestParam(required = false) UUID merchantId) {
+        SettlementQueryService.Csv csv = queryService.statementCsv(CurrentUser.get(), status,
+                from, to, merchantId);
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + csv.filename() + "\"")
+                .contentType(MediaType.parseMediaType("text/csv"))
+                .body(csv.content());
     }
 
     @GetMapping("/summary")
     @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')")
     @Operation(summary = "Where is my money",
             description = "Parcels and net totals grouped by escrow state, in one read — the "
-                    + "seller wallet header. States with nothing in them are simply not listed.")
+                    + "seller wallet header. States with nothing in them are simply not listed.\n\n"
+                    + "Also: `nextClearingAt` (when the soonest held money clears on its own), "
+                    + "`clearingNext7DaysCents`, and `lastPayout` (date, amount, parcels and the "
+                    + "reference to look for on the seller's bank statement). Held money still "
+                    + "waiting on delivery has no clearing date yet, so it is in the HELD total "
+                    + "but not in either clearing figure.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The caller's totals",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SUMMARY_200))),
@@ -338,7 +449,7 @@ public class SettlementController {
     public ResponseEntity<ApiResult<SettlementResponse>> refund(
             @PathVariable UUID id, @Valid @RequestBody RefundRequest request) {
         return ResponseEntity.ok(ApiResult.ok("Refund recorded",
-                SettlementResponse.from(settlementService.recordRefundPayment(
+                views.toResponse(settlementService.recordRefundPayment(
                         CurrentUser.get(), id, request.refundReference().trim()))));
     }
 

@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.settlement;
 
 import com.innbucks.marketplaceservice.api.ApiException;
+import com.innbucks.marketplaceservice.config.MarketZone;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
@@ -8,14 +9,22 @@ import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.P
 import com.innbucks.marketplaceservice.settlement.dto.SettlementPageResponse;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementResponse;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementSummaryResponse;
+import jakarta.persistence.criteria.Predicate;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
@@ -40,32 +49,60 @@ public class SettlementQueryService {
     private final MerchantSettlementRepository settlementRepository;
     private final SettlementService settlementService;
     private final SellerService sellerService;
+    private final SettlementViewAssembler views;
+    private final MarketZone marketZone;
 
+    /**
+     * The earnings rows, newest first. Every filter is optional; {@code from}
+     * and {@code to} are the seller's calendar days in THIS market (inclusive),
+     * matched against when the parcel's money was opened — i.e. when the buyer
+     * paid. Built as appended predicates, never a nullable bind.
+     */
+    public record EarningsQuery(SettlementStatus status, LocalDate from, LocalDate to,
+                                UUID merchantId, int page, int size) {
+    }
+
+    @Transactional(readOnly = true)
+    public SettlementPageResponse list(AuthenticatedUser caller, EarningsQuery query) {
+        UUID scope = caller.isSuperAdmin() ? query.merchantId() : requireMerchantId(caller);
+        Pageable pageable = PageRequest.of(Math.max(query.page(), 0),
+                Math.clamp(query.size(), 1, MAX_PAGE_SIZE),
+                Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+        Page<MerchantSettlement> result = settlementRepository.findAll(
+                earnings(scope, query.status(), query.from(), query.to()), pageable);
+        // One batch for the page: order refs, lines, parcels, disputes.
+        List<SettlementResponse> rows = views.toResponses(result.getContent());
+        return SettlementPageResponse.from(new PageImpl<>(rows, pageable, result.getTotalElements()));
+    }
+
+    /** Kept for callers with no date filter. */
     @Transactional(readOnly = true)
     public SettlementPageResponse list(AuthenticatedUser caller, SettlementStatus status,
                                        UUID merchantIdFilter, int page, int size) {
-        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.clamp(size, 1, MAX_PAGE_SIZE));
-        Page<MerchantSettlement> result;
-        if (caller.isSuperAdmin()) {
-            if (merchantIdFilter != null) {
-                result = status == null
-                        ? settlementRepository.findByMerchantIdOrderByCreatedAtDesc(
-                                merchantIdFilter, pageable)
-                        : settlementRepository.findByMerchantIdAndStatusOrderByCreatedAtDesc(
-                                merchantIdFilter, status, pageable);
-            } else {
-                result = status == null
-                        ? settlementRepository.findAllByOrderByCreatedAtDesc(pageable)
-                        : settlementRepository.findByStatusOrderByCreatedAtDesc(status, pageable);
-            }
-        } else {
-            UUID merchantId = requireMerchantId(caller);
-            result = status == null
-                    ? settlementRepository.findByMerchantIdOrderByCreatedAtDesc(merchantId, pageable)
-                    : settlementRepository.findByMerchantIdAndStatusOrderByCreatedAtDesc(
-                            merchantId, status, pageable);
+        return list(caller, new EarningsQuery(status, null, null, merchantIdFilter, page, size));
+    }
+
+    private Specification<MerchantSettlement> earnings(UUID merchantId, SettlementStatus status,
+                                                       LocalDate from, LocalDate to) {
+        if (from != null && to != null && to.isBefore(from)) {
+            throw ApiException.badRequest("invalid_date_range", "'to' is before 'from'");
         }
-        return SettlementPageResponse.from(result.map(SettlementResponse::from));
+        return (root, q, cb) -> {
+            List<Predicate> where = new ArrayList<>();
+            if (merchantId != null) {
+                where.add(cb.equal(root.get("merchantId"), merchantId));
+            }
+            if (status != null) {
+                where.add(cb.equal(root.get("status"), status));
+            }
+            if (from != null) {
+                where.add(cb.greaterThanOrEqualTo(root.get("createdAt"), marketZone.startOf(from)));
+            }
+            if (to != null) {
+                where.add(cb.lessThan(root.get("createdAt"), marketZone.endOf(to)));
+            }
+            return cb.and(where.toArray(Predicate[]::new));
+        };
     }
 
     /** One merchant's parcels + net totals grouped by escrow state. SUPER_ADMIN
@@ -94,7 +131,17 @@ public class SettlementQueryService {
         boolean configured = sellerService.findAllByMerchantIds(List.of(merchantId))
                 .values().stream()
                 .anyMatch(MarketplaceSeller::hasPayoutDestination);
-        return new SettlementSummaryResponse(merchantId, configured, totals);
+        Instant now = Instant.now();
+        SettlementSummaryResponse.LastPayout lastPayout = settlementRepository
+                .payoutRuns(merchantId, PageRequest.of(0, 1)).stream().findFirst()
+                .map(run -> new SettlementSummaryResponse.LastPayout(run.getPaidOutAt(),
+                        run.getNetCents(), run.getCurrency(), run.getParcels(),
+                        run.getPayoutReference()))
+                .orElse(null);
+        return new SettlementSummaryResponse(merchantId, configured, totals,
+                settlementRepository.nextClearing(merchantId),
+                settlementRepository.netClearingBy(merchantId, now.plus(Duration.ofDays(7))),
+                lastPayout);
     }
 
     /**
@@ -108,11 +155,9 @@ public class SettlementQueryService {
      */
     @Transactional(readOnly = true)
     public SettlementPageResponse stale(int size) {
-        List<SettlementResponse> rows = settlementService
-                .staleHeld(Math.clamp(size, 1, MAX_PAGE_SIZE))
-                .stream()
-                .map(SettlementResponse::from)
-                .toList();
+        List<MerchantSettlement> stale = settlementService
+                .staleHeld(Math.clamp(size, 1, MAX_PAGE_SIZE));
+        List<SettlementResponse> rows = views.toResponses(stale);
         return new SettlementPageResponse(rows, 0, rows.size(), rows.size(), 1);
     }
 
@@ -194,6 +239,100 @@ public class SettlementQueryService {
             return '"' + value.replace("\"", "\"\"") + '"';
         }
         return value;
+    }
+
+    /** A statement longer than this is refused, not truncated: a statement
+     *  that silently stops is worse than one that asks for a shorter period. */
+    static final int MAX_STATEMENT_ROWS = 5000;
+
+    /**
+     * The seller's statement as CSV — every parcel's money in the period,
+     * oldest first (a statement reads forward), with the same row detail the
+     * earnings screen shows. Dates and times are this market's wall clock; the
+     * period is in the FILENAME (fleet CSV rule — never a preamble row).
+     *
+     * @throws ApiException 422 {@code statement_too_large} past
+     *         {@value #MAX_STATEMENT_ROWS} rows — narrow the dates
+     */
+    @Transactional(readOnly = true)
+    public Csv statementCsv(AuthenticatedUser caller, SettlementStatus status, LocalDate from,
+                            LocalDate to, UUID merchantIdFilter) {
+        UUID merchantId;
+        if (caller.isSuperAdmin()) {
+            if (merchantIdFilter == null) {
+                throw ApiException.badRequest("merchant_id_required",
+                        "merchantId is required when a SUPER_ADMIN exports a merchant's statement");
+            }
+            merchantId = merchantIdFilter;
+        } else {
+            merchantId = requireMerchantId(caller);
+        }
+        Page<MerchantSettlement> page = settlementRepository.findAll(
+                earnings(merchantId, status, from, to),
+                PageRequest.of(0, MAX_STATEMENT_ROWS + 1,
+                        Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id"))));
+        if (page.getNumberOfElements() > MAX_STATEMENT_ROWS) {
+            throw ApiException.unprocessable("statement_too_large",
+                    "More than " + MAX_STATEMENT_ROWS + " rows - choose a shorter period");
+        }
+        StringBuilder csv = new StringBuilder("date,orderRef,items,status,closedBy,closedAt,"
+                + "grossCents,deliveryFeeCents,commissionCents,netCents,currency,clearsAt,"
+                + "releasedAt,paidOutAt,payoutReference,refundedAt,refundReference,refundReason,"
+                + "disputeStatus,disputeReason\n");
+        for (SettlementResponse row : views.toResponses(page.getContent())) {
+            csv.append(marketZone.dateOf(row.createdAt())).append(',')
+                    .append(csvText(row.orderRef())).append(',')
+                    .append(csvText(row.itemSummary())).append(',')
+                    .append(row.status()).append(',')
+                    .append(row.closedBy() == null ? "" : row.closedBy().name()).append(',')
+                    .append(stamp(row.closedAt())).append(',')
+                    .append(row.grossCents()).append(',')
+                    .append(row.deliveryFeeCents()).append(',')
+                    .append(row.commissionCents()).append(',')
+                    .append(row.netCents()).append(',')
+                    .append(row.currency()).append(',')
+                    .append(row.status() == SettlementStatus.HELD ? stamp(row.releasableAt()) : "")
+                    .append(',')
+                    .append(stamp(row.releasedAt())).append(',')
+                    .append(stamp(row.paidOutAt())).append(',')
+                    .append(csvText(row.payoutReference())).append(',')
+                    .append(stamp(row.refundedAt())).append(',')
+                    .append(csvText(row.refundReference())).append(',')
+                    .append(csvText(row.refundReason())).append(',')
+                    .append(row.dispute() == null ? "" : row.dispute().status().name()).append(',')
+                    .append(row.dispute() == null ? "" : row.dispute().reason().name())
+                    .append('\n');
+        }
+        String period = (from == null ? "start" : from.toString()) + "_to_"
+                + (to == null ? marketZone.today().toString() : to.toString());
+        return new Csv("marketplace-statement-" + period + ".csv", csv.toString());
+    }
+
+    /** One fixed shape for every timestamp cell, seconds always present and no
+     *  fraction: {@code OffsetDateTime.toString()} drops ":00" seconds, which
+     *  makes a column a spreadsheet parses some rows of and not others. */
+    private static final DateTimeFormatter STAMP =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX");
+
+    private String stamp(Instant instant) {
+        return instant == null ? "" : STAMP.format(marketZone.atMarket(instant));
+    }
+
+    /**
+     * RFC-4180 quoting, plus a neutralising apostrophe on anything a
+     * spreadsheet would run as a formula: item titles and reasons are other
+     * people's free text, and this file is opened in Excel by design.
+     */
+    static String csvText(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        String safe = "=+-@\t\r".indexOf(value.charAt(0)) >= 0 ? "'" + value : value;
+        if (safe.contains(",") || safe.contains("\"") || safe.contains("\n")
+                || safe.contains("\r")) {
+            return '"' + safe.replace("\"", "\"\"") + '"';
+        }
+        return safe;
     }
 
     public record Csv(String filename, String content) {

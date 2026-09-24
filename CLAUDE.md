@@ -858,6 +858,67 @@ never change either casually.
     `FulfilmentServiceTest` / `SettlementServiceTest` /
     `ListingServiceTest`, and end to end by `DeliveryTrackingFlowIT` plus the
     refund case in `NotificationFlowIT`.
+* **The seller portal reads (V15): cards and earnings rows answer the
+  seller's actual questions.** Driven by the portal team's list — "which order
+  is this row", "why is this one still held", "did the buyer get the SMS", "find
+  the buyer at my counter".
+  * **Cards and rows are BATCH-assembled** (`MerchantParcelViewAssembler`,
+    `SettlementViewAssembler`): one query per related table for a whole page,
+    however long. The card used to cost ~3 queries per parcel, and every field
+    asked for would have added another. Single-row paths (an action's response,
+    a tracking lookup) go through the same method with a list of one, so a card
+    cannot differ by screen.
+  * **`ParcelCloseMethod` is DERIVED, never stored**: BUYER_CONFIRMED /
+    COLLECTION_CODE / SELLER_MARKED from `deliveredBy`; an UNFULFILLED
+    collection that had been set aside is NOT_COLLECTED, every other decline
+    CANNOT_SUPPLY (only a collection can be declined after dispatch, by the
+    state machine). A stored copy would be a second truth. `deliveredBy`
+    itself is unchanged: `BUYER` and `RECIPIENT` stay distinct values.
+  * **Refund reason comes from whoever decided**: the seller's
+    `unfulfilled_reason` for a decline, the operator's `resolution_note` for a
+    dispute decided for the buyer — shown on REFUND_DUE/REFUNDED rows only. The
+    dispute on a card/row carries status, reason and dates, **never the buyer's
+    free-text detail** (that is for the operator).
+  * **Whether the buyer was told is now recorded** (V15
+    `order_fulfilment.buyer_notice_*`): the parcel-progress and
+    unfulfilled listeners write the LAST notice's kind + outcome (SMS /
+    WHATSAPP / FAILED / NOT_SENT) after sending. Written by a bulk UPDATE with
+    its own transaction — the listener runs after commit on the async pool,
+    and going through the entity would let a late notice turn the seller's
+    NEXT action into an optimistic-lock failure. The recorder never throws.
+    Seller-triggered notices only: the buyer's own collect-code SMS and the
+    operator's refund SMS do not overwrite it.
+  * **The queue's `q` is read by SHAPE** (`SellerParcelQueryService.Search`):
+    `MKT…` → order ref, `TRK…` → tracking code, dialable → phone normalised
+    by `Msisdns` (buyer, delivery recipient or gift recipient number), anything
+    else → a name (delivery recipient or named collector, LIKE-escaped). A
+    phone-shaped query that is not a number is a 400, never a silent name
+    search. There is **no name for a buyer collecting for themselves** — the
+    platform never stored one — so their phone or reference is the search.
+    Built as appended Criteria predicates + one subquery on the order, never a
+    nullable bind (the catalogue rule).
+  * **Split counts** on `/fulfilments/stats`: `onTheWay` / `readyToCollect` /
+    `readyToCollectOverdue` (set aside longer than
+    `marketplace.fulfilment.collection-overdue-days`, default 7 — deliberately
+    inside the operator's 14-day stale list so the seller sees it first).
+    `inTransit` is kept (= onTheWay + readyToCollect) for older clients.
+  * **Earnings**: `from`/`to` are calendar days in THIS market (`MarketZone`,
+    which fails boot on an unmapped country rather than defaulting to UTC),
+    matched on when the buyer paid. The summary adds `nextClearingAt`,
+    `clearingNext7DaysCents` and `lastPayout` (grouped by payout reference).
+    `GET /marketplace/settlements/statement` is the same rows as CSV, oldest
+    first, market-local timestamps in ONE fixed shape, period in the filename,
+    refused past 5000 rows (422 `statement_too_large`), and every free-text
+    cell neutralised against spreadsheet formula injection.
+  * **A mistyped query/path parameter is now a 400 `invalid_parameter`**
+    (`MethodArgumentTypeMismatchException` in `GlobalExceptionHandler`), not a
+    500 — every enum/UUID filter in the service benefits.
+  * Pinned by `PortalParcelsAndEarningsIT` (search shapes, filters, split
+    counts, async notice write-back, clearing date, dispute block, code budget,
+    earnings rows, summary, statement), plus `MerchantParcelViewAssemblerTest`,
+    `SettlementViewAssemblerTest`, `ParcelCloseMethodTest`,
+    `SellerParcelSearchTest`, `BuyerNoticeTest`, `MarketZoneTest`,
+    `StatementCsvTest` and the listener tests.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling

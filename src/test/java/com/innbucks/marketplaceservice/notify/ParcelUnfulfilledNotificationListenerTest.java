@@ -2,6 +2,9 @@ package com.innbucks.marketplaceservice.notify;
 
 import com.innbucks.marketplaceservice.fulfilment.ParcelUnfulfilled;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeKind;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeOutcome;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeRecorder;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -35,6 +38,7 @@ class ParcelUnfulfilledNotificationListenerTest {
     private SmsNotificationClient sms;
     private WhatsAppNotificationClient whatsApp;
     private SimpleMeterRegistry registry;
+    private BuyerNoticeRecorder recorder;
     private ParcelUnfulfilledNotificationListener listener;
 
     private final ParcelUnfulfilled event = new ParcelUnfulfilled(UUID.randomUUID(), REF,
@@ -45,8 +49,9 @@ class ParcelUnfulfilledNotificationListenerTest {
         sms = mock(SmsNotificationClient.class);
         whatsApp = mock(WhatsAppNotificationClient.class);
         registry = new SimpleMeterRegistry();
+        recorder = mock(BuyerNoticeRecorder.class);
         listener = new ParcelUnfulfilledNotificationListener(sms, whatsApp,
-                new MarketplaceMetrics(registry));
+                new MarketplaceMetrics(registry), recorder);
     }
 
     private double outcome(String outcome) {
@@ -140,5 +145,19 @@ class ParcelUnfulfilledNotificationListenerTest {
                         + "within 5 days. A refund of USD 15.50 is being arranged. Ref "
                         + "MKT-4F2A9C1B77D0"),
                 eq(REF));
+    }
+
+    @Test
+    @DisplayName("The outcome is remembered on the parcel, so the seller can see the buyer was not told")
+    void outcomeIsRecordedOnTheParcel() {
+        UUID parcel = UUID.randomUUID();
+        when(sms.isConfigured()).thenReturn(true);
+        doThrow(new IllegalStateException("gateway down"))
+                .when(sms).sendSms(anyString(), anyString(), anyString());
+
+        listener.onParcelUnfulfilled(new ParcelUnfulfilled(event.orderId(), REF, "+263771234567",
+                "out of stock", 1550, "USD", false, parcel));
+
+        verify(recorder).record(parcel, BuyerNoticeKind.CANCELLED, BuyerNoticeOutcome.FAILED);
     }
 }

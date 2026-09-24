@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.settlement.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.innbucks.marketplaceservice.fulfilment.ParcelCloseMethod;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -73,13 +74,50 @@ public record SettlementResponse(
         String refundReference,
 
         @Schema(example = "2026-09-14T11:20:10Z")
-        Instant createdAt) {
+        Instant createdAt,
+
+        @Schema(description = "The order reference the buyer quotes", example = "MKT-4F9A1C22B7D3")
+        String orderRef,
+
+        @Schema(description = "What was in your parcel, at a glance",
+                example = "2 x Solar Lantern 20W, 1 x Garden Hose")
+        String itemSummary,
+
+        @Schema(description = "How the parcel closed - and so why this money behaves as it does. "
+                + "Absent while the parcel is open.", nullable = true)
+        ParcelCloseMethod closedBy,
+
+        @Schema(description = "When the parcel closed", example = "2026-09-16T14:05:00Z",
+                nullable = true)
+        Instant closedAt,
+
+        @Schema(description = "Why the money went back to the buyer: your reason when you "
+                + "declined the parcel, or the operator's note when a dispute was decided for the "
+                + "buyer. Present on REFUND_DUE and REFUNDED rows.",
+                example = "Out of stock - the last one was damaged in storage", nullable = true)
+        String refundReason,
+
+        @Schema(description = "The buyer's dispute on this parcel, when there is one",
+                nullable = true)
+        ParcelDisputeSummary dispute) {
+
+    /** What the ledger row alone cannot say; built in one batch per page. */
+    public record Context(String orderRef, String itemSummary, ParcelCloseMethod closedBy,
+                         Instant closedAt, String refundReason, ParcelDisputeSummary dispute) {
+        static final Context NONE = new Context(null, null, null, null, null, null);
+    }
 
     public static SettlementResponse from(MerchantSettlement s) {
+        return from(s, Context.NONE);
+    }
+
+    public static SettlementResponse from(MerchantSettlement s, Context context) {
         return new SettlementResponse(s.getId(), s.getOrderId(), s.getFulfilmentId(),
                 s.getMerchantId(), s.getStatus(), s.getGrossCents(), s.getCommissionCents(),
-                s.getNetCents(), s.getDeliveryFeeCents(), s.getCurrency(), s.getReleasableAt(), s.getReleasedAt(),
-                s.getPaidOutAt(), s.getPayoutReference(), s.getRefundDueAt(), s.getRefundedAt(),
-                s.getRefundReference(), s.getCreatedAt());
+                s.getNetCents(), s.getDeliveryFeeCents(), s.getCurrency(), s.getReleasableAt(),
+                s.getReleasedAt(), s.getPaidOutAt(), s.getPayoutReference(), s.getRefundDueAt(),
+                s.getRefundedAt(), s.getRefundReference(), s.getCreatedAt(),
+                context.orderRef(), context.itemSummary(), context.closedBy(), context.closedAt(),
+                context.refundReason(), context.dispute());
     }
 }

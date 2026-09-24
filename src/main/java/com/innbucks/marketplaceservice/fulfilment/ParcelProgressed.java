@@ -25,5 +25,13 @@ public record ParcelProgressed(UUID orderId,
                                String buyerMsisdn,
                                DeliveryMethod deliveryMethod,
                                FulfilmentStatus status,
-                               boolean partOfOrder) {
+                               boolean partOfOrder,
+                               UUID fulfilmentId) {
+
+    /** Without a parcel id: nothing records the outcome (V15) on a parcel. */
+    public ParcelProgressed(UUID orderId, String orderRef, String buyerMsisdn,
+                            DeliveryMethod deliveryMethod, FulfilmentStatus status,
+                            boolean partOfOrder) {
+        this(orderId, orderRef, buyerMsisdn, deliveryMethod, status, partOfOrder, null);
+    }
 }
