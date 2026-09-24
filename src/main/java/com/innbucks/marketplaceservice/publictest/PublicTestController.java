@@ -33,6 +33,7 @@ import com.innbucks.marketplaceservice.settlement.DisputeService;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeRequest;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -47,6 +48,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,7 +60,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.http.HttpStatus;
 
 import java.util.List;
 import java.util.UUID;
@@ -296,7 +297,8 @@ public class PublicTestController {
             @PathVariable String handle, @Valid @RequestBody CartItemRequest request) {
         AuthenticatedUser buyer = actAs(handle, "cart_add");
         return ResponseEntity.ok(ApiResult.ok(
-                cartService.add(buyer, request.listingId(), request.quantityOrOne())));
+                cartService.add(buyer, request.listingId(), request.variantId(),
+                        request.quantityOrOne())));
     }
 
     @PutMapping("/buyers/{handle}/cart/items/{listingId}")
@@ -313,10 +315,14 @@ public class PublicTestController {
     public ResponseEntity<ApiResult<CartResponse>> setCartQuantity(
             @PathVariable String handle,
             @PathVariable UUID listingId,
+            @Parameter(description = "The option this line is for (V19) - required on a listing "
+                    + "with `hasVariants: true`, omitted otherwise",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352")
+            @RequestParam(value = "variantId", required = false) UUID variantId,
             @Valid @RequestBody CartQuantityRequest request) {
         AuthenticatedUser buyer = actAs(handle, "cart_set_quantity");
         return ResponseEntity.ok(ApiResult.ok(
-                cartService.setQuantity(buyer, listingId, request.quantity())));
+                cartService.setQuantity(buyer, listingId, variantId, request.quantity())));
     }
 
     @DeleteMapping("/buyers/{handle}/cart/items/{listingId}")
@@ -325,9 +331,14 @@ public class PublicTestController {
     @ApiResponses(@ApiResponse(responseCode = "200", description = "Removed; the whole cart comes back",
             content = @Content(examples = @ExampleObject(value = EXAMPLE_CART))))
     public ResponseEntity<ApiResult<CartResponse>> removeFromCart(
-            @PathVariable String handle, @PathVariable UUID listingId) {
+            @PathVariable String handle, @PathVariable UUID listingId,
+            @Parameter(description = "The option line to remove (V19). Omit to remove EVERY line "
+                    + "of this listing - the plain one and every option - which is what \"remove "
+                    + "this item\" meant before options existed",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352")
+            @RequestParam(value = "variantId", required = false) UUID variantId) {
         AuthenticatedUser buyer = actAs(handle, "cart_remove");
-        return ResponseEntity.ok(ApiResult.ok(cartService.remove(buyer, listingId)));
+        return ResponseEntity.ok(ApiResult.ok(cartService.remove(buyer, listingId, variantId)));
     }
 
     @DeleteMapping("/buyers/{handle}/cart")

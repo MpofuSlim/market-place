@@ -38,6 +38,8 @@ public enum AuditEventType {
     LISTING_CREATED,
     /** A merchant updated a listing's content (title/description/price/stock). */
     LISTING_UPDATED,
+    /** A seller set ONE option's stock (V19 quick restock). */
+    LISTING_VARIANT_STOCK_SET,
     /** A listing moved between DRAFT/ACTIVE/INACTIVE/ARCHIVED. */
     LISTING_STATUS_CHANGED,
     /** A listing's PRIMARY image was uploaded or replaced in place. */

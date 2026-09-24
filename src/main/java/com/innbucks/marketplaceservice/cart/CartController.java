@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.cart.dto.CartQuantityRequest;
 import com.innbucks.marketplaceservice.cart.dto.CartResponse;
 import com.innbucks.marketplaceservice.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -193,7 +195,8 @@ public class CartController {
     })
     public ResponseEntity<ApiResult<CartResponse>> add(@Valid @RequestBody CartItemRequest request) {
         return ResponseEntity.ok(ApiResult.ok(cartService.add(
-                CurrentUser.get(), request.listingId(), request.quantityOrOne())));
+                CurrentUser.get(), request.listingId(), request.variantId(),
+                request.quantityOrOne())));
     }
 
     @PutMapping("/items/{listingId}")
@@ -212,9 +215,14 @@ public class CartController {
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_CART_FULL_409)))
     })
     public ResponseEntity<ApiResult<CartResponse>> setQuantity(
-            @PathVariable UUID listingId, @Valid @RequestBody CartQuantityRequest request) {
+            @PathVariable UUID listingId,
+            @Parameter(description = "The option this line is for (V19) - required on a listing "
+                    + "with `hasVariants: true`, omitted otherwise",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352")
+            @RequestParam(value = "variantId", required = false) UUID variantId,
+            @Valid @RequestBody CartQuantityRequest request) {
         return ResponseEntity.ok(ApiResult.ok(cartService.setQuantity(
-                CurrentUser.get(), listingId, request.quantity())));
+                CurrentUser.get(), listingId, variantId, request.quantity())));
     }
 
     @DeleteMapping("/items/{listingId}")
@@ -224,8 +232,15 @@ public class CartController {
     @ApiResponses(@ApiResponse(responseCode = "200",
             description = "Removed (or was already absent); the whole cart comes back",
             content = @Content(examples = @ExampleObject(value = EXAMPLE_CART_200))))
-    public ResponseEntity<ApiResult<CartResponse>> remove(@PathVariable UUID listingId) {
-        return ResponseEntity.ok(ApiResult.ok(cartService.remove(CurrentUser.get(), listingId)));
+    public ResponseEntity<ApiResult<CartResponse>> remove(
+            @PathVariable UUID listingId,
+            @Parameter(description = "The option line to remove (V19). Omit to remove EVERY line "
+                    + "of this listing - the plain one and every option - which is what \"remove "
+                    + "this item\" meant before options existed",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352")
+            @RequestParam(value = "variantId", required = false) UUID variantId) {
+        return ResponseEntity.ok(ApiResult.ok(
+                cartService.remove(CurrentUser.get(), listingId, variantId)));
     }
 
     @DeleteMapping

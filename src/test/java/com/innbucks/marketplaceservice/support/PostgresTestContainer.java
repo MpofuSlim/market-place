@@ -99,8 +99,8 @@ public abstract class PostgresTestContainer {
         jdbc = new JdbcTemplate(dataSource);
         // One statement so the FKs (market_order_item/order_fulfilment ->
         // market_order, listing_image/listing_review/listing_favorite/
-        // listing_report/cart_item -> listing) never bite; RESTART IDENTITY
-        // resets the BIGSERIAL journals.
+        // listing_report/cart_item/cart_variant_item/listing_variant -> listing)
+        // never bite; RESTART IDENTITY resets the BIGSERIAL journals.
         // The migration-seeded category and delivery_town tables are
         // deliberately NOT truncated — runtime-read-only reference data.
         jdbc.execute("""
@@ -109,7 +109,8 @@ public abstract class PostgresTestContainer {
                                market_order_delivery_fee, market_order_collection_point,
                                market_order,
                                listing_image, listing_review, listing_favorite,
-                               listing_report, listing_delivery_town, cart_item, listing,
+                               listing_report, listing_delivery_town, cart_item,
+                               cart_variant_item, listing_variant, listing,
                                seller_collection_point_hours, seller_collection_point,
                                marketplace_seller, delivery_address,
                                idempotency_record, audit_events

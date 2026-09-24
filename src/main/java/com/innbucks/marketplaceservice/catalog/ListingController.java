@@ -7,6 +7,7 @@ import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
+import com.innbucks.marketplaceservice.catalog.dto.VariantStockRequest;
 import com.innbucks.marketplaceservice.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -100,6 +101,58 @@ public class ListingController {
                   { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
                   { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
                 ]
+              }
+            }""";
+
+    /** V19: the canonical listing WITH options — the same ids every controller's
+     *  examples use (Cotton Crew Tee, sizes M/L/XL in Black, XL dearer). Shown
+     *  here after PATCH .../variants/{L}/stock restocked size L to 12. */
+    static final String EXAMPLE_VARIANT_LISTING_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Cotton Crew Tee",
+                "description": "100% cotton, pre-shrunk",
+                "categoryCode": "other",
+                "categoryName": "Other",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 1999,
+                "currency": "USD",
+                "stockQty": 22,
+                "status": "ACTIVE",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-09-24T08:00:00Z",
+                "updatedAt": "2026-09-24T10:30:00Z",
+                "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                "imageUrls": [
+                  "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/images/4d1c7e2a-9b3f-4a58-8e6d-0f2a1b3c4d5e"
+                ],
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                ],
+                "collectionTowns": [],
+                "hasVariants": true,
+                "options": [
+                  { "name": "Size", "values": ["M", "L", "XL"] },
+                  { "name": "Colour", "values": ["Black"] }
+                ],
+                "variants": [
+                  { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                    "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                  { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                    "label": "L - Black", "priceCents": 1999, "stockQty": 12 },
+                  { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                    "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                    "stockQty": 6 }
+                ],
+                "maxPriceCents": 2299
               }
             }""";
 
@@ -731,6 +784,50 @@ public class ListingController {
         return ApiResult.ok(listingService.changeStatus(CurrentUser.get(), parseListingId(id), request));
     }
 
+    @Operation(summary = "Set ONE option's stock (quick restock)",
+            description = "V19. The absolute stock of one option of a listing with options - "
+                    + "\"size M is back to 12\" - leaving every other option, and the orders "
+                    + "already holding units of them, alone. The listing's `stockQty` (the total) "
+                    + "follows. Favourites are told when the listing comes back from 0. Allowed "
+                    + "even while the cell's options switch is off. Owner or SUPER_ADMIN.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Set; the whole listing comes back",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "restocked",
+                                    value = EXAMPLE_VARIANT_LISTING_200))),
+            @ApiResponse(responseCode = "400", description = "Malformed id or an out-of-range count",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "invalid-variant-id", value = """
+                                    {"code":"invalid_variant_id","message":"Variant id must be a UUID"}"""),
+                            @ExampleObject(name = "stock-out-of-range", value = """
+                                    {"code":"stock_out_of_range","message":"stockQty must be between 0 and 1000000"}""")})),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Wrong role, no merchant scope, or not the owner",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
+            @ApiResponse(responseCode = "404", description = "No such listing, or no such option of it",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "listing-not-found", value = EXAMPLE_NOT_FOUND_404),
+                            @ExampleObject(name = "variant-not-found", value = """
+                                    {"code":"variant_not_found","message":"Variant not found"}""")}))
+    })
+    @PatchMapping("/{id}/variants/{variantId}/stock")
+    public ApiResult<ListingResponse> setVariantStock(
+            @Parameter(description = "Listing id", example = "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id,
+            @Parameter(description = "Option id (one of the listing's `variants[].id`)",
+                    example = "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("variantId") String variantId,
+            @Valid @RequestBody VariantStockRequest request) {
+        return ApiResult.ok(listingService.setVariantStock(CurrentUser.get(), parseListingId(id),
+                parseVariantId(variantId), request.stockQty()));
+    }
+
     @Operation(summary = "Upload/replace the PRIMARY listing image",
             description = "Multipart single file part named `image` (JPEG/PNG/WEBP — GIF is not "
                     + "accepted; max 10 MB). The declared Content-Type AND the file's magic-byte "
@@ -989,6 +1086,14 @@ public class ListingController {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException ex) {
             throw ApiException.badRequest("invalid_listing_id", "Listing id must be a UUID");
+        }
+    }
+
+    private static UUID parseVariantId(String raw) {
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest("invalid_variant_id", "Variant id must be a UUID");
         }
     }
 

@@ -3,6 +3,8 @@ package com.innbucks.marketplaceservice.catalog;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
 import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFeeResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository;
 import com.innbucks.marketplaceservice.delivery.DeliveryTown;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
@@ -45,6 +47,7 @@ public class ListingViewAssembler {
     private final ListingDeliveryTownRepository deliveryTownRepository;
     private final DeliveryTownCatalog deliveryTowns;
     private final CollectionPointViews collectionPoints;
+    private final ListingVariantRepository variantRepository;
 
     /** Single-listing assembly: one image-metadata query + one category read +
      *  one seller read for the trust badge. */
@@ -61,7 +64,11 @@ public class ListingViewAssembler {
                 sellerService.displayNames(merchantIds, sellers).get(listing.getMerchantId()),
                 coverageOf(deliveryTownRepository.findByListingId(listing.getId())),
                 collectionPoints.townsFor(merchantIds)
-                        .getOrDefault(listing.getMerchantId(), List.of()));
+                        .getOrDefault(listing.getMerchantId(), List.of()),
+                // V19: options only for a listing that sells them - no query otherwise.
+                listing.isHasVariants()
+                        ? variantRepository.findByListingIdOrderByPositionAsc(listing.getId())
+                        : List.of());
     }
 
     /**
@@ -88,8 +95,8 @@ public class ListingViewAssembler {
         return coverage;
     }
 
-    /** Page assembly: exactly THREE extra queries for the whole page —
-     *  galleries, category names, and seller badges — regardless of page size. */
+    /** Page assembly: a fixed number of batch queries for the whole page —
+     *  never one per row, regardless of page size (see {@link #assemble}). */
     public Page<ListingResponse> toResponsePage(Page<Listing> page) {
         Map<UUID, ListingResponse> assembled = assemble(page.getContent());
         return page.map(listing -> assembled.get(listing.getId()));
@@ -109,8 +116,11 @@ public class ListingViewAssembler {
         return assemble(listings);
     }
 
-    /** The one batch body: three extra queries for the whole collection —
-     *  galleries, category names, seller badges — regardless of its size. */
+    /** The one batch body: one query per related table for the whole
+     *  collection — galleries, seller badges (and names for the gaps),
+     *  category names, delivery coverage, collection towns and, only when the
+     *  page holds a listing with options, the options (V19) — regardless of
+     *  its size. */
     private Map<UUID, ListingResponse> assemble(List<Listing> content) {
         List<UUID> listingIds = content.stream().map(Listing::getId).toList();
         // groupingBy(LinkedHashMap) keeps the query's within-listing order
@@ -144,6 +154,16 @@ public class ListingViewAssembler {
                         .collect(Collectors.groupingBy(ListingDeliveryTown::getListingId));
         // Sixth batch: each seller's collection towns (V18), one query per page.
         Map<UUID, List<CollectionTown>> collectionTowns = collectionPoints.townsFor(merchantIds);
+        // Seventh batch (V19): options, for the listings that sell them only — a
+        // page of listings without options costs nothing extra.
+        List<UUID> withOptions = content.stream()
+                .filter(Listing::isHasVariants).map(Listing::getId).toList();
+        Map<UUID, List<ListingVariant>> optionsByListing = withOptions.isEmpty()
+                ? Map.of()
+                : variantRepository.findByListingIdInOrderByListingIdAscPositionAsc(withOptions)
+                        .stream()
+                        .collect(Collectors.groupingBy(ListingVariant::getListingId,
+                                LinkedHashMap::new, Collectors.toList()));
         Map<UUID, ListingResponse> byId = new LinkedHashMap<>();
         for (Listing listing : content) {
             byId.put(listing.getId(), ListingResponse.from(
@@ -153,7 +173,8 @@ public class ListingViewAssembler {
                     sellersByMerchant.get(listing.getMerchantId()),
                     merchantNames.get(listing.getMerchantId()),
                     coverageOf(coverageByListing.getOrDefault(listing.getId(), List.of())),
-                    collectionTowns.getOrDefault(listing.getMerchantId(), List.of())));
+                    collectionTowns.getOrDefault(listing.getMerchantId(), List.of()),
+                    optionsByListing.getOrDefault(listing.getId(), List.of())));
         }
         return byId;
     }

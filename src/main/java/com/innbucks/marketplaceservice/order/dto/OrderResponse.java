@@ -138,6 +138,34 @@ public record OrderResponse(
             int quantity,
 
             @Schema(description = "unitPriceCents * quantity, in cents", example = "3100")
-            long lineTotalCents) {
+            long lineTotalCents,
+
+            @Schema(description = "The option bought (V19). Absent for a listing without options "
+                    + "and on every line placed before options existed.",
+                    example = "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", nullable = true)
+            @JsonInclude(JsonInclude.Include.NON_NULL)
+            UUID variantId,
+
+            @Schema(description = "The option's label AS AT order time (\"XL - Black\"). Show it "
+                    + "beside titleSnapshot verbatim - it is not re-read from the listing, so a "
+                    + "seller renaming the option later does not change what was bought.",
+                    example = "XL - Black", nullable = true)
+            @JsonInclude(JsonInclude.Include.NON_NULL)
+            String variantLabel) {
+
+        /** A line without an option — the pre-V19 shape. */
+        public Line(UUID listingId, String titleSnapshot, long unitPriceCents, int quantity,
+                    long lineTotalCents) {
+            this(listingId, titleSnapshot, unitPriceCents, quantity, lineTotalCents, null, null);
+        }
+
+        /** The ONE rendering of an order line, for the buyer's order and the
+         *  seller's card alike. Component-level NON_NULL keeps a line without
+         *  an option byte-identical to its pre-V19 JSON. */
+        public static Line of(com.innbucks.marketplaceservice.order.MarketOrderItem item) {
+            return new Line(item.getListingId(), item.getTitleSnapshot(), item.getUnitPriceCents(),
+                    item.getQuantity(), item.getLineTotalCents(), item.getVariantId(),
+                    item.getVariantLabel());
+        }
     }
 }

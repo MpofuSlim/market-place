@@ -69,6 +69,8 @@ class ListingServiceTest {
             MERCHANT_ID.toString(), SHOP_ID.toString(), null, "ZW");
 
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private com.innbucks.marketplaceservice.seller.SellerService sellerService;
     private ListingImageRepository listingImageRepository;
     private CategoryRepository categoryRepository;
@@ -93,16 +95,65 @@ class ListingServiceTest {
         // returns true for an absent row), which is the pre-V8 behaviour these
         // existing cases were written against.
         when(sellerService.canPublish(any())).thenReturn(true);
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
+        eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        // The REAL stock mover and option planner over the mocked repositories.
+        ListingStock listingStock = new ListingStock(listingRepository, variantRepository,
+                eventPublisher, new MarketplaceMetrics(registry));
+        stockFake();
         service = new ListingService(listingRepository, listingImageRepository,
                 sellerService,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
                         deliveryTownRepository, TestTowns.zimbabwe(),
-                        mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class)),
+                        mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                        variantRepository),
                 auditService, new MarketplaceMetrics(registry),
-                mock(org.springframework.context.ApplicationEventPublisher.class),
                 deliveryTownRepository, TestTowns.zimbabwe(),
+                listingStock,
+                new com.innbucks.marketplaceservice.catalog.variant.ListingVariantService(
+                        variantRepository, listingStock, true, 50),
                 "USD", MAX_PER_MERCHANT);
+    }
+
+    /** Current stock per listing, as the native statements see it. */
+    private final java.util.Map<UUID, Integer> stock = new java.util.HashMap<>();
+
+    /**
+     * A small stand-in for the native stock statements: the row lock reads the
+     * stock this map holds (10, the {@link #owned} fixture's, when unset), the
+     * plain set writes it, and the after-read returns it. Enough for the
+     * update path's lock -> set -> settle to behave as it does on Postgres.
+     */
+    private void stockFake() {
+        when(listingRepository.lockForStock(any())).thenAnswer(inv -> stockRow(
+                stock.getOrDefault(inv.<UUID>getArgument(0), 10)));
+        when(listingRepository.setPlainStock(any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenAnswer(inv -> {
+                    stock.put(inv.getArgument(0), inv.getArgument(1));
+                    return 1;
+                });
+        when(listingRepository.stockQtyOf(any())).thenAnswer(inv ->
+                stock.getOrDefault(inv.<UUID>getArgument(0), 10));
+    }
+
+    static StockRow stockRow(int qty) {
+        return new StockRow() {
+            @Override
+            public String getStatus() {
+                return "ACTIVE";
+            }
+
+            @Override
+            public Boolean getHasVariants() {
+                return false;
+            }
+
+            @Override
+            public Integer getStockQty() {
+                return qty;
+            }
+        };
     }
 
     private static ListingCreateRequest createReq(String title, String description,

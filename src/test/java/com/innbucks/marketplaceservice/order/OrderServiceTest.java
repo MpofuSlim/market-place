@@ -101,6 +101,8 @@ class OrderServiceTest {
     private MarketOrderItemRepository itemRepository;
     private MarketOrderDeliveryFeeRepository deliveryFeeRepository;
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private ListingDeliveryTownRepository coverage;
     private OrderTransitionService transitions;
     private IdempotencyService idempotencyService;
@@ -134,8 +136,9 @@ class OrderServiceTest {
         fulfilmentService = mock(FulfilmentService.class);
         addressService = mock(DeliveryAddressService.class);
         checkoutProperties = new CheckoutProperties();
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
         CheckoutPricer pricer = new CheckoutPricer(listingRepository, coverage,
-                TestTowns.zimbabwe(), "USD");
+                TestTowns.zimbabwe(), "USD", variantRepository);
         CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
                 mock(BasketViewAssembler.class), cartService, addressService,
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class),
@@ -147,11 +150,14 @@ class OrderServiceTest {
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
                 mock(com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.class),
                 new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
+        eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        // The REAL stock mover over the mocked repositories, so these tests
+        // still pin the exact statements an order issues.
         service = new OrderService(orderRepository, itemRepository, deliveryFeeRepository,
-                listingRepository,
+                new com.innbucks.marketplaceservice.catalog.ListingStock(listingRepository,
+                        variantRepository, eventPublisher, new MarketplaceMetrics(registry)),
                 transitions, idempotencyService, auditService,
                 new MarketplaceMetrics(registry), objectMapper,
-                mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(PlatformTransactionManager.class),
                 checkoutService, pricer, cartService, fulfilmentService, settlementService, views,
                 new Msisdns("ZW"),

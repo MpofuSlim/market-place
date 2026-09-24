@@ -44,6 +44,11 @@ marketplace:
     stale-escrow-cron: "-"
     # The ITs drive CollectionOverdueSweeper directly.
     collection-overdue-cron: "-"
+    # The ITs drive VariantStockDriftSweeper directly.
+    variant-stock-drift-cron: "-"
+  listing:
+    # Production default is off; the tests exercise options end to end.
+    variants-enabled: true
   settlement:
     # Short enough that an IT can age a row past it without waiting.
     stale-after-days: 14

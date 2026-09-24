@@ -29,6 +29,7 @@ public class MarketplaceMetrics {
     private final Counter auditIntegrityBroken;
     private final Counter auditChainBroken;
     private final AtomicLong staleSettlements = new AtomicLong();
+    private final AtomicLong stockDrift = new AtomicLong();
 
     public MarketplaceMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -89,6 +90,12 @@ public class MarketplaceMetrics {
         Gauge.builder("marketplace.settlements.stale", staleSettlements, AtomicLong::doubleValue)
                 .description("Settlements HELD past the staleness threshold - money no timer can release")
                 .baseUnit("settlements")
+                .register(registry);
+        // V19, same reasoning: the drift sweep writes it, and it reads 0 from
+        // boot so an alert on "> 0" has a series to watch from the start.
+        Gauge.builder("marketplace.stock.aggregate_drift", stockDrift, AtomicLong::doubleValue)
+                .description("Variant listings whose stock total disagrees with their options")
+                .baseUnit("listings")
                 .register(registry);
     }
 
@@ -301,6 +308,32 @@ public class MarketplaceMetrics {
      */
     public void staleSettlements(long count) {
         staleSettlements.set(count);
+    }
+
+    /**
+     * A stock RETURN that could not be credited (V19):
+     * {@code marketplace.stock.returns_dropped{reason}}. {@code
+     * listing_converted} — the listing switched between plain and variants
+     * after the units were reserved, so the old shape's return has nowhere to
+     * go and the seller's new counts are the truth; {@code listing_missing} —
+     * no such row; {@code variant_removed} — the seller deleted that option;
+     * {@code invariant_broken} — a variant listing's total could not be
+     * recomputed (should be never). Every lost return is visible here rather
+     * than silently absorbed.
+     */
+    public void stockReturnDropped(String reason) {
+        Counter.builder("marketplace.stock.returns_dropped")
+                .description("Stock returns that could not be credited back")
+                .tag("reason", reason == null ? "unknown" : reason)
+                .register(registry)
+                .increment();
+    }
+
+    /** How many variant listings' totals disagree with their options right now
+     *  ({@code marketplace.stock.aggregate_drift}). 0 when healthy; only an
+     *  out-of-band write can raise it. */
+    public void stockDrift(long count) {
+        stockDrift.set(count);
     }
 
     public void illegalTransition() {

@@ -63,7 +63,9 @@ public final class OrderNotificationComposer {
             if (!lines.isEmpty()) {
                 lines.append(", ");
             }
-            lines.append(item.getQuantity()).append(" x ").append(item.getTitleSnapshot());
+            // displayTitle: "Cotton Crew Tee (M - Black)" for an option (V19),
+            // exactly the title snapshot otherwise.
+            lines.append(item.getQuantity()).append(" x ").append(item.displayTitle());
             subtotal += item.getLineTotalCents();
         }
         return "New paid order " + orderRef + ". " + lines + " - " + money(subtotal, currency);
@@ -289,10 +291,13 @@ public final class OrderNotificationComposer {
 
     /**
      * Back-in-stock alert for a favorited listing, e.g. {@code "Back in stock.
-     * Solar Lantern 20W - USD 15.50 on InnBucks Marketplace"}.
+     * Solar Lantern 20W - USD 15.50 on InnBucks Marketplace"}. For a listing
+     * with options (V19) the price is its lowest, so it says so: "... - from
+     * USD 19.99 ..."; a listing without options reads exactly as before.
      */
     public static String restockMessage(Listing listing) {
         return "Back in stock. " + listing.getTitle() + " - "
+                + (listing.isHasVariants() ? "from " : "")
                 + money(listing.getPriceCents(), listing.getCurrency())
                 + " on InnBucks Marketplace";
     }

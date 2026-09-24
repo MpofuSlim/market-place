@@ -59,7 +59,8 @@ class CheckoutServiceTest {
         addressService = mock(DeliveryAddressService.class);
         properties = new CheckoutProperties();
         service = new CheckoutService(properties,
-                new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD"),
+                new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD",
+                        mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class)),
                 mock(BasketViewAssembler.class), cartService, addressService,
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class),
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), "USD");

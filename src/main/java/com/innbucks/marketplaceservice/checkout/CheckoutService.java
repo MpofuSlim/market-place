@@ -99,7 +99,8 @@ public class CheckoutService {
         List<BasketLine> basket = resolveBasket(buyer, request.sourcedFromCart(),
                 request.items() == null ? List.of()
                         : request.items().stream()
-                                .map(item -> new BasketLine(item.listingId(), item.quantity()))
+                                .map(item -> new BasketLine(item.listingId(), item.quantity(),
+                                        item.variantId()))
                                 .toList());
         DeliveryMethod method = resolveMethod(request.deliveryMethod());
         // Resolved even when the basket turns out unbuyable: a shopper fixing a

@@ -124,7 +124,22 @@ public record CreateOrderRequest(
                     example = "2")
             @NotNull
             @Min(1)
-            Integer quantity) {
+            Integer quantity,
+
+            @Schema(description = "The option to buy (V19) - REQUIRED when the listing has "
+                    + "`hasVariants: true` (one of its `variants[].id`), omitted otherwise. Two "
+                    + "options of one listing are two lines.",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", nullable = true)
+            // Component-level NON_NULL: a line without an option serialises to
+            // exactly the pre-V19 bytes, so an idempotent retry that straddles
+            // the deploy keeps its fingerprint (the collectionPoints technique).
+            @JsonInclude(JsonInclude.Include.NON_NULL)
+            UUID variantId) {
+
+        /** A line on a listing without options — the pre-V19 shape. */
+        public Item(UUID listingId, Integer quantity) {
+            this(listingId, quantity, null);
+        }
     }
 
     public boolean sourcedFromCart() {

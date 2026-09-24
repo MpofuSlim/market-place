@@ -38,6 +38,7 @@ class CheckoutPricerTest {
     private static final UUID B = new UUID(0, 2);
 
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
     private ListingDeliveryTownRepository coverage;
     private CheckoutPricer pricer;
 
@@ -45,7 +46,9 @@ class CheckoutPricerTest {
     void setUp() {
         listingRepository = mock(ListingRepository.class);
         coverage = mock(ListingDeliveryTownRepository.class);
-        pricer = new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD");
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
+        pricer = new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD",
+                variantRepository);
     }
 
     private static Listing listing(UUID id, long priceCents, int stock, ListingStatus status,

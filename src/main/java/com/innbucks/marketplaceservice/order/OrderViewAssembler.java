@@ -240,7 +240,6 @@ public class OrderViewAssembler {
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {
-        return new OrderResponse.Line(item.getListingId(), item.getTitleSnapshot(),
-                item.getUnitPriceCents(), item.getQuantity(), item.getLineTotalCents());
+        return OrderResponse.Line.of(item);
     }
 }

@@ -11,13 +11,16 @@ import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariantService;
+import com.innbucks.marketplaceservice.catalog.variant.VariantSetResolver;
+import com.innbucks.marketplaceservice.catalog.variant.VariantSetResolver.VariantPlan;
 import com.innbucks.marketplaceservice.delivery.DeliveryTown;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -103,9 +106,10 @@ public class ListingService {
     private final ListingViewAssembler assembler;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
-    private final ApplicationEventPublisher eventPublisher;
     private final ListingDeliveryTownRepository deliveryTownRepository;
     private final DeliveryTownCatalog deliveryTowns;
+    private final ListingStock listingStock;
+    private final ListingVariantService variants;
     private final String cellCurrency;
     private final int maxPerMerchant;
 
@@ -116,9 +120,10 @@ public class ListingService {
                           ListingViewAssembler assembler,
                           AuditService auditService,
                           MarketplaceMetrics metrics,
-                          ApplicationEventPublisher eventPublisher,
                           ListingDeliveryTownRepository deliveryTownRepository,
                           DeliveryTownCatalog deliveryTowns,
+                          ListingStock listingStock,
+                          ListingVariantService variants,
                           @Value("${innbucks.currency}") String cellCurrency,
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
@@ -128,9 +133,10 @@ public class ListingService {
         this.assembler = assembler;
         this.auditService = auditService;
         this.metrics = metrics;
-        this.eventPublisher = eventPublisher;
         this.deliveryTownRepository = deliveryTownRepository;
         this.deliveryTowns = deliveryTowns;
+        this.listingStock = listingStock;
+        this.variants = variants;
         this.cellCurrency = cellCurrency;
         this.maxPerMerchant = maxPerMerchant;
     }
@@ -156,10 +162,21 @@ public class ListingService {
     public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request,
                                   MultipartFile primaryImage, List<MultipartFile> additionalImages) {
         UUID merchantId = resolveCreateMerchantId(caller, request);
-        validateRanges(request.priceCents(), request.stockQty());
+        validatePrice(request.priceCents());
         // Resolved BEFORE the insert, like the images: a bad town refuses the
         // whole create rather than leaving a listing half-configured.
         List<ListingDeliveryTown> coverage = resolveCoverage(request.deliveryTowns());
+        // V19: options are planned (every 400, and the 422 of the cell switch)
+        // before anything is written. A listing with options takes its stock
+        // from them; one without needs stockQty.
+        VariantPlan plan = hasEntries(request.variants())
+                ? variants.plan(false, request.options(), request.variants(),
+                        request.priceCents(), List.of())
+                : null;
+        if (plan == null) {
+            requireNoOptionsWithoutVariants(request.options());
+            validateStock(request.stockQty());
+        }
         List<MultipartFile> extras = additionalImages == null
                 ? List.of()
                 : additionalImages.stream().filter(Objects::nonNull).toList();
@@ -198,7 +215,13 @@ public class ListingService {
                 .area(sanitizedOrNull(request.area()))
                 .priceCents(request.priceCents())
                 .currency(cellCurrency)
-                .stockQty(request.stockQty())
+                // A listing with options starts with their sum: the derived
+                // total is inserted consistent, so nothing needs recomputing.
+                .stockQty(plan == null ? request.stockQty() : plan.totalStock())
+                .hasVariants(plan != null)
+                .option1Name(plan == null ? null : plan.optionNames().get(0))
+                .option2Name(plan == null || plan.optionNames().size() < 2
+                        ? null : plan.optionNames().get(1))
                 .status(ListingStatus.DRAFT)
                 .createdAt(now)
                 .updatedAt(now)
@@ -212,27 +235,78 @@ public class ListingService {
         listingRepository.save(listing);
         insertGallery(listing.getId(), validated, now);
         saveCoverage(listing.getId(), coverage);
+        if (plan != null) {
+            variants.insertAll(listing.getId(), plan, now);
+        }
+        Map<String, Object> audit = new LinkedHashMap<>();
+        audit.put("merchantId", merchantId.toString());
+        audit.put("priceCents", listing.getPriceCents());
+        audit.put("stockQty", listing.getStockQty());
+        audit.put("status", listing.getStatus().name());
+        audit.put("categoryCode", listing.getCategoryCode());
+        audit.put("imageCount", validated.size());
+        audit.put("deliveryTowns", coverage.size());
+        audit.put("variantCount", plan == null ? 0 : plan.drafts().size());
         auditService.record(AuditEventType.LISTING_CREATED, caller.uuid(), listing.getId().toString(),
-                Map.of("merchantId", merchantId.toString(),
-                        "priceCents", listing.getPriceCents(),
-                        "stockQty", listing.getStockQty(),
-                        "status", listing.getStatus().name(),
-                        "categoryCode", listing.getCategoryCode(),
-                        "imageCount", validated.size(),
-                        "deliveryTowns", coverage.size()));
+                audit);
         metrics.listingCreated();
         return assembler.toResponse(listing);
     }
 
+    /**
+     * Full replace of a listing's content. {@code deliveryTowns} and — since
+     * V19 — {@code variants} are the fields an omission KEEPS (null keeps, []
+     * clears, a list replaces), so a client built before either can never
+     * wipe them on an edit.
+     *
+     * <p><b>Stock, V19.</b> The listing row is LOCKED first
+     * ({@link ListingStock#lock}, before the entity is loaded), so an edit and
+     * an order on the same listing serialise, and "before" for the restock
+     * check is exact. Stock is then written only by native statements: the
+     * absolute {@code stockQty} for a listing without options, the per-option
+     * sets for one with (an option kept without a {@code stockQty} keeps its
+     * stock and the reservations riding on it), and the total recomputed.
+     * {@link ListingRestocked} fires when the stock (the total) moves 0 → &gt;0.
+     */
     @Transactional
     public ListingResponse update(AuthenticatedUser caller, UUID listingId, ListingUpdateRequest request) {
-        validateRanges(request.priceCents(), request.stockQty());
-        Listing listing = managedListing(caller, listingId);
+        validatePrice(request.priceCents());
+        Locked locked = managedListingForUpdate(caller, listingId);
+        Listing listing = locked.listing();
         // Null leaves the towns alone - the one field this full replace does
         // not reset when omitted (see ListingUpdateRequest#deliveryTowns).
         List<ListingDeliveryTown> coverage = request.deliveryTowns() == null
                 ? null : resolveCoverage(request.deliveryTowns());
-        int previousStock = listing.getStockQty();
+
+        // Decide the stock shape BEFORE any write, so every refusal leaves the
+        // listing exactly as it was.
+        boolean hadOptions = listing.isHasVariants();
+        List<ListingVariant> existing = hadOptions || request.variants() != null
+                ? variants.optionsOf(listing.getId()) : List.of();
+        VariantPlan plan = null;
+        List<ListingVariant> normalise = List.of();
+        boolean toPlain;
+        if (request.variants() == null) {
+            // Options kept as they are.
+            toPlain = !hadOptions;
+            requireNoOptionsWithoutVariants(request.options());
+            if (hadOptions) {
+                normalise = VariantSetResolver.revalidateKept(existing, request.priceCents());
+            } else {
+                validateStock(request.stockQty());
+            }
+        } else if (request.variants().isEmpty()) {
+            // Every option removed: the listing sells without them.
+            toPlain = true;
+            requireNoOptionsWithoutVariants(request.options());
+            validateStock(request.stockQty());
+        } else {
+            toPlain = false;
+            plan = variants.plan(hadOptions, request.options(), request.variants(),
+                    request.priceCents(), existing);
+        }
+
+        Instant now = Instant.now();
         listing.setTitle(requiredTitle(request.title()));
         listing.setDescription(sanitizedOrNull(request.description()));
         listing.setCategoryCode(resolveCategoryCode(request.categoryCode()));
@@ -240,25 +314,102 @@ public class ListingService {
         listing.setCity(sanitizedOrNull(request.city()));
         listing.setArea(sanitizedOrNull(request.area()));
         listing.setPriceCents(request.priceCents());
-        listing.setStockQty(request.stockQty());
-        listing.setUpdatedAt(Instant.now());
+        if (toPlain) {
+            listing.setHasVariants(false);
+            listing.setOption1Name(null);
+            listing.setOption2Name(null);
+        } else if (plan != null) {
+            listing.setHasVariants(true);
+            listing.setOption1Name(plan.optionNames().get(0));
+            listing.setOption2Name(plan.optionNames().size() < 2 ? null : plan.optionNames().get(1));
+        }
+        listing.setUpdatedAt(now);
         listingRepository.save(listing);
+
+        if (toPlain) {
+            if (hadOptions) {
+                variants.removeAll(existing);
+            }
+            // flushAutomatically puts has_variants = FALSE in the database
+            // before the guarded set runs.
+            listingStock.setPlain(listing.getId(), request.stockQty());
+        } else if (plan != null) {
+            variants.apply(listing.getId(), plan, now);
+        } else {
+            // variants: null on a listing with options - only a changed price
+            // can touch them, clearing an own price that now equals it.
+            normalise.forEach(row -> {
+                row.setPriceCents(null);
+                row.setUpdatedAt(now);
+            });
+        }
+        int before = locked.stockBefore();
+        int after = listingStock.settle(listing.getId(), before, !toPlain);
+        // In memory only (not updatable through the entity): the response
+        // shows what the database now holds.
+        listing.setStockQty(after);
+
+        // LAST: the coverage delete clears the persistence context.
         if (coverage != null) {
             deliveryTownRepository.deleteByListingId(listing.getId());
             saveCoverage(listing.getId(), coverage);
         }
-        // Restock-alert foundation: a merchant refilling an out-of-stock
-        // listing publishes the in-process event; the AFTER_COMMIT listener
-        // (favorite/RestockAlertListener) only fires if this tx commits.
-        if (previousStock == 0 && listing.getStockQty() > 0) {
-            eventPublisher.publishEvent(new ListingRestocked(listing.getId()));
-        }
+        Map<String, Object> audit = new LinkedHashMap<>();
+        audit.put("merchantId", listing.getMerchantId().toString());
+        audit.put("priceCents", listing.getPriceCents());
+        audit.put("stockQty", after);
+        audit.put("deliveryTownsChanged", coverage != null);
+        audit.put("variantsChanged", request.variants() != null);
+        audit.put("variantCount", toPlain ? 0 : plan != null ? plan.drafts().size() : existing.size());
         auditService.record(AuditEventType.LISTING_UPDATED, caller.uuid(), listing.getId().toString(),
-                Map.of("merchantId", listing.getMerchantId().toString(),
-                        "priceCents", listing.getPriceCents(),
-                        "stockQty", listing.getStockQty(),
-                        "deliveryTownsChanged", coverage != null));
+                audit);
         return assembler.toResponse(listing);
+    }
+
+    /**
+     * The quick restock of ONE option (V19): an absolute count for that option,
+     * leaving every other option — and the reservations riding on them —
+     * alone. Same lock as {@link #update}. 404 {@code variant_not_found} when
+     * the id is not an option of this listing (or the listing has none).
+     */
+    @Transactional
+    public ListingResponse setVariantStock(AuthenticatedUser caller, UUID listingId, UUID variantId,
+                                           int stockQty) {
+        validateStock(stockQty);
+        Locked locked = managedListingForUpdate(caller, listingId);
+        Listing listing = locked.listing();
+        Instant now = Instant.now();
+        if (!listing.isHasVariants()
+                || !listingStock.setVariantStock(listing.getId(), variantId, stockQty, now)) {
+            throw ApiException.notFound("variant_not_found", "Variant not found");
+        }
+        int after = listingStock.settle(listing.getId(), locked.stockBefore(), true);
+        if (after > MAX_STOCK_QTY) {
+            throw ApiException.badRequest("stock_out_of_range",
+                    "The options' stock adds up to more than " + MAX_STOCK_QTY);
+        }
+        listing.setStockQty(after);
+        touch(listing, now);
+        auditService.record(AuditEventType.LISTING_VARIANT_STOCK_SET, caller.uuid(),
+                listing.getId().toString(),
+                Map.of("merchantId", listing.getMerchantId().toString(),
+                        "variantId", variantId.toString(),
+                        "stockQty", stockQty));
+        return assembler.toResponse(listing);
+    }
+
+    private static boolean hasEntries(List<?> list) {
+        return list != null && !list.isEmpty();
+    }
+
+    /** {@code options} names the axes of the {@code variants} it arrives with;
+     *  alone it means nothing, and silently dropping it would hide a client
+     *  bug. */
+    private static void requireNoOptionsWithoutVariants(List<String> options) {
+        if (hasEntries(options)) {
+            throw ApiException.badRequest("options_without_variants",
+                    "options can only be sent together with variants");
+        }
     }
 
     /**
@@ -646,15 +797,50 @@ public class ListingService {
         return listing;
     }
 
-    private static void validateRanges(long priceCents, int stockQty) {
-        if (priceCents < MIN_PRICE_CENTS || priceCents > MAX_PRICE_CENTS) {
+    private static void validatePrice(Long priceCents) {
+        if (priceCents == null || priceCents < MIN_PRICE_CENTS || priceCents > MAX_PRICE_CENTS) {
             throw ApiException.badRequest("price_out_of_range",
                     "priceCents must be between 1 and 100000000");
+        }
+    }
+
+    /** A listing without options needs its stock (V19: no longer bean-validated
+     *  as @NotNull, because a listing with options carries none). */
+    private static void validateStock(Integer stockQty) {
+        if (stockQty == null) {
+            throw ApiException.badRequest("stock_required",
+                    "stockQty is required for a listing without variants");
         }
         if (stockQty < MIN_STOCK_QTY || stockQty > MAX_STOCK_QTY) {
             throw ApiException.badRequest("stock_out_of_range",
                     "stockQty must be between 0 and 1000000");
         }
+    }
+
+    /** A listing loaded for a stock-bearing write, with the stock it held when
+     *  its row lock was taken. */
+    private record Locked(Listing listing, int stockBefore) {
+    }
+
+    /**
+     * {@link #managedListing} for a write that may move stock: the same scope
+     * and ownership rules, but the listing's ROW LOCK is taken FIRST — before
+     * the entity is loaded — so the edit serialises with any order on the same
+     * listing and the entity it loads is the latest committed one.
+     */
+    private Locked managedListingForUpdate(AuthenticatedUser caller, UUID listingId) {
+        UUID merchantId = caller.isSuperAdmin() ? null : requireMerchantId(caller);
+        StockRow row = listingStock.lock(listingId);
+        if (row == null) {
+            throw ApiException.notFound("listing_not_found", "Listing not found");
+        }
+        Listing listing = listingRepository.findById(listingId)
+                .orElseThrow(() -> ApiException.notFound("listing_not_found", "Listing not found"));
+        if (merchantId != null && !listing.getMerchantId().equals(merchantId)) {
+            throw ApiException.forbidden("listing_not_owned",
+                    "Listing does not belong to the caller's merchant");
+        }
+        return new Locked(listing, row.getStockQty() == null ? 0 : row.getStockQty());
     }
 
     /** A title made entirely of HTML (e.g. {@code <img src=x>}) sanitizes to

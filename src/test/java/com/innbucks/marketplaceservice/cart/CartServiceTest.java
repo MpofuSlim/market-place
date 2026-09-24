@@ -49,18 +49,23 @@ class CartServiceTest {
 
     private CartItemRepository cartRepository;
     private ListingRepository listingRepository;
+    private CartVariantItemRepository variantCartRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
     private CartService service;
 
     @BeforeEach
     void setUp() {
         cartRepository = mock(CartItemRepository.class);
         listingRepository = mock(ListingRepository.class);
+        variantCartRepository = mock(CartVariantItemRepository.class);
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
         ListingViewAssembler listingViews = mock(ListingViewAssembler.class);
         when(listingViews.toResponsesById(any())).thenReturn(Map.of());
         service = new CartService(cartRepository, listingRepository,
                 new CheckoutPricer(listingRepository, mock(ListingDeliveryTownRepository.class),
-                        TestTowns.zimbabwe(), "USD"),
-                new BasketViewAssembler(listingViews));
+                        TestTowns.zimbabwe(), "USD", variantRepository),
+                new BasketViewAssembler(listingViews),
+                variantCartRepository, variantRepository);
         ReflectionTestUtils.setField(service, "maxItems", MAX_ITEMS);
         ReflectionTestUtils.setField(service, "maxQuantityPerItem", MAX_QTY);
         ReflectionTestUtils.setField(service, "currency", "USD");
