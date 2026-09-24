@@ -68,21 +68,27 @@ public class CheckoutController {
                       "seller": {
                         "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
                         "displayName": "Sunrise Electronics",
-                        "verified": true
-                      }
+                        "verified": true,
+                        "since": "2026-04-01T09:15:00Z"
+                      },
+                      "hasVariants": false,
+                      "options": [],
+                      "variants": [],
+                      "maxPriceCents": 2399
                     },
                     "quantity": 2,
-                    "lineTotalCents": 4798
+                    "lineTotalCents": 4798,
+                    "unitPriceCents": 2399
                   }
                 ],
                 "lineCount": 1,
                 "totalQuantity": 2,
                 "subtotalCents": 4798,
-                "deliveryFeeCents": 200,
+                "deliveryFeeCents": 300,
                 "deliveryFees": [
-                  { "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", "feeCents": 200 }
+                  { "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", "feeCents": 300 }
                 ],
-                "totalCents": 4998,
+                "totalCents": 5098,
                 "currency": "USD",
                 "deliveryMethod": "DELIVERY",
                 "deliveryMethods": ["DELIVERY", "COLLECTION"],
@@ -132,7 +138,8 @@ public class CheckoutController {
                   {
                     "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     "quantity": 2,
-                    "lineTotalCents": 4798
+                    "lineTotalCents": 4798,
+                    "unitPriceCents": 2399
                   }
                 ],
                 "lineCount": 1,
@@ -160,6 +167,190 @@ public class CheckoutController {
                       "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
                       "openNow": true
                     }
+                  }
+                ]
+              }
+            }""";
+
+    /**
+     * V19: Buy Now with a size chosen - one Cotton Crew Tee in XL (an option
+     * with its own, dearer price) and two Solar Lanterns, delivered. The
+     * {@code variant} block and {@code unitPriceCents} are what the line costs;
+     * the listing's {@code priceCents} is only its cheapest option. One seller,
+     * so ONE fee: the dearer of the two lines' fees to Harare. The order
+     * examples place exactly this basket (MKT-4F2A9C1B77D0).
+     */
+    private static final String EXAMPLE_QUOTE_WITH_OPTION_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "items": [
+                  {
+                    "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    "listing": {
+                      "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "title": "Cotton Crew Tee",
+                      "priceCents": 1999,
+                      "currency": "USD",
+                      "stockQty": 22,
+                      "status": "ACTIVE",
+                      "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                      "hasVariants": true,
+                      "maxPriceCents": 2299
+                    },
+                    "quantity": 1,
+                    "lineTotalCents": 2299,
+                    "variantId": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574",
+                    "variant": {
+                      "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574",
+                      "values": ["XL", "Black"],
+                      "label": "XL - Black",
+                      "priceCents": 2299,
+                      "priceOverrideCents": 2299,
+                      "stockQty": 6
+                    },
+                    "unitPriceCents": 2299
+                  },
+                  {
+                    "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                    "listing": {
+                      "id": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "title": "Solar Lantern 20W",
+                      "priceCents": 1550,
+                      "currency": "USD",
+                      "stockQty": 3,
+                      "status": "ACTIVE",
+                      "hasVariants": false,
+                      "maxPriceCents": 1550
+                    },
+                    "quantity": 2,
+                    "lineTotalCents": 3100,
+                    "unitPriceCents": 1550
+                  }
+                ],
+                "lineCount": 2,
+                "totalQuantity": 3,
+                "subtotalCents": 5399,
+                "deliveryFeeCents": 300,
+                "deliveryFees": [
+                  { "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", "feeCents": 300 }
+                ],
+                "totalCents": 5699,
+                "currency": "USD",
+                "deliveryMethod": "DELIVERY",
+                "deliveryMethods": ["DELIVERY", "COLLECTION"],
+                "deliveryAddress": {
+                  "id": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45",
+                  "label": "Home",
+                  "recipientName": "Tariro Moyo",
+                  "recipientMsisdn": "+263771234567",
+                  "line1": "14 Samora Machel Ave",
+                  "line2": "Flat 3B",
+                  "city": "Harare",
+                  "townCode": "harare",
+                  "area": "Avondale",
+                  "landmark": "Opposite the clinic, blue gate",
+                  "defaultAddress": true,
+                  "createdAt": "2026-08-01T08:10:22Z",
+                  "updatedAt": "2026-08-01T08:10:22Z"
+                },
+                "checkoutReady": true,
+                "paymentMethods": [
+                  {
+                    "rail": "INNBUCKS_CODE",
+                    "label": "InnBucks app",
+                    "description": "Approve the payment code in your InnBucks app.",
+                    "completion": "APPROVE_IN_APP"
+                  }
+                ]
+              }
+            }""";
+
+    /**
+     * V19: the Cotton Crew Tee sold in sizes, sent without a {@code variantId}.
+     * The line keeps its listing (so the app can show the picker) and prices at
+     * the listing's from-price, but contributes nothing and is listed in
+     * {@code rejections} as {@code VARIANT_REQUIRED}. No sellable line, so no
+     * seller owes a delivery fee.
+     */
+    private static final String EXAMPLE_QUOTE_VARIANT_REQUIRED_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "items": [
+                  {
+                    "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    "listing": {
+                      "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "title": "Cotton Crew Tee",
+                      "priceCents": 1999,
+                      "currency": "USD",
+                      "stockQty": 10,
+                      "status": "ACTIVE",
+                      "hasVariants": true,
+                      "options": [
+                        { "name": "Size", "values": ["M", "L", "XL"] },
+                        { "name": "Colour", "values": ["Black"] }
+                      ],
+                      "maxPriceCents": 2299
+                    },
+                    "quantity": 1,
+                    "lineTotalCents": 0,
+                    "issue": {
+                      "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                      "reason": "VARIANT_REQUIRED",
+                      "message": "Choose a Size and Colour for Cotton Crew Tee",
+                      "requestedQty": 1,
+                      "unitPriceCents": 1999
+                    },
+                    "unitPriceCents": 1999
+                  }
+                ],
+                "lineCount": 1,
+                "totalQuantity": 1,
+                "subtotalCents": 0,
+                "deliveryFeeCents": 0,
+                "deliveryFees": [],
+                "totalCents": 0,
+                "currency": "USD",
+                "deliveryMethod": "DELIVERY",
+                "deliveryMethods": ["DELIVERY", "COLLECTION"],
+                "deliveryAddress": {
+                  "id": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45",
+                  "label": "Home",
+                  "recipientName": "Tariro Moyo",
+                  "recipientMsisdn": "+263771234567",
+                  "line1": "14 Samora Machel Ave",
+                  "line2": "Flat 3B",
+                  "city": "Harare",
+                  "townCode": "harare",
+                  "area": "Avondale",
+                  "landmark": "Opposite the clinic, blue gate",
+                  "defaultAddress": true,
+                  "createdAt": "2026-08-01T08:10:22Z",
+                  "updatedAt": "2026-08-01T08:10:22Z"
+                },
+                "rejections": [
+                  {
+                    "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    "reason": "VARIANT_REQUIRED",
+                    "message": "Choose a Size and Colour for Cotton Crew Tee",
+                    "requestedQty": 1,
+                    "unitPriceCents": 1999
+                  }
+                ],
+                "checkoutReady": false,
+                "paymentMethods": [
+                  {
+                    "rail": "INNBUCKS_CODE",
+                    "label": "InnBucks app",
+                    "description": "Approve the payment code in your InnBucks app.",
+                    "completion": "APPROVE_IN_APP"
                   }
                 ]
               }
@@ -303,16 +494,50 @@ public class CheckoutController {
                     + "choice that is not that seller's point (removed since the screen loaded) is "
                     + "a 400 `unknown_collection_point` whose `data` names the seller; send the "
                     + "same `collectionPoints` on the order.\n\n"
+                    + "**Options (V19).** A line for a listing sold in options (`hasVariants: "
+                    + "true` - sizes, colours) names the chosen one as `variantId`; two sizes of "
+                    + "one listing are two lines. Send each option once: the order refuses the "
+                    + "same option twice (400 `duplicate_listing`). Such a line prices at the "
+                    + "OPTION's price - read "
+                    + "`unitPriceCents` on the line, never the listing's `priceCents`, which is "
+                    + "only its cheapest option. A line that names no option comes back in "
+                    + "`rejections` as `VARIANT_REQUIRED`, and one whose option is gone (or is "
+                    + "not that listing's) as `VARIANT_UNAVAILABLE`; both keep the listing so the "
+                    + "app can show the picker.\n\n"
                     + "The totals are what the order will produce for the same body, as long as "
                     + "nothing sells out in between. They are not a promise the order honours — "
                     + "the order recomputes from the listings itself, because a quote a client "
-                    + "could replay is a price a client could choose.")
+                    + "could replay is a price a client could choose.",
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "Check out the cart", value = """
+                                    {
+                                      "fromCart": true,
+                                      "deliveryMethod": "DELIVERY",
+                                      "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                                    }"""),
+                            @ExampleObject(name = "Buy Now, a size chosen", value = """
+                                    {
+                                      "items": [
+                                        { "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                                          "quantity": 1,
+                                          "variantId": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574" },
+                                        { "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                          "quantity": 2 }
+                                      ],
+                                      "deliveryMethod": "DELIVERY",
+                                      "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                                    }""")})))
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The priced checkout preview",
                     content = @Content(examples = {
                             @ExampleObject(name = "Ready to order", value = EXAMPLE_QUOTE_200),
+                            @ExampleObject(name = "Ready to order, a size chosen",
+                                    value = EXAMPLE_QUOTE_WITH_OPTION_200),
                             @ExampleObject(name = "Something needs fixing first",
                                     value = EXAMPLE_QUOTE_NOT_READY_200),
+                            @ExampleObject(name = "No size chosen",
+                                    value = EXAMPLE_QUOTE_VARIANT_REQUIRED_200),
                             @ExampleObject(name = "Collection, point resolved per seller",
                                     value = EXAMPLE_QUOTE_COLLECTION_200)})),
             @ApiResponse(responseCode = "400",

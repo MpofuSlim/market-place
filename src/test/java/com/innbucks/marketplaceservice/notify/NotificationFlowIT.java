@@ -7,6 +7,7 @@ import com.innbucks.marketplaceservice.support.PostgresTestContainer;
 import com.innbucks.marketplaceservice.support.TestJwts;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,7 +16,9 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -23,10 +26,12 @@ import java.util.UUID;
 
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -77,6 +82,10 @@ class NotificationFlowIT extends PostgresTestContainer {
             return Mockito.mock(MerchantAdminResolver.class);
         }
     }
+
+    /** Real PNG signature + filler — the publish gate requires a primary image. */
+    private static final byte[] PNG_BYTES =
+            {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 8, 7};
 
     @Value("${jwt.secret}")
     private String jwtSecret;
@@ -189,6 +198,47 @@ class NotificationFlowIT extends PostgresTestContainer {
     }
 
     @Test
+    @DisplayName("A listing whose every option was sold out alerts its favoriter ONCE, quoting the "
+            + "from-price, when one size is restocked - and not again when another size comes back "
+            + "while the first still has stock")
+    void restockingOneOptionOfASoldOutListingAlertsOnceWithTheFromPrice() throws Exception {
+        String sellerToken = TestJwts.merchantAdmin(UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        String listingId = publishSoldOutListingWithOptions(sellerToken);
+        String medium = optionIdOf(listingId, "M");
+        String large = optionIdOf(listingId, "L");
+        mockMvc.perform(put("/marketplace/favorites/{id}", listingId)
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk());
+
+        // Size M comes back: the LISTING's total moves 0 -> 3, which is what
+        // "back in stock" means for a favourite. Its price is the lowest
+        // option's, so the copy says "from".
+        mockMvc.perform(patch("/marketplace/listings/{id}/variants/{variantId}/stock", listingId, medium)
+                        .header("Authorization", "Bearer " + sellerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"stockQty\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stockQty").value(3));
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                verify(userNotifyGateway).notify(buyerUuid,
+                        "Back in stock on InnBucks Marketplace",
+                        "Back in stock. Cotton Crew Tee - from USD 19.99 on InnBucks Marketplace"));
+
+        // Size L comes back while M already has stock: the listing was never
+        // out, so a favoriter hearing "back in stock" again would be spam.
+        mockMvc.perform(patch("/marketplace/listings/{id}/variants/{variantId}/stock", listingId, large)
+                        .header("Authorization", "Bearer " + sellerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"stockQty\":5}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stockQty").value(8));
+        // Held for a window: a single immediate read would pass before a
+        // wrongly-fired async alert had any chance to land.
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+                verify(userNotifyGateway, times(1)).notify(eq(buyerUuid), anyString(), anyString()));
+    }
+
+    @Test
     void aSellerDispatchTellsTheBuyerAfterCommit() throws Exception {
         UUID merchantId = UUID.randomUUID();
         UUID listingId = seedActiveListing(5, merchantId);
@@ -281,6 +331,45 @@ class NotificationFlowIT extends PostgresTestContainer {
                 + " has been sent. Refund reference IB-778812. Ref " + orderRef;
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 verify(sms).sendSms("+263771234567", expected, orderRef));
+    }
+
+    /**
+     * A listing with options (V19) is created the way a seller creates one -
+     * over HTTP, so its options and derived total come from the real editor -
+     * and published. Every option starts at 0; XL costs more than the
+     * listing price, which is therefore a "from" price.
+     */
+    private String publishSoldOutListingWithOptions(String sellerToken) throws Exception {
+        String created = mockMvc.perform(post("/marketplace/listings")
+                        .header("Authorization", "Bearer " + sellerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"Cotton Crew Tee","categoryCode":"other","priceCents":1999,
+                                 "options":["Size"],
+                                 "variants":[{"values":["M"],"stockQty":0},
+                                             {"values":["L"],"stockQty":0},
+                                             {"values":["XL"],"priceCents":2299,"stockQty":0}]}"""))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.stockQty").value(0))
+                .andReturn().getResponse().getContentAsString();
+        String listingId = JsonPath.read(created, "$.data.id");
+        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+                        .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
+                        .header("Authorization", "Bearer " + sellerToken))
+                .andExpect(status().isOk());
+        mockMvc.perform(patch("/marketplace/listings/{id}/status", listingId)
+                        .header("Authorization", "Bearer " + sellerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"ACTIVE\"}"))
+                .andExpect(status().isOk());
+        return listingId;
+    }
+
+    private String optionIdOf(String listingId, String value) {
+        return jdbc.queryForObject("""
+                SELECT id::text FROM listing_variant
+                 WHERE listing_id = ?::uuid AND option1_value = ?""",
+                String.class, listingId, value);
     }
 
     private UUID seedActiveListing(int stockQty) {

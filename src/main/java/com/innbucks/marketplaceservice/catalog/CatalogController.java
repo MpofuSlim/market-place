@@ -39,7 +39,10 @@ import java.util.UUID;
 @Tag(name = "Public Catalog",
         description = "Unauthenticated browse/read of ACTIVE listings. All prices are minor units "
                 + "(cents) in the cell currency; timestamps are UTC instants. Listings carry an "
-                + "image gallery: imageUrl serves the primary, imageUrls every image primary-first.")
+                + "image gallery: imageUrl serves the primary, imageUrls every image primary-first. "
+                + "A listing may sell OPTIONS (V19): `hasVariants`, the `options` to render as a "
+                + "picker, and `variants` with each option's own id, price and stock - send the "
+                + "chosen `variants[].id` as `variantId` on the cart, the quote and the order.")
 @RestController
 @RequestMapping("/marketplace/catalog")
 @RequiredArgsConstructor
@@ -47,12 +50,65 @@ public class CatalogController {
 
     private final CatalogService catalogService;
 
+    /** Newest first: the Cotton Crew Tee (sold in sizes - priceCents is its
+     *  "from" price, maxPriceCents the dearest option) above the speaker. */
     private static final String EXAMPLE_BROWSE_200 = """
             {
               "code": "OK",
               "message": "Success",
               "data": {
                 "items": [
+                  {
+                    "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "title": "Cotton Crew Tee",
+                    "description": "100% cotton, pre-shrunk",
+                    "categoryCode": "other",
+                    "categoryName": "Other",
+                    "condition": "NEW",
+                    "city": "Harare",
+                    "area": "Avondale",
+                    "priceCents": 1999,
+                    "currency": "USD",
+                    "stockQty": 10,
+                    "status": "ACTIVE",
+                    "ratingAvg": null,
+                    "reviewCount": 0,
+                    "createdAt": "2026-09-24T08:00:00Z",
+                    "updatedAt": "2026-09-24T09:00:00Z",
+                    "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                    "imageUrls": [
+                      "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/images/4d1c7e2a-9b3f-4a58-8e6d-0f2a1b3c4d5e"
+                    ],
+                    "seller": {
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "displayName": "Sunrise Electronics",
+                      "verified": true,
+                      "since": "2026-04-01T09:15:00Z"
+                    },
+                    "deliverable": true,
+                    "deliveryTowns": [
+                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                    ],
+                    "collectionTowns": [
+                      { "townCode": "harare", "townName": "Harare" }
+                    ],
+                    "hasVariants": true,
+                    "options": [
+                      { "name": "Size", "values": ["M", "L", "XL"] },
+                      { "name": "Colour", "values": ["Black"] }
+                    ],
+                    "variants": [
+                      { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                        "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                      { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                        "label": "L - Black", "priceCents": 1999, "stockQty": 0 },
+                      { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                        "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                        "stockQty": 6 }
+                    ],
+                    "maxPriceCents": 2299
+                  },
                   {
                     "id": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
@@ -75,18 +131,29 @@ public class CatalogController {
                     "imageUrls": [
                       "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
                     ],
+                    "seller": {
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "displayName": "Sunrise Electronics",
+                      "verified": true,
+                      "since": "2026-04-01T09:15:00Z"
+                    },
                     "deliverable": true,
                     "deliveryTowns": [
-                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                      { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
                     ],
                     "collectionTowns": [
                       { "townCode": "harare", "townName": "Harare" }
-                    ]
+                    ],
+                    "hasVariants": false,
+                    "options": [],
+                    "variants": [],
+                    "maxPriceCents": 2399
                   }
                 ],
                 "page": 0,
                 "size": 20,
-                "totalItems": 1,
+                "totalItems": 2,
                 "totalPages": 1
               }
             }""";
@@ -117,13 +184,84 @@ public class CatalogController {
                 "imageUrls": [
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
                 ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
+              }
+            }""";
+
+    /** V19: a listing sold in sizes. Render one row of chips per `options`
+     *  entry; `variants` gives each option's own price and stock (size L is
+     *  sold out). Same record as the browse page and the seller's editor. */
+    private static final String EXAMPLE_GET_WITH_OPTIONS_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Cotton Crew Tee",
+                "description": "100% cotton, pre-shrunk",
+                "categoryCode": "other",
+                "categoryName": "Other",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 1999,
+                "currency": "USD",
+                "stockQty": 10,
+                "status": "ACTIVE",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-09-24T08:00:00Z",
+                "updatedAt": "2026-09-24T09:00:00Z",
+                "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                "imageUrls": [
+                  "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/images/4d1c7e2a-9b3f-4a58-8e6d-0f2a1b3c4d5e"
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
                 "deliverable": true,
                 "deliveryTowns": [
                   { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
                 ],
                 "collectionTowns": [
                   { "townCode": "harare", "townName": "Harare" }
-                ]
+                ],
+                "hasVariants": true,
+                "options": [
+                  { "name": "Size", "values": ["M", "L", "XL"] },
+                  { "name": "Colour", "values": ["Black"] }
+                ],
+                "variants": [
+                  { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                    "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                  { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                    "label": "L - Black", "priceCents": 1999, "stockQty": 0 },
+                  { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                    "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                    "stockQty": 6 }
+                ],
+                "maxPriceCents": 2299
               }
             }""";
 
@@ -207,6 +345,12 @@ public class CatalogController {
                     + "exactly. Ordering is `sort` — newest (default), "
                     + "price_asc or price_desc — each with a stable tiebreaker so paging never "
                     + "repeats or skips a row. Page size is clamped to 50 (never an error). "
+                    + "**A listing sold in options** (`hasVariants: true` - sizes, colours) is "
+                    + "priced FROM its cheapest option: `priceCents` is that from-price and is what "
+                    + "`sort` and the price window read (so a listing whose cheapest option is below "
+                    + "`minPriceCents` is left out even when a dearer one is inside the window), "
+                    + "`maxPriceCents` is its dearest option, and `stockQty` / `inStock` count every "
+                    + "option together. "
                     + "**An unrecognised query parameter is refused with 400 `unknown_parameter`** "
                     + "rather than ignored, so a filter can never be silently dropped.")
     @SecurityRequirements({})
@@ -294,12 +438,12 @@ public class CatalogController {
               "message": "Success",
               "data": {
                 "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
-                "displayName": "Rudo Traders",
+                "displayName": "Sunrise Electronics",
                 "verified": true,
                 "since": "2026-04-01T09:15:00Z",
                 "ratingAvg": 5.0,
                 "reviewCount": 1,
-                "activeListingCount": 1,
+                "activeListingCount": 2,
                 "fulfilment": {
                   "completedOrders": 128,
                   "medianDispatchHours": 20,
@@ -385,8 +529,10 @@ public class CatalogController {
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The ACTIVE listing",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "listing", value = EXAMPLE_GET_200))),
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "listing", value = EXAMPLE_GET_200),
+                            @ExampleObject(name = "listing-with-options",
+                                    value = EXAMPLE_GET_WITH_OPTIONS_200)})),
             @ApiResponse(responseCode = "400", description = "Malformed id",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400))),

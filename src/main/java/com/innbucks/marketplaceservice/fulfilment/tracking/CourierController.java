@@ -68,7 +68,9 @@ public class CourierController {
     @Operation(summary = "My delivery run",
             description = "This business's DELIVERY parcels that are DISPATCHED — on the road — "
                     + "longest out first. Each carries where it goes, who to ring and what to hand "
-                    + "over. **No prices, subtotals or settlement**: a driver does not need them.\n\n"
+                    + "over. **No prices, subtotals or settlement**: a driver does not need them. "
+                    + "An item that is one option of a listing (a size, a colour) carries "
+                    + "`variantLabel` (\"XL - Black\") - hand over that one.\n\n"
                     + "Collection parcels never appear here (nothing is driven anywhere), and a "
                     + "parcel leaves the run the moment it is delivered or cancelled.")
     @ApiResponses({
@@ -98,6 +100,26 @@ public class CourierController {
                                             { "title": "Wireless Bluetooth Speaker", "quantity": 2 }
                                           ],
                                           "lastLocationAt": "2026-09-24T12:14:05Z"
+                                        },
+                                        {
+                                          "fulfilmentId": "8c4e2a6f-1d3b-4e75-a9c8-5b7d0f2e4a16",
+                                          "trackingCode": "TRK-9H4M2P7R3W",
+                                          "orderRef": "MKT-4F2A9C1B77D0",
+                                          "trackingStatus": "DISPATCHED",
+                                          "dispatchedAt": "2026-09-24T13:45:00Z",
+                                          "destination": {
+                                            "recipientName": "Tariro Moyo",
+                                            "recipientMsisdn": "+263771234567",
+                                            "line1": "14 Samora Machel Ave",
+                                            "line2": "Flat 3B",
+                                            "city": "Harare",
+                                            "area": "Avondale",
+                                            "landmark": "Opposite the clinic, blue gate"
+                                          },
+                                          "items": [
+                                            { "title": "Cotton Crew Tee", "quantity": 1, "variantLabel": "XL - Black" },
+                                            { "title": "Solar Lantern 20W", "quantity": 2 }
+                                          ]
                                         }
                                       ]
                                     }"""))),

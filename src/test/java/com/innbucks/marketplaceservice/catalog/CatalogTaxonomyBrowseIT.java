@@ -4,6 +4,7 @@ import com.innbucks.marketplaceservice.support.PostgresTestContainer;
 import com.innbucks.marketplaceservice.support.TestJwts;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpMethod;
@@ -95,6 +96,30 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
                         .content("{\"status\":\"ACTIVE\"}"))
                 .andExpect(status().isOk());
         return id;
+    }
+
+    /**
+     * Creates an ACTIVE listing WITH options (V19), sold by size.
+     * {@code variantsJson} is the {@code variants} array as the editor sends
+     * it; {@code priceCents} must be its lowest option price (the floor rule).
+     */
+    private String activeListingWithOptions(String title, int priceCents, String variantsJson)
+            throws Exception {
+        String body = mockMvc.perform(post("/marketplace/listings")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title": "%s",
+                                  "categoryCode": "other",
+                                  "priceCents": %d,
+                                  "options": ["Size"],
+                                  "variants": %s
+                                }""".formatted(title, priceCents, variantsJson)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String id = JsonPath.read(body, "$.data.id");
+        return activate(id, merchantToken);
     }
 
     @Test
@@ -244,6 +269,78 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
         mockMvc.perform(get("/marketplace/catalog").param("inStock", "yes"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("invalid_boolean"));
+    }
+
+    @Test
+    @DisplayName("inStock=true hides a listing whose every option is sold out, and shows it again "
+            + "once one option is restocked - the filter reads the options' derived total")
+    void inStockHidesAListingWhoseOptionsAreAllSoldOut() throws Exception {
+        String kettle = activeListing("Kettle", "other", null, null, 2000, 4, merchantToken);
+        String tee = activeListingWithOptions("Cotton Crew Tee", 1999, """
+                [{"values":["M"],"stockQty":0},{"values":["L"],"stockQty":0}]""");
+
+        mockMvc.perform(get("/marketplace/catalog").param("inStock", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(kettle));
+
+        // Unfiltered it is still shown, like any ACTIVE listing at 0.
+        mockMvc.perform(get("/marketplace/catalog"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(tee)).exists());
+
+        // One size comes back through the seller's quick restock...
+        String large = jdbc.queryForObject("""
+                SELECT id::text FROM listing_variant
+                 WHERE listing_id = ?::uuid AND option1_value = 'L'""", String.class, tee);
+        mockMvc.perform(patch("/marketplace/listings/{id}/variants/{variantId}/stock", tee, large)
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"stockQty\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stockQty").value(3));
+
+        // ...and the listing is in stock: the total the filter reads followed it.
+        mockMvc.perform(get("/marketplace/catalog").param("inStock", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(tee)).exists())
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(kettle)).exists());
+    }
+
+    @Test
+    @DisplayName("price_asc places a listing with options by its from-price (its cheapest option), "
+            + "price_desc too, and a budget that covers the cheapest option keeps it")
+    void aListingWithOptionsSortsAndFiltersByItsFromPrice() throws Exception {
+        String cheap = activeListing("Lantern A", "other", null, null, 1000, 5, merchantToken);
+        String dear = activeListing("Lantern C", "other", null, null, 3000, 5, merchantToken);
+        // From USD 19.99, with an XL at USD 95.00 - dearer than anything else here.
+        String tee = activeListingWithOptions("Cotton Crew Tee", 1999, """
+                [{"values":["M"],"stockQty":4},{"values":["XL"],"priceCents":9500,"stockQty":2}]""");
+
+        mockMvc.perform(get("/marketplace/catalog").param("sort", "price_asc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(cheap))
+                .andExpect(jsonPath("$.data.items[1].id").value(tee))
+                .andExpect(jsonPath("$.data.items[1].priceCents").value(1999))
+                .andExpect(jsonPath("$.data.items[1].maxPriceCents").value(9500))
+                .andExpect(jsonPath("$.data.items[2].id").value(dear));
+
+        // price_desc orders by the same from-price: the XL's 95.00 does not
+        // lift the listing above one whose only price is 30.00.
+        mockMvc.perform(get("/marketplace/catalog").param("sort", "price_desc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(dear))
+                .andExpect(jsonPath("$.data.items[1].id").value(tee))
+                .andExpect(jsonPath("$.data.items[2].id").value(cheap));
+
+        // A budget of 20.00 still finds it: its cheapest option is in range.
+        mockMvc.perform(get("/marketplace/catalog").param("maxPriceCents", "2000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(cheap)).exists())
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(tee)).exists());
     }
 
     @Test

@@ -69,7 +69,25 @@ public class FavoriteController {
                     "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                     "imageUrls": [
                       "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
-                    ]
+                    ],
+                    "seller": {
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "displayName": "Sunrise Electronics",
+                      "verified": true,
+                      "since": "2026-04-01T09:15:00Z"
+                    },
+                    "deliverable": true,
+                    "deliveryTowns": [
+                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                      { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                    ],
+                    "collectionTowns": [
+                      { "townCode": "harare", "townName": "Harare" }
+                    ],
+                    "hasVariants": false,
+                    "options": [],
+                    "variants": [],
+                    "maxPriceCents": 2399
                   }
                 ],
                 "page": 0,

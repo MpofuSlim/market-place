@@ -46,6 +46,20 @@ class PublicTestSurfaceIT extends PostgresTestContainer {
               "deliveryTowns": [{ "townCode": "harare", "feeCents": 0 }]
             }""";
 
+    /** V19: a listing sold by size - M (4) and L (6). */
+    private static final String OPTIONS_LISTING_BODY = """
+            {
+              "title": "Cotton Crew Tee",
+              "description": "100% cotton, pre-shrunk",
+              "categoryCode": "other",
+              "priceCents": 1999,
+              "options": ["Size"],
+              "variants": [
+                { "values": ["M"], "stockQty": 4 },
+                { "values": ["L"], "stockQty": 6 }
+              ]
+            }""";
+
     private static final String ADDRESS_BODY = """
             {
               "label": "Home",
@@ -156,6 +170,75 @@ class PublicTestSurfaceIT extends PostgresTestContainer {
     }
 
     @Test
+    @DisplayName("The cart twins address one option with ?variantId= on PUT and DELETE; without it, "
+            + "PUT on a listing with options is 400 variant_required and DELETE clears every line "
+            + "of that listing")
+    void cartLinesAreAddressedByOptionOnPutAndDelete() throws Exception {
+        String tee = publishListing(OPTIONS_LISTING_BODY);
+        String lantern = publishListing();
+        String medium = variantIdOf(tee, "M");
+        String large = variantIdOf(tee, "L");
+
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/cart/items", "alice")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"listingId\":\"%s\",\"variantId\":\"%s\",\"quantity\":1}"
+                                .formatted(tee, medium)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lineCount").value(1));
+        mockMvc.perform(post("/marketplace/public/buyers/{handle}/cart/items", "alice")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"listingId\":\"%s\",\"quantity\":1}".formatted(lantern)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lineCount").value(2));
+
+        // PUT ?variantId= sets exactly that option's line, creating it when
+        // absent: two sizes of one listing are two lines ...
+        mockMvc.perform(put("/marketplace/public/buyers/{handle}/cart/items/{listingId}", "alice", tee)
+                        .param("variantId", large)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lineCount").value(3))
+                .andExpect(jsonPath("$.data.totalQuantity").value(4));
+        // ... and setting one size leaves the other alone.
+        mockMvc.perform(put("/marketplace/public/buyers/{handle}/cart/items/{listingId}", "alice", tee)
+                        .param("variantId", medium)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lineCount").value(3))
+                .andExpect(jsonPath("$.data.totalQuantity").value(6))
+                .andExpect(jsonPath("$.data.items[?(@.variantId == '%s')].quantity".formatted(large))
+                        .value(2));
+
+        // Without ?variantId= there is no telling which size is meant.
+        mockMvc.perform(put("/marketplace/public/buyers/{handle}/cart/items/{listingId}", "alice", tee)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("variant_required"));
+
+        // DELETE ?variantId= removes exactly that line ...
+        mockMvc.perform(delete("/marketplace/public/buyers/{handle}/cart/items/{listingId}", "alice", tee)
+                        .param("variantId", large))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lineCount").value(2))
+                .andExpect(jsonPath("$.data.totalQuantity").value(4))
+                .andExpect(jsonPath("$.data.items[?(@.variantId == '%s')]".formatted(medium)).exists())
+                .andExpect(jsonPath("$.data.items[?(@.variantId == '%s')]".formatted(large))
+                        .doesNotExist());
+
+        // ... and DELETE without it keeps its pre-options meaning, "remove this
+        // item": every line of that listing goes, and only that listing's.
+        mockMvc.perform(delete("/marketplace/public/buyers/{handle}/cart/items/{listingId}", "alice", tee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lineCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].listingId").value(lantern));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cart_variant_item", Integer.class))
+                .isZero();
+    }
+
+    @Test
     void oneHandleCannotSeeAnothersBasket() throws Exception {
         String listingId = publishListing();
 
@@ -251,11 +334,22 @@ class PublicTestSurfaceIT extends PostgresTestContainer {
                 .andExpect(status().isUnauthorized());
     }
 
+    private String variantIdOf(String listingId, String value) {
+        return jdbc.queryForObject("""
+                SELECT id::text FROM listing_variant
+                 WHERE listing_id = ?::uuid AND option1_value = ?""",
+                String.class, listingId, value);
+    }
+
     private String publishListing() throws Exception {
+        return publishListing(LISTING_BODY);
+    }
+
+    private String publishListing(String body) throws Exception {
         String created = mockMvc.perform(post("/marketplace/listings")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(LISTING_BODY))
+                        .content(body))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String listingId = JsonPath.read(created, "$.data.id");

@@ -57,6 +57,20 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
               "deliveryTowns": [{ "townCode": "harare", "feeCents": 0 }]
             }""";
 
+    /** V19: a listing sold by size, 10 in total, the XL at a price of its own. */
+    private static final String OPTIONS_LISTING_BODY = """
+            {
+              "title": "Cotton Crew Tee",
+              "description": "100% cotton, pre-shrunk",
+              "categoryCode": "other",
+              "priceCents": 1999,
+              "options": ["Size"],
+              "variants": [
+                { "values": ["M"], "stockQty": 4 },
+                { "values": ["XL"], "priceCents": 2299, "stockQty": 6 }
+              ]
+            }""";
+
     private static final byte[] PNG_BYTES =
             {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 8, 7};
 
@@ -163,6 +177,69 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.collectionPoints[0].collectionPoint.line1")
                         .value("22 Fife St"));
+    }
+
+    @Test
+    @DisplayName("A token-less buyer quotes and orders ONE OPTION of a listing (V19): the option's "
+            + "price and stock, and a line that names no option is a VARIANT_REQUIRED fix, never a guess")
+    void aPublicBuyerQuotesAndOrdersAnOption() throws Exception {
+        String listingId = publishListing(OPTIONS_LISTING_BODY);
+        String medium = variantIdOf(listingId, "M");
+        String extraLarge = variantIdOf(listingId, "XL");
+
+        // What an app built before options sends: the quote names the fix
+        // rather than picking a size for the shopper.
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/checkout/quote", "alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\":[{\"listingId\":\"%s\",\"quantity\":1}]}".formatted(listingId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkoutReady").value(false))
+                .andExpect(jsonPath("$.data.rejections[0].reason").value("VARIANT_REQUIRED"))
+                .andExpect(jsonPath("$.data.rejections[0].message")
+                        .value("Choose a Size for Cotton Crew Tee"));
+
+        String line = "{\"listingId\":\"%s\",\"quantity\":2,\"variantId\":\"%s\"}"
+                .formatted(listingId, extraLarge);
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/checkout/quote", "alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\":[" + line + "],\"deliveryMethod\":\"COLLECTION\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkoutReady").value(true))
+                .andExpect(jsonPath("$.data.items[0].variantId").value(extraLarge))
+                .andExpect(jsonPath("$.data.items[0].variant.label").value("XL"))
+                // The OPTION's price, not the listing's from-price of 19.99.
+                .andExpect(jsonPath("$.data.items[0].unitPriceCents").value(2299))
+                .andExpect(jsonPath("$.data.items[0].lineTotalCents").value(4598))
+                .andExpect(jsonPath("$.data.subtotalCents").value(4598));
+        // The quote held nothing.
+        assertThat(optionStock(extraLarge)).isEqualTo(6);
+
+        String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "public-option-order-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"buyerMsisdn\":\"0771234567\",\"deliveryMethod\":\"COLLECTION\","
+                                + "\"items\":[" + line + "]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.status").value("PENDING_PAYMENT"))
+                .andExpect(jsonPath("$.data.totalCents").value(4598))
+                .andExpect(jsonPath("$.data.items[0].listingId").value(listingId))
+                .andExpect(jsonPath("$.data.items[0].variantId").value(extraLarge))
+                .andExpect(jsonPath("$.data.items[0].variantLabel").value("XL"))
+                .andExpect(jsonPath("$.data.items[0].unitPriceCents").value(2299))
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+
+        // Held from THAT option only; the listing's total follows it.
+        assertThat(optionStock(extraLarge)).isEqualTo(4);
+        assertThat(optionStock(medium)).isEqualTo(4);
+        mockMvc.perform(get("/marketplace/catalog/{id}", listingId))
+                .andExpect(jsonPath("$.data.stockQty").value(8));
+
+        // Read back by the same handle, the line still names its option.
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/orders/{o}", "alice", orderId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].variantId").value(extraLarge))
+                .andExpect(jsonPath("$.data.items[0].variantLabel").value("XL"));
     }
 
     @Test
@@ -425,10 +502,14 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
     }
 
     private String publishListing() throws Exception {
+        return publishListing(LISTING_BODY);
+    }
+
+    private String publishListing(String body) throws Exception {
         String created = mockMvc.perform(post("/marketplace/listings")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(LISTING_BODY))
+                        .content(body))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String listingId = JsonPath.read(created, "$.data.id");
@@ -444,5 +525,17 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
                         .content("{\"status\":\"ACTIVE\"}"))
                 .andExpect(status().isOk());
         return listingId;
+    }
+
+    private String variantIdOf(String listingId, String value) {
+        return jdbc.queryForObject("""
+                SELECT id::text FROM listing_variant
+                 WHERE listing_id = ?::uuid AND option1_value = ?""",
+                String.class, listingId, value);
+    }
+
+    private int optionStock(String variantId) {
+        return jdbc.queryForObject("SELECT stock_qty FROM listing_variant WHERE id = ?::uuid",
+                Integer.class, variantId);
     }
 }

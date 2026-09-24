@@ -1345,13 +1345,26 @@ never change either casually.
     cause one; any later movement heals it, or `UPDATE listing l SET
     stock_qty = (SELECT COALESCE(SUM(v.stock_qty),0) FROM listing_variant v
     WHERE v.listing_id = l.id) WHERE l.has_variants`.
+  * **Option text is normalised on UNICODE whitespace** (`(?U)\s+`, then
+    `strip()`). With ASCII `\s` a value pasted with a non-breaking space kept
+    it: identical on screen to "M", a different `option_key`, so it slipped
+    past the duplicate check and, on a replace, failed to match the existing
+    "M" and deleted it.
+  * **The editor checks ownership BEFORE the row lock**, off the lock-free
+    `ListingRepository.merchantIdOf` (a listing's seller never changes).
+    Locking first let any merchant stall a competitor's orders by editing
+    their listing id until their own 403 rolled back.
   * Pinned by `VariantSetResolverTest`, `VariantLabelsTest`,
-    `ListingStockTest`, `ParcelStockReturnerTest`, `VariantWireCompatTest`, the
-    option cases in `CheckoutPricerTest` / `CartServiceTest` /
-    `OrderServiceTest` / `ListingServiceTest`, and against real Postgres by
-    `V19MigrationIT` (the old image's SQL replayed on the V19 schema),
-    `VariantStockFlowIT`, `VariantConcurrencyIT`, `VariantSchemaIT` and
-    `VariantConversionIT`.
+    `ListingStockTest`, `ParcelStockReturnerTest`, `VariantWireCompatTest`,
+    `ListingViewAssemblerTest`, the option cases in `CheckoutPricerTest` /
+    `CartServiceTest` / `OrderServiceTest` / `ListingServiceTest`, and against
+    real Postgres by `V19MigrationIT` (the old image's SQL replayed on the V19
+    schema), `VariantStockFlowIT`, `VariantConcurrencyIT` (the lock order under
+    opposite line orders plus a concurrent cancel, and the last unit of one
+    option sold exactly once), `VariantSchemaIT`, `VariantConversionIT`,
+    `VariantStockDriftSweeperIT` (through the ShedLock proxy) and the option
+    cases in `NotificationFlowIT`, `CatalogTaxonomyBrowseIT`, `ReviewFlowIT`
+    and the public-test ITs.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling
