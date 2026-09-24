@@ -19,6 +19,7 @@ import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
+import com.innbucks.marketplaceservice.support.TestParcelViews;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -78,7 +79,8 @@ class UnfulfillableParcelTest {
                 mock(MarketOrderEventRepository.class), settlementService, auditService,
                 new MarketplaceMetrics(registry), mock(CollectCodeAttempts.class),
                 mock(CollectCodeNotifier.class), stockReturner, eventPublisher,
-                mock(MarketOrderDeliveryFeeRepository.class));
+                mock(MarketOrderDeliveryFeeRepository.class),
+                TestParcelViews.over(orderRepository, itemRepository, settlementService));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
                 MarketOrderItem.builder().id(UUID.randomUUID()).orderId(ORDER_ID)

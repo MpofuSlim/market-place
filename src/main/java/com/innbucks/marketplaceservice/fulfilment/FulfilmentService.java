@@ -11,8 +11,6 @@ import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.UnfulfillableRequest;
-import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
-import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrder;
@@ -21,23 +19,17 @@ import com.innbucks.marketplaceservice.order.MarketOrderEventRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
-import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.notify.CollectCodeNotifier;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
-import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelLocation;
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes;
-import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFee;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -72,8 +64,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class FulfilmentService {
 
-    /** Same hard cap the other paged surfaces use. */
-    static final int MAX_PAGE_SIZE = 50;
 
     private final OrderFulfilmentRepository fulfilmentRepository;
     private final MarketOrderRepository orderRepository;
@@ -87,6 +77,7 @@ public class FulfilmentService {
     private final ParcelStockReturner stockReturner;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final MarketOrderDeliveryFeeRepository deliveryFees;
+    private final MerchantParcelViewAssembler parcelViews;
 
     /** The per-parcel online-guessing budget for a collection code. Field
      *  injection because {@code @RequiredArgsConstructor} covers final fields
@@ -201,40 +192,6 @@ public class FulfilmentService {
     // ------------------------------------------------------------------
     // Seller queue
     // ------------------------------------------------------------------
-
-    /**
-     * A seller's parcels, oldest first (FIFO — the order that has waited longest
-     * never starves). SUPER_ADMIN reads every merchant's, optionally narrowed by
-     * {@code merchantIdFilter}; a MERCHANT_ADMIN is scoped to their own claim
-     * and the filter is IGNORED, exactly as the listing surface treats it — a
-     * merchant cannot widen their own scope by sending a parameter.
-     */
-    @Transactional(readOnly = true)
-    public MerchantFulfilmentPageResponse queue(AuthenticatedUser caller, FulfilmentStatus status,
-                                                UUID merchantIdFilter, int page, int size) {
-        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.clamp(size, 1, MAX_PAGE_SIZE));
-        Page<OrderFulfilment> result;
-        if (caller.isSuperAdmin()) {
-            if (merchantIdFilter != null) {
-                result = status == null
-                        ? fulfilmentRepository.findByMerchantIdOrderByCreatedAtAsc(
-                                merchantIdFilter, pageable)
-                        : fulfilmentRepository.findByMerchantIdAndStatusOrderByCreatedAtAsc(
-                                merchantIdFilter, status, pageable);
-            } else {
-                result = status == null
-                        ? fulfilmentRepository.findAllByOrderByCreatedAtAsc(pageable)
-                        : fulfilmentRepository.findByStatusOrderByCreatedAtAsc(status, pageable);
-            }
-        } else {
-            UUID merchantId = requireMerchantId(caller);
-            result = status == null
-                    ? fulfilmentRepository.findByMerchantIdOrderByCreatedAtAsc(merchantId, pageable)
-                    : fulfilmentRepository.findByMerchantIdAndStatusOrderByCreatedAtAsc(
-                            merchantId, status, pageable);
-        }
-        return MerchantFulfilmentPageResponse.from(result.map(this::toMerchantView));
-    }
 
     /**
      * One parcel by its tracking code — the portal's search box. Scoped like
@@ -396,7 +353,8 @@ public class FulfilmentService {
         // Told AFTER commit: the buyer must never hear that their goods are not
         // coming because of a transaction that then rolled back.
         eventPublisher.publishEvent(new ParcelUnfulfilled(order.getId(), order.getOrderRef(),
-                order.getBuyerMsisdn(), reason, refundCents, order.getCurrency(), notCollected));
+                order.getBuyerMsisdn(), reason, refundCents, order.getCurrency(), notCollected,
+                parcel.getId()));
         return toMerchantView(parcel);
     }
 
@@ -703,56 +661,11 @@ public class FulfilmentService {
                 .findByOrderIdOrderByCreatedAtAsc(order.getId()).size() > 1;
         eventPublisher.publishEvent(new ParcelProgressed(order.getId(), order.getOrderRef(),
                 order.getBuyerMsisdn(), order.getDeliveryMethod(), parcel.getStatus(),
-                partOfOrder));
+                partOfOrder, parcel.getId()));
     }
 
     private MerchantFulfilmentResponse toMerchantView(OrderFulfilment parcel) {
-        MarketOrder order = requireOrder(parcel);
-        List<MarketOrderItem> mine = itemRepository.findByOrderId(parcel.getOrderId()).stream()
-                .filter(item -> parcel.getMerchantId().equals(item.getMerchantId()))
-                .toList();
-        long subtotal = mine.stream().mapToLong(MarketOrderItem::getLineTotalCents).sum();
-        // The parcel's money state rides the seller's view (V10): the queue is
-        // where "when do I get paid for this?" is asked.
-        MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
-        return new MerchantFulfilmentResponse(
-                parcel.getId(),
-                order.getId(),
-                order.getOrderRef(),
-                parcel.getMerchantId(),
-                parcel.getStatus(),
-                order.getDeliveryMethod(),
-                FulfilmentDestination.from(order),
-                mine.stream().map(FulfilmentService::toLine).toList(),
-                subtotal,
-                order.getCurrency(),
-                order.getPaidAt(),
-                parcel.getDispatchNote(),
-                parcel.getDispatchedAt(),
-                parcel.getDeliveredAt(),
-                parcel.getDeliveredBy(),
-                parcel.getCreatedAt(),
-                settlement == null ? null : settlement.getStatus(),
-                settlement == null ? null : settlement.getNetCents(),
-                // Only where somebody is actually coming to a counter: on a
-                // DELIVERY order the destination block already names who the
-                // courier hands to, and a second name beside it would read as
-                // a second person.
-                order.getDeliveryMethod() == DeliveryMethod.COLLECTION
-                        ? order.getRecipientName() : null,
-                parcel.getCollectCodeHash() != null && parcel.getCollectCodeRedeemedAt() == null,
-                parcel.getCollectCodeRedeemedAt(),
-                parcel.getUnfulfilledReason(),
-                parcel.getUnfulfilledAt(),
-                parcel.getTrackingCode(),
-                TrackingStatus.of(parcel.getStatus()),
-                parcel.getDeliveryFeeCents(),
-                ParcelLocation.of(parcel));
-    }
-
-    static OrderResponse.Line toLine(MarketOrderItem item) {
-        return new OrderResponse.Line(item.getListingId(), item.getTitleSnapshot(),
-                item.getUnitPriceCents(), item.getQuantity(), item.getLineTotalCents());
+        return parcelViews.toView(parcel);
     }
 
     /** Merchant scope comes from the JWT, never from a request body. */

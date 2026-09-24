@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
 import com.innbucks.marketplaceservice.api.ApiResult;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.UnfulfillableRequest;
@@ -54,6 +55,7 @@ public class FulfilmentController {
 
     private final FulfilmentService fulfilmentService;
     private final SellerFulfilmentStatsService statsService;
+    private final SellerParcelQueryService parcelQueries;
 
     private static final String EXAMPLE_PARCEL = """
             {
@@ -163,10 +165,27 @@ public class FulfilmentController {
                     + "and may narrow with it.\n\n"
                     + "Each row carries the DESTINATION and only THIS seller's lines and subtotal — "
                     + "never the whole order — so a seller in a multi-seller order learns nothing "
-                    + "about what else the buyer bought.")
+                    + "about what else the buyer bought.\n\n"
+                    + "**Find the buyer at the counter with `q`** — one box, read by shape: an "
+                    + "order reference (`MKT-…`), a tracking code (`TRK-…`), a phone number (any "
+                    + "spelling: `0771234567`, `+263 77 123 4567`), or part of a name. A name "
+                    + "matches who the parcel is FOR — the delivery recipient, or the person the "
+                    + "buyer named to collect; a buyer collecting for themselves has no name on "
+                    + "file here, so search their phone or reference. Combine with `status` and "
+                    + "`deliveryMethod` (e.g. `status=DISPATCHED&deliveryMethod=COLLECTION` is "
+                    + "\"ready to collect\").")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of the queue",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_QUEUE_200))),
+            @ApiResponse(responseCode = "400", description = "A search that cannot match anything "
+                    + "as typed, or a filter value that is not one of its options",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Not a phone number", value = """
+                                    {"code":"invalid_msisdn","message":"q is not a valid phone number"}"""),
+                            @ExampleObject(name = "Not a tracking code", value = """
+                                    {"code":"invalid_search","message":"That is not a tracking code - they look like TRK-7F3K9Q2M4X"}"""),
+                            @ExampleObject(name = "Unknown filter value", value = """
+                                    {"code":"invalid_parameter","message":"'deliveryMethod' has a value we cannot read"}""")})),
             @ApiResponse(responseCode = "403", description = "Not a seller or admin, or a merchant "
                     + "token with no merchant scope",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SCOPE_403)))
@@ -175,13 +194,21 @@ public class FulfilmentController {
             @Parameter(description = "Narrow to one state. Omitted returns every state — the "
                     + "seller's whole history, not just what is outstanding.")
             @RequestParam(required = false) FulfilmentStatus status,
+            @Parameter(description = "DELIVERY or COLLECTION")
+            @RequestParam(required = false) DeliveryMethod deliveryMethod,
+            @Parameter(description = "Order reference, tracking code, phone number or name",
+                    example = "MKT-4F9A1C22B7D3")
+            @RequestParam(required = false) String q,
             @Parameter(description = "SUPER_ADMIN only: narrow to one merchant. Ignored for a "
                     + "MERCHANT_ADMIN, who is always scoped to their own claim.")
             @RequestParam(required = false) UUID merchantId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(ApiResult.ok(fulfilmentService.queue(
-                CurrentUser.get(), status, merchantId, page, size)));
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResult.ok(parcelQueries.queue(CurrentUser.get(),
+                        new SellerParcelQueryService.ParcelQuery(status, deliveryMethod, q,
+                                merchantId, page, size))));
     }
 
     @GetMapping("/stats")

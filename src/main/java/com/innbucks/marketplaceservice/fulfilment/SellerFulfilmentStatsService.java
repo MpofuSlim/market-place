@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -39,12 +41,15 @@ public class SellerFulfilmentStatsService {
 
     private final OrderFulfilmentRepository fulfilmentRepository;
     private final int minSample;
+    private final int collectionOverdueDays;
 
     public SellerFulfilmentStatsService(
             OrderFulfilmentRepository fulfilmentRepository,
-            @Value("${marketplace.seller-stats.min-sample:5}") int minSample) {
+            @Value("${marketplace.seller-stats.min-sample:5}") int minSample,
+            @Value("${marketplace.fulfilment.collection-overdue-days:7}") int collectionOverdueDays) {
         this.fulfilmentRepository = fulfilmentRepository;
         this.minSample = minSample;
+        this.collectionOverdueDays = collectionOverdueDays;
     }
 
     /**
@@ -66,11 +71,17 @@ public class SellerFulfilmentStatsService {
                                                          UUID merchantIdFilter) {
         UUID merchantId = resolveMerchant(caller, merchantIdFilter);
         ParcelCounts counts = fulfilmentRepository.countParcels(merchantId);
+        OrderFulfilmentRepository.OpenParcelCounts open = fulfilmentRepository.countOpenParcels(
+                merchantId, Instant.now().minus(Duration.ofDays(collectionOverdueDays)));
         return new MerchantFulfilmentStatsResponse(
                 publicStats(counts, merchantId),
                 counts.getAwaitingDispatch(),
                 counts.getInTransit(),
-                counts.getDelivered());
+                counts.getDelivered(),
+                open.getOnTheWay(),
+                open.getReadyToCollect(),
+                open.getReadyToCollectOverdue(),
+                collectionOverdueDays);
     }
 
     private SellerFulfilmentStats publicStats(ParcelCounts counts, UUID merchantId) {

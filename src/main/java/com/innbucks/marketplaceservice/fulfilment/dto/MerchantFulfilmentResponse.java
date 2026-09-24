@@ -4,10 +4,13 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.DeliveryConfirmer;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
+import com.innbucks.marketplaceservice.fulfilment.ParcelCloseMethod;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeView;
 import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelLocation;
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
+import com.innbucks.marketplaceservice.settlement.dto.ParcelDisputeSummary;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -134,5 +137,32 @@ public record MerchantFulfilmentResponse(
 
         @Schema(description = "Where your courier last reported this parcel. Absent until they "
                 + "post a position.", nullable = true)
-        ParcelLocation lastLocation) {
+        ParcelLocation lastLocation,
+
+        @Schema(description = "How the parcel was closed - absent while it is open", nullable = true)
+        ParcelCloseMethod closedBy,
+
+        @Schema(description = "When this parcel's HELD money clears on its own - set once you "
+                + "mark a delivery delivered (the buyer's dispute window). Absent while the "
+                + "money waits on delivery, and once it has cleared.",
+                example = "2026-10-01T14:05:00Z", nullable = true)
+        Instant settlementClearsAt,
+
+        @Schema(description = "The buyer's dispute, when there is one - why the money is on hold",
+                nullable = true)
+        ParcelDisputeSummary dispute,
+
+        @Schema(description = "Present while a collection code is live: true when too many wrong "
+                + "codes were tried and the parcel will accept none until the buyer makes a new "
+                + "one", example = "false", nullable = true)
+        Boolean collectCodeLocked,
+
+        @Schema(description = "Wrong codes you can still enter before the parcel locks. Present "
+                + "while a collection code is live.", example = "7", nullable = true)
+        Integer collectCodeAttemptsLeft,
+
+        @Schema(description = "The last message your action sent the buyer, and whether it "
+                + "actually went out. FAILED means the buyer was NOT told - tell them yourself.",
+                nullable = true)
+        BuyerNoticeView buyerNotice) {
 }

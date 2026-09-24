@@ -2,6 +2,9 @@ package com.innbucks.marketplaceservice.notify;
 
 import com.innbucks.marketplaceservice.fulfilment.ParcelUnfulfilled;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeKind;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeOutcome;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeRecorder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
@@ -33,31 +36,39 @@ public class ParcelUnfulfilledNotificationListener {
     private final SmsNotificationClient sms;
     private final WhatsAppNotificationClient whatsApp;
     private final MarketplaceMetrics metrics;
+    private final BuyerNoticeRecorder noticeRecorder;
 
     public ParcelUnfulfilledNotificationListener(SmsNotificationClient sms,
                                                  WhatsAppNotificationClient whatsApp,
-                                                 MarketplaceMetrics metrics) {
+                                                 MarketplaceMetrics metrics,
+                                                 BuyerNoticeRecorder noticeRecorder) {
         this.sms = sms;
         this.whatsApp = whatsApp;
         this.metrics = metrics;
+        this.noticeRecorder = noticeRecorder;
     }
 
     @Async("notificationExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onParcelUnfulfilled(ParcelUnfulfilled event) {
+        String outcome;
         try {
-            notifyBuyer(event);
+            outcome = notifyBuyer(event);
         } catch (RuntimeException ex) {
-            metrics.notificationOutcome("parcel_unfulfilled", "failed");
+            outcome = "failed";
             log.warn("Unfulfilled-parcel notification failed orderRef={} cause={}",
                     event.orderRef(), ex.toString());
         }
+        metrics.notificationOutcome("parcel_unfulfilled", outcome);
+        // What the seller's card shows (V15): whether the buyer was actually told.
+        noticeRecorder.record(event.fulfilmentId(), BuyerNoticeKind.CANCELLED,
+                BuyerNoticeOutcome.fromMetricOutcome(outcome));
     }
 
-    private void notifyBuyer(ParcelUnfulfilled event) {
+    /** @return the metric outcome: sent / fallback / failed / disabled */
+    private String notifyBuyer(ParcelUnfulfilled event) {
         if (!sms.isConfigured() && !whatsApp.isConfigured()) {
-            metrics.notificationOutcome("parcel_unfulfilled", "disabled");
-            return;
+            return "disabled";
         }
         String message = OrderNotificationComposer.parcelUnfulfilledMessage(
                 event.orderRef(), event.sellerReason(), event.refundDueCents(), event.currency(),
@@ -65,8 +76,7 @@ public class ParcelUnfulfilledNotificationListener {
         if (sms.isConfigured()) {
             try {
                 sms.sendSms(event.buyerMsisdn(), message, event.orderRef());
-                metrics.notificationOutcome("parcel_unfulfilled", "sent");
-                return;
+                return "sent";
             } catch (RuntimeException e) {
                 log.warn("Unfulfilled-parcel SMS failed for {} orderRef={}: {}",
                         MsisdnMasking.mask(event.buyerMsisdn()), event.orderRef(), e.getMessage());
@@ -75,13 +85,12 @@ public class ParcelUnfulfilledNotificationListener {
         if (whatsApp.isConfigured()) {
             try {
                 whatsApp.sendCustomNotification(event.buyerMsisdn(), message);
-                metrics.notificationOutcome("parcel_unfulfilled", "fallback");
-                return;
+                return "fallback";
             } catch (RuntimeException e) {
                 log.warn("Unfulfilled-parcel WhatsApp fallback failed for {} orderRef={}: {}",
                         MsisdnMasking.mask(event.buyerMsisdn()), event.orderRef(), e.getMessage());
             }
         }
-        metrics.notificationOutcome("parcel_unfulfilled", "failed");
+        return "failed";
     }
 }

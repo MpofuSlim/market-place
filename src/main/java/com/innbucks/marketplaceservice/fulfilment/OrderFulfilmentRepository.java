@@ -3,9 +3,11 @@ package com.innbucks.marketplaceservice.fulfilment;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -13,7 +15,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment, UUID> {
+public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment, UUID>,
+        JpaSpecificationExecutor<OrderFulfilment> {
 
     List<OrderFulfilment> findByOrderIdOrderByCreatedAtAsc(UUID orderId);
 
@@ -87,6 +90,32 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
                AND f.dispatched_at >= o.paid_at
             """, nativeQuery = true)
     DispatchTiming dispatchTiming(@Param("merchantId") UUID merchantId);
+
+    /**
+     * The seller's open work split the way a counter and a courier see it:
+     * parcels on the road, parcels waiting on the shelf, and shelf parcels
+     * waiting longer than {@code overdueBefore} — the ones to chase (or close
+     * as not collected) before the operator's stale-money list finds them.
+     */
+    @Query(value = """
+            SELECT COUNT(*) FILTER (WHERE o.delivery_method = 'DELIVERY')                  AS onTheWay,
+                   COUNT(*) FILTER (WHERE o.delivery_method = 'COLLECTION')                AS readyToCollect,
+                   COUNT(*) FILTER (WHERE o.delivery_method = 'COLLECTION'
+                                      AND f.dispatched_at < :overdueBefore)               AS readyToCollectOverdue
+              FROM order_fulfilment f
+              JOIN market_order o ON o.id = f.order_id
+             WHERE f.merchant_id = :merchantId
+               AND f.status = 'DISPATCHED'
+            """, nativeQuery = true)
+    OpenParcelCounts countOpenParcels(@Param("merchantId") UUID merchantId,
+                                      @Param("overdueBefore") Instant overdueBefore);
+
+    /** Projection of {@link #countOpenParcels} — aliases must match. */
+    interface OpenParcelCounts {
+        long getOnTheWay();
+        long getReadyToCollect();
+        long getReadyToCollectOverdue();
+    }
 
     /** Bytes-free projection of {@link #countParcels} — aliases must match. */
     interface ParcelCounts {
@@ -200,4 +229,25 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
     @Query(value = "SELECT collect_code_attempts FROM order_fulfilment WHERE id = :id",
             nativeQuery = true)
     Integer collectCodeAttempts(@Param("id") UUID id);
+
+    /**
+     * Records the outcome of the last buyer message a seller action sent (V15).
+     * A bulk UPDATE on purpose, bypassing the entity and its {@code @Version}:
+     * it runs after the action committed, on the notification pool, and must
+     * never turn the seller's NEXT action into an optimistic-lock failure.
+     * {@code @Transactional} because the async caller has no transaction.
+     */
+    @Transactional
+    @Modifying
+    @Query(value = """
+            UPDATE order_fulfilment
+               SET buyer_notice_kind = :kind,
+                   buyer_notice_outcome = :outcome,
+                   buyer_notice_at = :at
+             WHERE id = :id
+            """, nativeQuery = true)
+    int recordBuyerNotice(@Param("id") UUID id,
+                          @Param("kind") String kind,
+                          @Param("outcome") String outcome,
+                          @Param("at") Instant at);
 }

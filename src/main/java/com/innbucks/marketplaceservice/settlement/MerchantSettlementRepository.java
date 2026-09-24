@@ -3,18 +3,24 @@ package com.innbucks.marketplaceservice.settlement;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-public interface MerchantSettlementRepository extends JpaRepository<MerchantSettlement, UUID> {
+public interface MerchantSettlementRepository extends JpaRepository<MerchantSettlement, UUID>,
+        JpaSpecificationExecutor<MerchantSettlement> {
 
     Optional<MerchantSettlement> findByFulfilmentId(UUID fulfilmentId);
+
+    /** A page of parcels' money in ONE query — the seller's card view. */
+    List<MerchantSettlement> findByFulfilmentIdIn(Collection<UUID> fulfilmentIds);
 
     /** The seller's money view, newest first. */
     Page<MerchantSettlement> findByMerchantIdOrderByCreatedAtDesc(UUID merchantId, Pageable pageable);
@@ -109,6 +115,43 @@ public interface MerchantSettlementRepository extends JpaRepository<MerchantSett
     /** Projection for {@link #payoutReport}. */
     interface PayoutRow {
         UUID getMerchantId();
+        long getParcels();
+        long getNetCents();
+        String getCurrency();
+    }
+
+    /** When this seller's next HELD money clears on its own, or null when
+     *  none is on a clock (it is all waiting on delivery or a dispute). */
+    @Query("""
+            select min(s.releasableAt) from MerchantSettlement s
+             where s.merchantId = :merchantId
+               and s.status = com.innbucks.marketplaceservice.settlement.SettlementStatus.HELD
+               and s.releasableAt is not null""")
+    Instant nextClearing(@Param("merchantId") UUID merchantId);
+
+    /** Net HELD money whose clock runs out by {@code until}. */
+    @Query("""
+            select coalesce(sum(s.netCents), 0) from MerchantSettlement s
+             where s.merchantId = :merchantId
+               and s.status = com.innbucks.marketplaceservice.settlement.SettlementStatus.HELD
+               and s.releasableAt is not null
+               and s.releasableAt <= :until""")
+    long netClearingBy(@Param("merchantId") UUID merchantId, @Param("until") Instant until);
+
+    /** Payout runs, newest first — one row per payout reference. */
+    @Query("""
+            select s.payoutReference as payoutReference, max(s.paidOutAt) as paidOutAt,
+                   count(s) as parcels, sum(s.netCents) as netCents, min(s.currency) as currency
+              from MerchantSettlement s
+             where s.merchantId = :merchantId
+               and s.status = com.innbucks.marketplaceservice.settlement.SettlementStatus.PAID_OUT
+             group by s.payoutReference
+             order by max(s.paidOutAt) desc""")
+    List<PayoutRun> payoutRuns(@Param("merchantId") UUID merchantId, Pageable pageable);
+
+    interface PayoutRun {
+        String getPayoutReference();
+        Instant getPaidOutAt();
         long getParcels();
         long getNetCents();
         String getCurrency();

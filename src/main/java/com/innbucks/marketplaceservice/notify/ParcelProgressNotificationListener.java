@@ -3,6 +3,10 @@ package com.innbucks.marketplaceservice.notify;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
 import com.innbucks.marketplaceservice.fulfilment.ParcelProgressed;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeKind;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeOutcome;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeRecorder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
@@ -39,18 +43,21 @@ public class ParcelProgressNotificationListener {
     private final MarketplaceNotificationProperties properties;
     private final MarketplaceMetrics metrics;
     private final long disputeWindowDays;
+    private final BuyerNoticeRecorder noticeRecorder;
 
     public ParcelProgressNotificationListener(SmsNotificationClient sms,
                                               WhatsAppNotificationClient whatsApp,
                                               MarketplaceNotificationProperties properties,
                                               MarketplaceMetrics metrics,
                                               @Value("${marketplace.settlement.dispute-window-days}")
-                                              long disputeWindowDays) {
+                                              long disputeWindowDays,
+                                              BuyerNoticeRecorder noticeRecorder) {
         this.sms = sms;
         this.whatsApp = whatsApp;
         this.properties = properties;
         this.metrics = metrics;
         this.disputeWindowDays = disputeWindowDays;
+        this.noticeRecorder = noticeRecorder;
     }
 
     @Async("notificationExecutor")
@@ -58,29 +65,40 @@ public class ParcelProgressNotificationListener {
     public void onParcelProgressed(ParcelProgressed event) {
         String type = event.status() == FulfilmentStatus.DELIVERED
                 ? "parcel_delivered" : "parcel_dispatched";
+        String outcome;
         try {
-            notifyBuyer(event, type);
+            outcome = notifyBuyer(event);
         } catch (RuntimeException ex) {
-            metrics.notificationOutcome(type, "failed");
+            outcome = "failed";
             log.warn("Parcel update notification failed orderRef={} cause={}",
                     event.orderRef(), ex.toString());
         }
+        metrics.notificationOutcome(type, outcome);
+        // What the seller's card shows (V15): whether the buyer was actually told.
+        noticeRecorder.record(event.fulfilmentId(), kindOf(event),
+                BuyerNoticeOutcome.fromMetricOutcome(outcome));
     }
 
-    private void notifyBuyer(ParcelProgressed event, String type) {
+    private static BuyerNoticeKind kindOf(ParcelProgressed event) {
+        if (event.status() == FulfilmentStatus.DELIVERED) {
+            return BuyerNoticeKind.DELIVERED_BY_SELLER;
+        }
+        return event.deliveryMethod() == DeliveryMethod.COLLECTION
+                ? BuyerNoticeKind.READY_TO_COLLECT : BuyerNoticeKind.DISPATCHED;
+    }
+
+    /** @return the metric outcome: sent / fallback / failed / disabled / no_recipient */
+    private String notifyBuyer(ParcelProgressed event) {
         if (!properties.getParcelUpdates().isEnabled()) {
-            metrics.notificationOutcome(type, "disabled");
-            return;
+            return "disabled";
         }
         if (event.buyerMsisdn() == null || event.buyerMsisdn().isBlank()) {
-            metrics.notificationOutcome(type, "no_recipient");
             log.warn("Parcel update not sent - order has no buyer number orderRef={}",
                     event.orderRef());
-            return;
+            return "no_recipient";
         }
         if (!sms.isConfigured() && !whatsApp.isConfigured()) {
-            metrics.notificationOutcome(type, "disabled");
-            return;
+            return "disabled";
         }
         String message = event.status() == FulfilmentStatus.DELIVERED
                 ? OrderNotificationComposer.parcelDeliveredBySellerMessage(
@@ -90,8 +108,7 @@ public class ParcelProgressNotificationListener {
         if (sms.isConfigured()) {
             try {
                 sms.sendSms(event.buyerMsisdn(), message, event.orderRef());
-                metrics.notificationOutcome(type, "sent");
-                return;
+                return "sent";
             } catch (RuntimeException e) {
                 log.warn("Parcel update SMS failed for {} orderRef={}: {}",
                         MsisdnMasking.mask(event.buyerMsisdn()), event.orderRef(), e.getMessage());
@@ -100,13 +117,12 @@ public class ParcelProgressNotificationListener {
         if (whatsApp.isConfigured()) {
             try {
                 whatsApp.sendCustomNotification(event.buyerMsisdn(), message);
-                metrics.notificationOutcome(type, "fallback");
-                return;
+                return "fallback";
             } catch (RuntimeException e) {
                 log.warn("Parcel update WhatsApp fallback failed for {} orderRef={}: {}",
                         MsisdnMasking.mask(event.buyerMsisdn()), event.orderRef(), e.getMessage());
             }
         }
-        metrics.notificationOutcome(type, "failed");
+        return "failed";
     }
 }

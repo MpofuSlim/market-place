@@ -4,6 +4,9 @@ import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
 import com.innbucks.marketplaceservice.fulfilment.ParcelProgressed;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeKind;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeOutcome;
+import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeRecorder;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -38,6 +41,7 @@ class ParcelProgressNotificationListenerTest {
     private WhatsAppNotificationClient whatsApp;
     private MarketplaceNotificationProperties properties;
     private SimpleMeterRegistry registry;
+    private BuyerNoticeRecorder recorder;
     private ParcelProgressNotificationListener listener;
 
     @BeforeEach
@@ -46,8 +50,9 @@ class ParcelProgressNotificationListenerTest {
         whatsApp = mock(WhatsAppNotificationClient.class);
         properties = new MarketplaceNotificationProperties();
         registry = new SimpleMeterRegistry();
+        recorder = mock(BuyerNoticeRecorder.class);
         listener = new ParcelProgressNotificationListener(sms, whatsApp, properties,
-                new MarketplaceMetrics(registry), 7);
+                new MarketplaceMetrics(registry), 7, recorder);
     }
 
     private static ParcelProgressed event(DeliveryMethod method, FulfilmentStatus status) {
@@ -140,5 +145,28 @@ class ParcelProgressNotificationListenerTest {
                 event(DeliveryMethod.DELIVERY, FulfilmentStatus.DELIVERED)))
                 .doesNotThrowAnyException();
         assertThat(outcome("parcel_delivered", "failed")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("Each outcome is remembered on the parcel under the right kind")
+    void outcomesAreRecordedOnTheParcel() {
+        UUID parcel = UUID.randomUUID();
+        when(sms.isConfigured()).thenReturn(true);
+
+        listener.onParcelProgressed(new ParcelProgressed(UUID.randomUUID(), REF, BUYER,
+                DeliveryMethod.COLLECTION, FulfilmentStatus.DISPATCHED, false, parcel));
+        verify(recorder).record(parcel, BuyerNoticeKind.READY_TO_COLLECT, BuyerNoticeOutcome.SMS);
+
+        when(whatsApp.isConfigured()).thenReturn(true);
+        doThrow(new IllegalStateException("down")).when(sms).sendSms(anyString(), anyString(), anyString());
+        listener.onParcelProgressed(new ParcelProgressed(UUID.randomUUID(), REF, BUYER,
+                DeliveryMethod.DELIVERY, FulfilmentStatus.DELIVERED, false, parcel));
+        verify(recorder).record(parcel, BuyerNoticeKind.DELIVERED_BY_SELLER,
+                BuyerNoticeOutcome.WHATSAPP);
+
+        properties.getParcelUpdates().setEnabled(false);
+        listener.onParcelProgressed(new ParcelProgressed(UUID.randomUUID(), REF, BUYER,
+                DeliveryMethod.DELIVERY, FulfilmentStatus.DISPATCHED, false, parcel));
+        verify(recorder).record(parcel, BuyerNoticeKind.DISPATCHED, BuyerNoticeOutcome.NOT_SENT);
     }
 }

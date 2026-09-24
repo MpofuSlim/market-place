@@ -72,6 +72,12 @@ marketplace:
     # seller and their own money, not a convenience dial. Ten is generous for
     # a code read out over a phone.
     collect-code-max-attempts: ${MARKETPLACE_COLLECT_CODE_MAX_ATTEMPTS:10}
+    # When a collection that is ready at the counter counts as overdue on the
+    # seller's own stats (readyToCollectOverdue). Deliberately well inside the
+    # operator's stale-escrow threshold (settlement.stale-after-days, 14), so a
+    # seller sees it - and can chase the buyer or close it as not collected -
+    # before it becomes somebody else's problem.
+    collection-overdue-days: ${MARKETPLACE_COLLECTION_OVERDUE_DAYS:7}
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}

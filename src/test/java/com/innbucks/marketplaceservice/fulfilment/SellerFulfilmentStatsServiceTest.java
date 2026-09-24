@@ -16,6 +16,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -43,7 +44,7 @@ class SellerFulfilmentStatsServiceTest {
     @BeforeEach
     void setUp() {
         repository = mock(OrderFulfilmentRepository.class);
-        service = new SellerFulfilmentStatsService(repository, MIN_SAMPLE);
+        service = new SellerFulfilmentStatsService(repository, MIN_SAMPLE, 7);
     }
 
     private void counts(long delivered, long buyerConfirmed, long awaiting, long inTransit) {
@@ -53,6 +54,16 @@ class SellerFulfilmentStatsServiceTest {
         when(counts.getAwaitingDispatch()).thenReturn(awaiting);
         when(counts.getInTransit()).thenReturn(inTransit);
         when(repository.countParcels(MERCHANT)).thenReturn(counts);
+        openCounts(inTransit, 0, 0);
+    }
+
+    private void openCounts(long onTheWay, long readyToCollect, long overdue) {
+        OrderFulfilmentRepository.OpenParcelCounts open =
+                mock(OrderFulfilmentRepository.OpenParcelCounts.class);
+        when(open.getOnTheWay()).thenReturn(onTheWay);
+        when(open.getReadyToCollect()).thenReturn(readyToCollect);
+        when(open.getReadyToCollectOverdue()).thenReturn(overdue);
+        when(repository.countOpenParcels(eq(MERCHANT), any())).thenReturn(open);
     }
 
     private void timing(Double medianSeconds, long sample) {
@@ -153,6 +164,28 @@ class SellerFulfilmentStatsServiceTest {
         assertThat(view.awaitingDispatch()).isEqualTo(3);
         assertThat(view.inTransit()).isEqualTo(5);
         assertThat(view.completedOrders()).isEqualTo(10);
+    }
+
+    @Test
+    @DisplayName("Open parcels split into on-the-way and ready-to-collect, with the overdue ones counted")
+    void openParcelsAreSplitByMethod() {
+        counts(10, 9, 0, 5);
+        timing(7200.0, 10);
+        openCounts(3, 2, 1);
+
+        MerchantFulfilmentStatsResponse view = service.merchantStats(SELLER, null);
+
+        assertThat(view.onTheWay()).isEqualTo(3);
+        assertThat(view.readyToCollect()).isEqualTo(2);
+        assertThat(view.readyToCollectOverdue()).isEqualTo(1);
+        assertThat(view.collectionOverdueDays()).isEqualTo(7);
+        // Overdue = set aside before (now - 7 days).
+        org.mockito.ArgumentCaptor<java.time.Instant> cutoff =
+                org.mockito.ArgumentCaptor.forClass(java.time.Instant.class);
+        verify(repository).countOpenParcels(eq(MERCHANT), cutoff.capture());
+        assertThat(cutoff.getValue()).isBetween(
+                java.time.Instant.now().minus(java.time.Duration.ofDays(7)).minusSeconds(5),
+                java.time.Instant.now().minus(java.time.Duration.ofDays(7)).plusSeconds(1));
     }
 
     @Test

@@ -142,6 +142,19 @@ public class OrderFulfilment {
     @Column(name = "last_location_by", length = 64, insertable = false, updatable = false)
     private String lastLocationBy;
 
+    /** The last message a seller action sent the buyer (V15) — a
+     *  {@code BuyerNoticeKind} name. Read-only here: written only by
+     *  {@code OrderFulfilmentRepository.recordBuyerNotice}, never by a save. */
+    @Column(name = "buyer_notice_kind", length = 24, insertable = false, updatable = false)
+    private String buyerNoticeKind;
+
+    /** Whether it went out — a {@code BuyerNoticeOutcome} name. */
+    @Column(name = "buyer_notice_outcome", length = 16, insertable = false, updatable = false)
+    private String buyerNoticeOutcome;
+
+    @Column(name = "buyer_notice_at", insertable = false, updatable = false)
+    private Instant buyerNoticeAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
