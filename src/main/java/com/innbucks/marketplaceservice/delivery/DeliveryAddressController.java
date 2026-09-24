@@ -66,7 +66,7 @@ public class DeliveryAddressController {
     private static final String EXAMPLE_UNKNOWN_TOWN_400 = """
             {
               "code": "unknown_town",
-              "message": "Choose the town from the list - GET /marketplace/delivery-towns"
+              "message": "Please choose your town from the list so we can show who delivers to you"
             }""";
 
     private static final String EXAMPLE_LIST_200 = """

@@ -207,7 +207,7 @@ public class CatalogController {
                             @ExampleObject(name = "unknown-parameter",
                                     value = EXAMPLE_UNKNOWN_PARAMETER_400),
                             @ExampleObject(name = "unknown-town", value = """
-                                    {"code":"unknown_town","message":"deliversTo 'johannesburg' is not a town we deliver to. GET /marketplace/delivery-towns lists them."}""")}))
+                                    {"code":"unknown_town","message":"deliversTo 'johannesburg' is not one of our delivery towns - choose one from the list"}""")}))
     })
     @GetMapping
     public ApiResult<ListingPageResponse> browse(

@@ -30,7 +30,7 @@ class DeliveryTownCatalogTest {
     }
 
     @Test
-    @DisplayName("An unknown code is refused, naming the field and pointing at the list")
+    @DisplayName("An unknown code is refused, naming the field")
     void unknownCodeIsRefused() {
         assertThatThrownBy(() -> TestTowns.zimbabwe().require("johannesburg", "deliveryTowns.townCode"))
                 .isInstanceOf(ApiException.class)
@@ -38,6 +38,34 @@ class DeliveryTownCatalogTest {
                     assertThat(((ApiException) ex).code()).isEqualTo("unknown_town");
                     assertThat(ex.getMessage()).startsWith("deliveryTowns.townCode 'johannesburg'");
                 });
+    }
+
+    @Test
+    @DisplayName("A refused town reads as plain words - it never names an endpoint or echoes the typed text")
+    void refusalsAreCustomerSafe() {
+        DeliveryTownCatalog towns = TestTowns.zimbabwe();
+
+        // An app that still sends free text shows this message as-is to the
+        // shopper who typed "Byo" or "Harare CBD" (it happened: "Choose the
+        // town from the list - GET /marketplace/delivery-towns" on screen).
+        for (String typed : new String[] {"Byo", "Harare CBD", "  ", null}) {
+            assertThatThrownBy(() -> towns.resolveForAddress(null, typed))
+                    .isInstanceOf(ApiException.class)
+                    .satisfies(ex -> {
+                        assertThat(((ApiException) ex).code()).isEqualTo("unknown_town");
+                        assertThat(ex.getMessage())
+                                .isEqualTo("Please choose your town from the list so we can show "
+                                        + "who delivers to you")
+                                .doesNotContain("GET", "/marketplace");
+                    });
+        }
+        // The code path keeps naming the field (a seller's portal highlights
+        // it), but no longer points at an endpoint either.
+        assertThatThrownBy(() -> towns.require("johannesburg", "townCode"))
+                .satisfies(ex -> assertThat(ex.getMessage())
+                        .isEqualTo("townCode 'johannesburg' is not one of our delivery towns - "
+                                + "choose one from the list")
+                        .doesNotContain("GET", "/marketplace"));
     }
 
     @Test
