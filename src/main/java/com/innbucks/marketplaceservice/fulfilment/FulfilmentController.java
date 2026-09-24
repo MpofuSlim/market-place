@@ -17,6 +17,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -225,6 +226,65 @@ public class FulfilmentController {
             @RequestParam(required = false) UUID merchantId) {
         return ResponseEntity.ok(ApiResult.ok(
                 statsService.merchantStats(CurrentUser.get(), merchantId)));
+    }
+
+    @GetMapping("/tracking/{code}")
+    @Operation(summary = "Find a parcel by its tracking code",
+            description = "The portal's search box: type or scan the `trackingCode` a buyer quotes "
+                    + "and get the parcel — status, destination, and where the courier last "
+                    + "reported it (`lastLocation`). Case, spaces, dashes, the `TRK-` prefix and "
+                    + "the characters people confuse (I/L for 1, O for 0) are all forgiven.\n\n"
+                    + "A MERCHANT_ADMIN finds only their own business's parcels — another "
+                    + "seller's code is the same 404 as a code that does not exist, so the box "
+                    + "cannot be used to probe codes. SUPER_ADMIN finds any.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The parcel",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {
+                              "code": "OK",
+                              "message": "Success",
+                              "data": {
+                                "id": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                "orderId": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                "orderRef": "MKT-4F9A1C22B7D3",
+                                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                "status": "DISPATCHED",
+                                "deliveryMethod": "DELIVERY",
+                                "destination": {
+                                  "recipientName": "Tariro Moyo",
+                                  "recipientMsisdn": "+263771234567",
+                                  "line1": "14 Samora Machel Ave",
+                                  "city": "Harare"
+                                },
+                                "subtotalCents": 4798,
+                                "currency": "USD",
+                                "dispatchNote": "Swift Couriers, waybill 88213",
+                                "dispatchedAt": "2026-09-24T09:20:00Z",
+                                "settlementStatus": "HELD",
+                                "settlementNetCents": 5598,
+                                "trackingCode": "TRK-7F3K9Q2M4X",
+                                "trackingStatus": "DISPATCHED",
+                                "deliveryFeeCents": 800,
+                                "lastLocation": {
+                                  "latitude": -17.82922,
+                                  "longitude": 31.053961,
+                                  "accuracyMeters": 12,
+                                  "recordedAt": "2026-09-24T12:14:05Z"
+                                }
+                              }
+                            }"""))),
+            @ApiResponse(responseCode = "403", description = "Merchant token with no merchant scope",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_SCOPE_403))),
+            @ApiResponse(responseCode = "404", description = "No parcel with that code for this "
+                    + "seller",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404)))
+    })
+    public ResponseEntity<ApiResult<MerchantFulfilmentResponse>> byTrackingCode(
+            @Parameter(description = "The tracking code", example = "TRK-7F3K9Q2M4X")
+            @PathVariable String code) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResult.ok(fulfilmentService.byTrackingCode(CurrentUser.get(), code)));
     }
 
     @PostMapping("/{id}/dispatch")

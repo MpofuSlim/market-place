@@ -94,7 +94,12 @@ public class ListingController {
                 "createdAt": "2026-08-05T09:15:00Z",
                 "updatedAt": "2026-08-05T09:15:00Z",
                 "imageUrl": null,
-                "imageUrls": []
+                "imageUrls": [],
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ]
               }
             }""";
 
@@ -333,6 +338,18 @@ public class ListingController {
               "message": "categoryCode is not part of the marketplace taxonomy"
             }""";
 
+    private static final String EXAMPLE_UNKNOWN_TOWN_400 = """
+            {
+              "code": "unknown_town",
+              "message": "deliveryTowns.townCode 'johannesburg' is not a town we deliver to. GET /marketplace/delivery-towns lists them."
+            }""";
+
+    private static final String EXAMPLE_DUPLICATE_TOWN_400 = """
+            {
+              "code": "duplicate_delivery_town",
+              "message": "deliveryTowns names Harare more than once"
+            }""";
+
     private static final String EXAMPLE_MALFORMED_400 = """
             {
               "code": "MALFORMED_REQUEST",
@@ -475,7 +492,11 @@ public class ListingController {
                                                       "city": "Harare",
                                                       "area": "Avondale",
                                                       "priceCents": 2599,
-                                                      "stockQty": 120
+                                                      "stockQty": 120,
+                                                      "deliveryTowns": [
+                                                        { "townCode": "harare", "feeCents": 300 },
+                                                        { "townCode": "bulawayo", "feeCents": 1200 }
+                                                      ]
                                                     }"""),
                                     @ExampleObject(name = "super-admin on behalf of a merchant",
                                             summary = "SUPER_ADMIN only — must name the target merchant",
@@ -502,6 +523,8 @@ public class ListingController {
                             @ExampleObject(name = "bean-validation", value = EXAMPLE_VALIDATION_400),
                             @ExampleObject(name = "title-empty-after-sanitization", value = EXAMPLE_TITLE_400),
                             @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
+                            @ExampleObject(name = "unknown-town", value = EXAMPLE_UNKNOWN_TOWN_400),
+                            @ExampleObject(name = "town-named-twice", value = EXAMPLE_DUPLICATE_TOWN_400),
                             @ExampleObject(name = "super-admin-without-merchant-id",
                                     value = EXAMPLE_MERCHANT_ID_REQUIRED_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
@@ -629,7 +652,11 @@ public class ListingController {
                     + "condition/city/area/price/stock — omitted categoryCode falls back to 'other' "
                     + "and omitted condition to NEW, so send current values to keep them). Status and "
                     + "currency are not updatable here; the gallery has its own endpoints. Caller "
-                    + "must own the listing.")
+                    + "must own the listing.\n\n"
+                    + "**`deliveryTowns` is the one exception to full replace**: OMIT it (or send "
+                    + "null) to keep the towns as they are; send a list to replace them; send `[]` "
+                    + "to make the listing collection-only. Orders already placed keep the fee "
+                    + "they were quoted.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Listing updated",
                     content = @Content(mediaType = "application/json",
@@ -640,6 +667,8 @@ public class ListingController {
                             @ExampleObject(name = "bean-validation", value = EXAMPLE_VALIDATION_400),
                             @ExampleObject(name = "title-empty-after-sanitization", value = EXAMPLE_TITLE_400),
                             @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
+                            @ExampleObject(name = "unknown-town", value = EXAMPLE_UNKNOWN_TOWN_400),
+                            @ExampleObject(name = "town-named-twice", value = EXAMPLE_DUPLICATE_TOWN_400),
                             @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
                     content = @Content(mediaType = "application/json",

@@ -217,6 +217,63 @@ class NotificationFlowIT extends PostgresTestContainer {
                 verify(sms).sendSms("+263771234567", expected, orderRef));
     }
 
+    @Test
+    void aRecordedRefundTellsTheBuyerTheMoneyHasLeft() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        UUID listingId = seedActiveListing(5, merchantId);
+        String created = mockMvc.perform(post("/marketplace/orders")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .header("Idempotency-Key", "notify-flow-4")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"buyerMsisdn":"+263771234567","items":[{"listingId":"%s","quantity":1}]}"""
+                                .formatted(listingId)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+        String orderRef = JsonPath.read(created, "$.data.orderRef");
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentRef\":\"INB-PAY-0004\",\"amountCents\":1550}"))
+                .andExpect(status().isOk());
+        String paid = mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/marketplace/orders/{id}", orderId)
+                        .header("Authorization", "Bearer " + customerToken))
+                .andReturn().getResponse().getContentAsString();
+        String fulfilmentId = JsonPath.read(paid, "$.data.fulfilments[0].id");
+
+        // The seller cannot supply it: the parcel is CANCELLED and the money
+        // queued back (REFUND_DUE) — nothing has left yet.
+        String sellerToken = TestJwts.merchantAdmin(UUID.randomUUID(), merchantId, jwtSecret);
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/unfulfillable", fulfilmentId)
+                        .header("Authorization", "Bearer " + sellerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Out of stock\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.trackingStatus").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.settlementStatus").value("REFUND_DUE"));
+        String settlements = mockMvc.perform(org.springframework.test.web.servlet.request
+                        .MockMvcRequestBuilders.get("/marketplace/settlements")
+                        .header("Authorization", "Bearer " + sellerToken))
+                .andReturn().getResponse().getContentAsString();
+        String settlementId = JsonPath.read(settlements, "$.data.items[0].id");
+
+        // The operator records the transfer they made: THAT is when the buyer
+        // is told the money has gone, with the reference to look for.
+        String adminToken = TestJwts.superAdmin(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(post("/marketplace/settlements/{id}/refund", settlementId)
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refundReference\":\"IB-778812\"}"))
+                .andExpect(status().isOk());
+
+        String expected = "Your refund of USD 15.50 for InnBucks Marketplace order " + orderRef
+                + " has been sent. Refund reference IB-778812. Ref " + orderRef;
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                verify(sms).sendSms("+263771234567", expected, orderRef));
+    }
+
     private UUID seedActiveListing(int stockQty) {
         return seedActiveListing(stockQty, UUID.randomUUID());
     }

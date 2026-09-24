@@ -37,6 +37,10 @@ public class SecurityConfig {
                         // catalog prefix, so it needs its own exact matcher —
                         // pinned by SecuritySurfaceIT.anonymousCategoryTreeIsPublic.
                         .requestMatchers(HttpMethod.GET, "/marketplace/categories").permitAll()
+                        // Public delivery-town list (GET only), same shape as
+                        // the category tree: reference data a seller and a
+                        // buyer both pick from.
+                        .requestMatchers(HttpMethod.GET, "/marketplace/delivery-towns").permitAll()
                         // Unauthenticated PRE-CHECKOUT test surface, for building
                         // the app before POST /auth/exchange is switched on.
                         // Absent (404) unless marketplace.public-test.enabled;

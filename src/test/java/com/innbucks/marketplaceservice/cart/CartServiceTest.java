@@ -11,6 +11,8 @@ import com.innbucks.marketplaceservice.checkout.BasketViewAssembler;
 import com.innbucks.marketplaceservice.checkout.CheckoutPricer;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.support.TestTowns;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,7 +58,8 @@ class CartServiceTest {
         ListingViewAssembler listingViews = mock(ListingViewAssembler.class);
         when(listingViews.toResponsesById(any())).thenReturn(Map.of());
         service = new CartService(cartRepository, listingRepository,
-                new CheckoutPricer(listingRepository, "USD"),
+                new CheckoutPricer(listingRepository, mock(ListingDeliveryTownRepository.class),
+                        TestTowns.zimbabwe(), "USD"),
                 new BasketViewAssembler(listingViews));
         ReflectionTestUtils.setField(service, "maxItems", MAX_ITEMS);
         ReflectionTestUtils.setField(service, "maxQuantityPerItem", MAX_QTY);

@@ -82,6 +82,7 @@ public class SettlementService {
     private final MarketOrderEventRepository eventRepository;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final Duration grace;
     /** How long a parcel's money may sit HELD before it is somebody's problem. */
     private final Duration staleAfter;
@@ -93,6 +94,7 @@ public class SettlementService {
                              MarketOrderEventRepository eventRepository,
                              AuditService auditService,
                              MarketplaceMetrics metrics,
+                             org.springframework.context.ApplicationEventPublisher eventPublisher,
                              @Value("${marketplace.settlement.grace-hours}") long graceHours,
                              @Value("${marketplace.settlement.dispute-window-days}") long disputeWindowDays,
                              @Value("${marketplace.settlement.stale-after-days}") long staleAfterDays,
@@ -104,6 +106,7 @@ public class SettlementService {
         this.eventRepository = eventRepository;
         this.auditService = auditService;
         this.metrics = metrics;
+        this.eventPublisher = eventPublisher;
         this.grace = Duration.ofHours(graceHours);
         this.staleAfter = Duration.ofDays(staleAfterDays);
         this.commissionPercent = commissionPercent;
@@ -157,10 +160,15 @@ public class SettlementService {
                         order.getOrderRef());
                 continue;
             }
+            // Commission on the GOODS only; the seller's delivery fee (V14) is
+            // theirs whole — it pays for a trip, not a sale. Gross is the lot,
+            // so a refund of this parcel returns everything the buyer paid for it.
             long commission = Math.round(gross * commissionPercent / 100.0);
+            long delivery = parcel.getDeliveryFeeCents();
+            long total = Math.addExact(gross, delivery);
             opened += settlementRepository.openIfAbsent(UUID.randomUUID(), order.getId(),
-                    parcel.getId(), parcel.getMerchantId(), gross, commission,
-                    gross - commission, order.getCurrency(), now);
+                    parcel.getId(), parcel.getMerchantId(), total, commission,
+                    total - commission, delivery, order.getCurrency(), now);
         }
         if (opened > 0) {
             metrics.settlementOutcome("opened", opened);
@@ -345,6 +353,10 @@ public class SettlementService {
         log.info("refund recorded settlementId={} orderId={} netCents={} ref={}",
                 settlement.getId(), settlement.getOrderId(), settlement.getNetCents(),
                 refundReference);
+        // The buyer is told the money has actually left, after commit. GROSS:
+        // everything they paid for this parcel comes back, delivery included.
+        eventPublisher.publishEvent(new RefundSent(settlement.getOrderId(), settlement.getId(),
+                settlement.getGrossCents(), settlement.getCurrency(), refundReference));
         return settlement;
     }
 

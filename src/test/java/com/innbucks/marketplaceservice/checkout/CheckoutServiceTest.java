@@ -3,6 +3,8 @@ package com.innbucks.marketplaceservice.checkout;
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.cart.CartService;
 import com.innbucks.marketplaceservice.catalog.Listing;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTown;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteRequest;
@@ -12,6 +14,7 @@ import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddressService;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.support.TestTowns;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -42,6 +45,7 @@ class CheckoutServiceTest {
             UUID.randomUUID().toString(), Set.of("CUSTOMER"), null, null, "+263771234567", "ZW");
 
     private ListingRepository listingRepository;
+    private ListingDeliveryTownRepository coverage;
     private CartService cartService;
     private DeliveryAddressService addressService;
     private CheckoutProperties properties;
@@ -50,18 +54,21 @@ class CheckoutServiceTest {
     @BeforeEach
     void setUp() {
         listingRepository = mock(ListingRepository.class);
+        coverage = mock(ListingDeliveryTownRepository.class);
         cartService = mock(CartService.class);
         addressService = mock(DeliveryAddressService.class);
         properties = new CheckoutProperties();
         service = new CheckoutService(properties,
-                new CheckoutPricer(listingRepository, "USD"),
+                new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD"),
                 mock(BasketViewAssembler.class), cartService, addressService, "USD");
     }
+
+    private static final UUID SELLER = UUID.fromString("7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54");
 
     private static Listing sellable(long priceCents, int stock) {
         Instant now = Instant.now();
         return Listing.builder()
-                .id(LISTING).merchantId(UUID.randomUUID()).title("Solar Lantern 20W")
+                .id(LISTING).merchantId(SELLER).title("Solar Lantern 20W")
                 .priceCents(priceCents).currency("USD").stockQty(stock)
                 .status(ListingStatus.ACTIVE).createdAt(now).updatedAt(now).build();
     }
@@ -71,7 +78,7 @@ class CheckoutServiceTest {
         return DeliveryAddress.builder()
                 .id(UUID.randomUUID()).buyerUuid(UUID.randomUUID()).label("Home")
                 .recipientName("Tariro Moyo").recipientMsisdn("+263771234567")
-                .line1("14 Samora Machel Ave").city("Harare")
+                .line1("14 Samora Machel Ave").city("Harare").townCode("harare")
                 .defaultAddress(true).createdAt(now).updatedAt(now).version(0L).build();
     }
 
@@ -169,25 +176,6 @@ class CheckoutServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // Fee
-    // ------------------------------------------------------------------
-
-    @Test
-    @DisplayName("COLLECTION never pays the delivery fee, however it is configured")
-    void collectionNeverPaysTheFee() {
-        properties.getDelivery().setFeeCents(200);
-
-        assertThat(service.deliveryFeeFor(DeliveryMethod.COLLECTION)).isZero();
-        assertThat(service.deliveryFeeFor(DeliveryMethod.DELIVERY)).isEqualTo(200);
-    }
-
-    @Test
-    @DisplayName("A cell with no configured fee charges nothing for delivery")
-    void zeroFeeByDefault() {
-        assertThat(service.deliveryFeeFor(DeliveryMethod.DELIVERY)).isZero();
-    }
-
-    // ------------------------------------------------------------------
     // Payment options
     // ------------------------------------------------------------------
 
@@ -232,12 +220,12 @@ class CheckoutServiceTest {
     @Test
     @DisplayName("The cell's options report the same configuration the quote and order read")
     void optionsMirrorTheSameConfiguration() {
-        properties.getDelivery().setFeeCents(200);
         properties.getCheckout().setPaymentMethods(List.of(PaymentRail.ZIMSWITCH_CARD));
 
         var options = service.options();
 
-        assertThat(options.deliveryFeeCents()).isEqualTo(200);
+        // Deprecated since fees became per seller and per town (V14): always 0.
+        assertThat(options.deliveryFeeCents()).isZero();
         assertThat(options.currency()).isEqualTo("USD");
         assertThat(options.deliveryMethods())
                 .containsExactlyInAnyOrder(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION);
@@ -252,10 +240,11 @@ class CheckoutServiceTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("A DELIVERY quote totals subtotal + fee and shows the destination")
+    @DisplayName("A DELIVERY quote totals subtotal + the seller's fee to the town, and shows the destination")
     void deliveryQuoteTotalsAndAddresses() {
-        properties.getDelivery().setFeeCents(200);
         when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(1550, 10)));
+        when(coverage.findByListingIdIn(any()))
+                .thenReturn(List.of(new ListingDeliveryTown(LISTING, "harare", 200)));
         when(addressService.requireForCheckout(any(), any())).thenReturn(address());
 
         CheckoutQuoteResponse quote = service.quote(BUYER, quoteOf(DeliveryMethod.DELIVERY));
@@ -263,6 +252,8 @@ class CheckoutServiceTest {
         assertThat(quote.subtotalCents()).isEqualTo(3100);
         assertThat(quote.deliveryFeeCents()).isEqualTo(200);
         assertThat(quote.totalCents()).isEqualTo(3300);
+        assertThat(quote.deliveryFees()).containsExactly(
+                new CheckoutQuoteResponse.SellerDeliveryFee(SELLER, 200));
         assertThat(quote.deliveryAddress()).isNotNull();
         assertThat(quote.deliveryAddress().city()).isEqualTo("Harare");
         assertThat(quote.checkoutReady()).isTrue();
@@ -272,7 +263,6 @@ class CheckoutServiceTest {
     @Test
     @DisplayName("A COLLECTION quote resolves no address and adds no fee")
     void collectionQuoteHasNoDestinationAndNoFee() {
-        properties.getDelivery().setFeeCents(200);
         when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(1550, 10)));
 
         CheckoutQuoteResponse quote = service.quote(BUYER, quoteOf(DeliveryMethod.COLLECTION));
@@ -311,5 +301,40 @@ class CheckoutServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("delivery_address_required");
+    }
+
+    @Test
+    @DisplayName("An address with no town (pre-V14, city matched nothing) is refused for delivery")
+    void addressWithoutTownRefusedForDelivery() {
+        DeliveryAddress legacy = address();
+        legacy.setTownCode(null);
+        legacy.setCity("Harare CBD");
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(1550, 10)));
+        when(addressService.requireForCheckout(any(), any())).thenReturn(legacy);
+
+        assertThatThrownBy(() -> service.quote(BUYER, quoteOf(DeliveryMethod.DELIVERY)))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("address_town_required");
+    }
+
+    @Test
+    @DisplayName("A seller who does not deliver to the town still QUOTES, with the line named")
+    void uncoveredTownStillQuotes() {
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(1550, 10)));
+        when(coverage.findByListingIdIn(any()))
+                .thenReturn(List.of(new ListingDeliveryTown(LISTING, "bulawayo", 900)));
+        when(addressService.requireForCheckout(any(), any())).thenReturn(address());
+
+        CheckoutQuoteResponse quote = service.quote(BUYER, quoteOf(DeliveryMethod.DELIVERY));
+
+        assertThat(quote.checkoutReady()).isFalse();
+        assertThat(quote.rejections()).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.reason()).isEqualTo("NOT_DELIVERED_TO_TOWN");
+                    assertThat(r.message()).isEqualTo("Solar Lantern 20W is not delivered to Harare");
+                });
+        assertThat(quote.deliveryFeeCents()).isZero();
+        assertThat(quote.deliveryFees()).isEmpty();
     }
 }

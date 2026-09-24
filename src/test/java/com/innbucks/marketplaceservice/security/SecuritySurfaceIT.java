@@ -107,6 +107,31 @@ class SecuritySurfaceIT extends PostgresTestContainer {
     }
 
     @Test
+    void anonymousDeliveryTownListIsPublicButOnlyForGet() throws Exception {
+        // Same shape as the category tree: outside every permitAll prefix, so
+        // it needs (and has) its own GET-only matcher.
+        mockMvc.perform(get("/marketplace/delivery-towns"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'harare')]").exists());
+        mockMvc.perform(post("/marketplace/delivery-towns"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void anonymousCourierAndTrackingSurfacesAreUnauthorized() throws Exception {
+        UUID id = UUID.randomUUID();
+        mockMvc.perform(get("/marketplace/deliveries")).andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/marketplace/deliveries/{id}/location", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"latitude\":-17.8,\"longitude\":31.0}"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/marketplace/fulfilments/tracking/TRK-7F3K9Q2M4X"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/marketplace/orders/{id}/fulfilments/{fid}/tracking", id, id))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void anonymousReportPostIsUnauthorized() throws Exception {
         // /marketplace/catalog/** is permitAll for GET ONLY — the report POST
         // under the same prefix must ride anyRequest().authenticated().

@@ -11,6 +11,7 @@ import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.settlement.SettlementDispute;
 import com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
@@ -137,7 +138,10 @@ public class OrderViewAssembler {
                     parcel.getCollectCodeIssuedAt(),
                     parcel.getCollectCodeRedeemedAt(),
                     parcel.getUnfulfilledReason(),
-                    parcel.getUnfulfilledAt()));
+                    parcel.getUnfulfilledAt(),
+                    parcel.getTrackingCode(),
+                    TrackingStatus.of(parcel.getStatus()),
+                    parcel.getDeliveryFeeCents()));
         }
         return out;
     }

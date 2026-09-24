@@ -83,4 +83,36 @@ class JwtFilterSellerScopeTest {
         assertThat(JwtFilter.sellerRoles(Set.of("SUPER_ADMIN"), null)).containsExactly("SUPER_ADMIN");
         assertThat(JwtFilter.sellerRoles(null, null)).isEmpty();
     }
+
+    // ------------------------------------------------------------------
+    // COURIER (V14): any member of a selling business may carry its parcels
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("every member of a marketplace business - STAFF included - delivers for it")
+    void anyMember_deliversForTheOrganization() {
+        assertThat(JwtFilter.deliveringOrganizationOf(ORG, "OWNER", Set.of("marketplace"))).isEqualTo(ORG);
+        assertThat(JwtFilter.deliveringOrganizationOf(ORG, "ADMIN", Set.of("marketplace"))).isEqualTo(ORG);
+        // The point of the wider rule: drivers are usually staff, and STAFF sells nothing.
+        assertThat(JwtFilter.deliveringOrganizationOf(ORG, "STAFF", Set.of("marketplace"))).isEqualTo(ORG);
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "STAFF", Set.of("marketplace"))).isNull();
+    }
+
+    @Test
+    @DisplayName("a business without the marketplace product, or no organization at all, delivers nothing")
+    void noMarketplaceOrNoOrganization_deliversNothing() {
+        assertThat(JwtFilter.deliveringOrganizationOf(ORG, "STAFF", Set.of("loyalty"))).isNull();
+        assertThat(JwtFilter.deliveringOrganizationOf(null, "OWNER", Set.of("marketplace"))).isNull();
+        assertThat(JwtFilter.deliveringOrganizationOf(ORG, "GUEST", Set.of("marketplace"))).isNull();
+        assertThat(JwtFilter.deliveringOrganizationOf(ORG, "STAFF", null)).isNull();
+    }
+
+    @Test
+    @DisplayName("COURIER is derived, never believed: a token claiming it without membership loses it")
+    void courierRole_isDerivedNeverTrusted() {
+        assertThat(JwtFilter.courierRoles(Set.of("CUSTOMER", "COURIER"), null))
+                .containsExactly("CUSTOMER");
+        assertThat(JwtFilter.courierRoles(Set.of("CUSTOMER"), ORG))
+                .containsExactlyInAnyOrder("CUSTOMER", "COURIER");
+    }
 }

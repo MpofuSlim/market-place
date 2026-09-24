@@ -15,6 +15,8 @@ import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
 import com.innbucks.marketplaceservice.order.OrderStatus;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFee;
+import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -30,6 +32,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -70,6 +73,7 @@ class FulfilmentServiceTest {
     private com.innbucks.marketplaceservice.settlement.SettlementService settlementService;
     private SimpleMeterRegistry registry;
     private org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private MarketOrderDeliveryFeeRepository deliveryFees;
     private FulfilmentService service;
 
     @BeforeEach
@@ -82,12 +86,13 @@ class FulfilmentServiceTest {
         registry = new SimpleMeterRegistry();
         settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        deliveryFees = mock(MarketOrderDeliveryFeeRepository.class);
         service = new FulfilmentService(fulfilmentRepository, orderRepository, itemRepository,
                 eventRepository, settlementService, auditService, new MarketplaceMetrics(registry),
                 mock(com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts.class),
                 mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class),
                 mock(ParcelStockReturner.class),
-                eventPublisher);
+                eventPublisher, deliveryFees);
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
@@ -136,12 +141,12 @@ class FulfilmentServiceTest {
     @Test
     @DisplayName("One parcel per DISTINCT seller in the order")
     void opensOneParcelPerSeller() {
-        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), any())).thenReturn(1);
+        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), anyLong(), any(), any())).thenReturn(1);
 
         service.openForOrder(order());
 
-        verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_A), any());
-        verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_B), any());
+        verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_A), anyLong(), any(), any());
+        verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_B), anyLong(), any(), any());
         assertThat(outcome("opened")).isEqualTo(2.0);
     }
 
@@ -151,11 +156,11 @@ class FulfilmentServiceTest {
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
                 item(MERCHANT_A, "Solar Lantern 20W", 2, 3100),
                 item(MERCHANT_A, "Torch", 1, 1000)));
-        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), any())).thenReturn(1);
+        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), anyLong(), any(), any())).thenReturn(1);
 
         service.openForOrder(order());
 
-        verify(fulfilmentRepository, times(1)).openIfAbsent(any(), any(), eq(MERCHANT_A), any());
+        verify(fulfilmentRepository, times(1)).openIfAbsent(any(), any(), eq(MERCHANT_A), anyLong(), any(), any());
     }
 
     @Test
@@ -163,7 +168,7 @@ class FulfilmentServiceTest {
     void openingIsIdempotent() {
         // The payments service is free to replay a confirm; a seller's queue
         // must not double.
-        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), any())).thenReturn(0);
+        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), anyLong(), any(), any())).thenReturn(0);
 
         service.openForOrder(order());
 
@@ -174,7 +179,7 @@ class FulfilmentServiceTest {
     @Test
     @DisplayName("Opening journals onto the ORDER's own history, tagged FULFILMENT")
     void openingJournalsAgainstTheOrder() {
-        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), any())).thenReturn(1);
+        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), anyLong(), any(), any())).thenReturn(1);
 
         service.openForOrder(order());
 
@@ -559,5 +564,74 @@ class FulfilmentServiceTest {
         parcel(id, MERCHANT_A, FulfilmentStatus.PREPARING);
 
         assertThat(service.dispatch(SELLER_A, id, null).destination()).isNull();
+    }
+
+    // ------------------------------------------------------------------
+    // Delivery fee + tracking code (V14)
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Each parcel is opened with ITS seller's fee from the order, and a fresh tracking code")
+    void openingCarriesTheSellersFeeAndATrackingCode() {
+        when(deliveryFees.findByOrderId(ORDER_ID)).thenReturn(List.of(
+                new MarketOrderDeliveryFee(ORDER_ID, MERCHANT_A, 300)));
+        when(fulfilmentRepository.openIfAbsent(any(), any(), any(), anyLong(), any(), any()))
+                .thenReturn(1);
+
+        service.openForOrder(order());
+
+        ArgumentCaptor<String> codeA = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> codeB = ArgumentCaptor.forClass(String.class);
+        verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_A), eq(300L),
+                codeA.capture(), any());
+        // No fee row = collection, or a seller who delivers free: never a guess.
+        verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_B), eq(0L),
+                codeB.capture(), any());
+        assertThat(codeA.getValue()).matches("TRK-[0-9A-HJKMNP-TV-Z]{10}");
+        assertThat(codeB.getValue()).isNotEqualTo(codeA.getValue());
+    }
+
+    private OrderFulfilment tracked(UUID merchantId, String code) {
+        OrderFulfilment p = parcel(UUID.randomUUID(), merchantId, FulfilmentStatus.DISPATCHED);
+        p.setTrackingCode(code);
+        when(fulfilmentRepository.findByTrackingCode(code)).thenReturn(Optional.of(p));
+        return p;
+    }
+
+    @Test
+    @DisplayName("A seller finds their own parcel by code, however it was typed")
+    void sellerFindsOwnParcelByCode() {
+        tracked(MERCHANT_A, "TRK-7F3K9Q2M4X");
+
+        MerchantFulfilmentResponse found = service.byTrackingCode(SELLER_A, " trk 7f3k-9q2m-4x ");
+
+        assertThat(found.trackingCode()).isEqualTo("TRK-7F3K9Q2M4X");
+    }
+
+    @Test
+    @DisplayName("Another seller's code is the same 404 as a code that does not exist")
+    void anotherSellersCodeIsNotFound() {
+        tracked(MERCHANT_A, "TRK-7F3K9Q2M4X");
+
+        assertThatThrownBy(() -> service.byTrackingCode(SELLER_B, "TRK-7F3K9Q2M4X"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("fulfilment_not_found");
+        assertThatThrownBy(() -> service.byTrackingCode(SELLER_B, "TRK-0000000000"))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("fulfilment_not_found");
+    }
+
+    @Test
+    @DisplayName("SUPER_ADMIN finds any seller's parcel; garbage never reaches the database")
+    void adminFindsAnyAndGarbageIsNotFound() {
+        tracked(MERCHANT_B, "TRK-7F3K9Q2M4X");
+
+        assertThat(service.byTrackingCode(ADMIN, "TRK-7F3K9Q2M4X").merchantId())
+                .isEqualTo(MERCHANT_B);
+        assertThatThrownBy(() -> service.byTrackingCode(ADMIN, "not a code"))
+                .isInstanceOf(ApiException.class);
+        verify(fulfilmentRepository, times(1)).findByTrackingCode(anyString());
     }
 }

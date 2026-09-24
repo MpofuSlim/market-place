@@ -223,6 +223,19 @@ class OrderNotificationComposerTest {
     }
 
     @Test
+    @DisplayName("the refund-sent message names the amount, the transfer reference and the order")
+    void refundSentMessage() {
+        assertThat(OrderNotificationComposer.refundSentMessage(REF, 2350, "USD", " IB-778812 "))
+                .isEqualTo("Your refund of USD 23.50 for InnBucks Marketplace order "
+                        + "MKT-4F2A9C1B77D0 has been sent. Refund reference IB-778812. "
+                        + "Ref MKT-4F2A9C1B77D0");
+        // No reference recorded: the sentence still ends cleanly.
+        assertThat(OrderNotificationComposer.refundSentMessage(REF, 2350, "USD", "  "))
+                .isEqualTo("Your refund of USD 23.50 for InnBucks Marketplace order "
+                        + "MKT-4F2A9C1B77D0 has been sent. Ref MKT-4F2A9C1B77D0");
+    }
+
+    @Test
     @DisplayName("every template survives the GSM sanitizer UNCHANGED (fleet composer discipline)")
     void everyTemplateRoundTripsTheGsmSanitizer() {
         Listing listing = new Listing();
@@ -262,7 +275,11 @@ class OrderNotificationComposerTest {
                 // text at all, so every character of it is pinned here.
                 OrderNotificationComposer.payoutDestinationMessage(PayoutMethod.BANK, true, true),
                 OrderNotificationComposer.payoutDestinationMessage(
-                        PayoutMethod.MOBILE_MONEY, false, false));
+                        PayoutMethod.MOBILE_MONEY, false, false),
+                // The operator's transfer reference is their own text (sanitized
+                // by the SMS client on the way out); the copy around it is pinned.
+                OrderNotificationComposer.refundSentMessage(REF, 1550, "USD", "IB-778812"),
+                OrderNotificationComposer.refundSentMessage(REF, 1550, "USD", null));
         for (String template : templates) {
             assertThat(SmsTextSanitizer.toGsmSafe(template))
                     .as("template must be GSM-safe as composed: %s", template)

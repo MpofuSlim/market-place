@@ -18,6 +18,7 @@ import com.innbucks.marketplaceservice.order.MarketOrderRepository;
 import com.innbucks.marketplaceservice.order.OrderStatus;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
+import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -82,7 +83,8 @@ class CollectCodeServiceTest {
                 mock(MarketOrderEventRepository.class), settlementService, auditService,
                 new MarketplaceMetrics(registry), attempts, notifier,
                 mock(ParcelStockReturner.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                mock(MarketOrderDeliveryFeeRepository.class));
         ReflectionTestUtils.setField(service, "maxCollectAttempts", MAX_ATTEMPTS);
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

@@ -38,8 +38,8 @@ public record CheckoutQuoteResponse(
         @Schema(description = "Sum of the SELLABLE lines, in minor units", example = "4798")
         long subtotalCents,
 
-        @Schema(description = "Delivery fee in minor units — 0 for COLLECTION, and 0 on any cell "
-                + "that has not set one.", example = "200")
+        @Schema(description = "Delivery fee in minor units: the sum of each seller's fee to the "
+                + "address's town (see deliveryFees). 0 for COLLECTION.", example = "800")
         long deliveryFeeCents,
 
         @Schema(description = "subtotalCents + deliveryFeeCents — what the payments service will "
@@ -69,5 +69,16 @@ public record CheckoutQuoteResponse(
 
         @Schema(description = "The payment rails this cell can collect on, in the order to offer "
                 + "them — the same list the order's `payment` block will carry.")
-        List<PaymentOption> paymentMethods) {
+        List<PaymentOption> paymentMethods,
+
+        @Schema(description = "DELIVERY only: each seller's delivery fee to the address's town. "
+                + "One parcel per seller, so a seller's fee is the highest of their items' fees to "
+                + "that town, not the sum. Empty for COLLECTION.")
+        List<SellerDeliveryFee> deliveryFees) {
+
+    @Schema(description = "One seller's delivery fee on this checkout")
+    public record SellerDeliveryFee(
+            @Schema(example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54") java.util.UUID merchantId,
+            @Schema(example = "800") long feeCents) {
+    }
 }

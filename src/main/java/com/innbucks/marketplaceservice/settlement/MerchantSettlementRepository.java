@@ -82,9 +82,10 @@ public interface MerchantSettlementRepository extends JpaRepository<MerchantSett
     @Query(value = """
             INSERT INTO merchant_settlement
                 (id, order_id, fulfilment_id, merchant_id, status, gross_cents,
-                 commission_cents, net_cents, currency, created_at, updated_at, version)
+                 commission_cents, net_cents, delivery_fee_cents, currency,
+                 created_at, updated_at, version)
             VALUES (:id, :orderId, :fulfilmentId, :merchantId, 'HELD', :grossCents,
-                    :commissionCents, :netCents, :currency, :now, :now, 0)
+                    :commissionCents, :netCents, :deliveryFeeCents, :currency, :now, :now, 0)
             ON CONFLICT (fulfilment_id) DO NOTHING
             """, nativeQuery = true)
     int openIfAbsent(@Param("id") UUID id,
@@ -94,6 +95,7 @@ public interface MerchantSettlementRepository extends JpaRepository<MerchantSett
                      @Param("grossCents") long grossCents,
                      @Param("commissionCents") long commissionCents,
                      @Param("netCents") long netCents,
+                     @Param("deliveryFeeCents") long deliveryFeeCents,
                      @Param("currency") String currency,
                      @Param("now") Instant now);
 

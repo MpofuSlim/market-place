@@ -21,8 +21,9 @@ public record CheckoutOptionsResponse(
         @Schema(description = "How goods can be received here, in the order to offer them")
         List<DeliveryMethod> deliveryMethods,
 
-        @Schema(description = "Flat fee added to a DELIVERY order, in minor units. 0 on a cell "
-                + "that has not set one. COLLECTION never pays it.", example = "200")
+        @Schema(description = "DEPRECATED, always 0. Delivery is priced per seller per town "
+                + "(each listing's deliveryTowns); the quote's deliveryFeeCents is the real "
+                + "figure.", example = "0", deprecated = true)
         long deliveryFeeCents,
 
         @Schema(example = "USD")

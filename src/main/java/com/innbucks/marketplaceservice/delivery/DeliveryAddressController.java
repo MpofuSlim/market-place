@@ -55,11 +55,18 @@ public class DeliveryAddressController {
               "line1": "14 Samora Machel Ave",
               "line2": "Flat 3B",
               "city": "Harare",
+              "townCode": "harare",
               "area": "Avondale",
               "landmark": "Opposite the clinic, blue gate",
               "defaultAddress": true,
               "createdAt": "2026-09-12T08:10:22Z",
               "updatedAt": "2026-09-12T08:10:22Z"
+            }""";
+
+    private static final String EXAMPLE_UNKNOWN_TOWN_400 = """
+            {
+              "code": "unknown_town",
+              "message": "Choose the town from the list - GET /marketplace/delivery-towns"
             }""";
 
     private static final String EXAMPLE_LIST_200 = """
@@ -75,6 +82,7 @@ public class DeliveryAddressController {
                   "line1": "14 Samora Machel Ave",
                   "line2": "Flat 3B",
                   "city": "Harare",
+                  "townCode": "harare",
                   "area": "Avondale",
                   "landmark": "Opposite the clinic, blue gate",
                   "defaultAddress": true,
@@ -88,6 +96,7 @@ public class DeliveryAddressController {
                   "recipientMsisdn": "+263771234567",
                   "line1": "8 Kwame Nkrumah Ave",
                   "city": "Harare",
+                  "townCode": "harare",
                   "area": "CBD",
                   "defaultAddress": false,
                   "createdAt": "2026-09-10T14:02:10Z",
@@ -169,9 +178,11 @@ public class DeliveryAddressController {
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Saved",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_CREATED_201))),
-            @ApiResponse(responseCode = "400", description = "A required field is missing, or the "
-                    + "recipient number is not dialable",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_INVALID_MSISDN_400))),
+            @ApiResponse(responseCode = "400", description = "A required field is missing, the "
+                    + "recipient number is not dialable, or the town is not one we deliver to",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Number not dialable", value = EXAMPLE_INVALID_MSISDN_400),
+                            @ExampleObject(name = "Unknown town", value = EXAMPLE_UNKNOWN_TOWN_400)})),
             @ApiResponse(responseCode = "409", description = "The per-buyer address cap is reached",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_LIMIT_409)))
     })
@@ -190,9 +201,11 @@ public class DeliveryAddressController {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Updated",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_OK_200))),
-            @ApiResponse(responseCode = "400", description = "A required field is missing, or the "
-                    + "recipient number is not dialable",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_INVALID_MSISDN_400))),
+            @ApiResponse(responseCode = "400", description = "A required field is missing, the "
+                    + "recipient number is not dialable, or the town is not one we deliver to",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Number not dialable", value = EXAMPLE_INVALID_MSISDN_400),
+                            @ExampleObject(name = "Unknown town", value = EXAMPLE_UNKNOWN_TOWN_400)})),
             @ApiResponse(responseCode = "404", description = "No such address for this buyer",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404)))
     })

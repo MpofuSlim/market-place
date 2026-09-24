@@ -268,6 +268,17 @@ public class MarketplaceMetrics {
      * earns. {@code locked} means the per-parcel budget actually ran out,
      * which should be close to never.
      */
+    /** Courier position pings by outcome: accepted, ignored (too soon / older
+     *  than the stored fix / stale), out_of_bounds, not_in_transit. A climb in
+     *  out_of_bounds is a broken phone GPS or someone posting made-up points. */
+    public void trackingPing(String outcome) {
+        Counter.builder("marketplace.tracking.pings")
+                .description("Courier position reports by outcome")
+                .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment();
+    }
+
     public void collectCodeOutcome(String outcome) {
         Counter.builder("marketplace.collect_codes")
                 .description("Collection handover codes by outcome")

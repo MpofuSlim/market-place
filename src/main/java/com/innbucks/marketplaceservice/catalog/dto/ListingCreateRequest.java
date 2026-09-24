@@ -2,12 +2,14 @@ package com.innbucks.marketplaceservice.catalog.dto;
 
 import com.innbucks.marketplaceservice.catalog.ItemCondition;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -76,6 +78,22 @@ public record ListingCreateRequest(
                 + "listing is created on behalf of (admin tokens carry no merchantId claim) — "
                 + "the one deliberate exception to merchant-scope-from-JWT.",
                 nullable = true)
-        UUID merchantId
+        UUID merchantId,
+
+        @Schema(description = "Towns this listing can be DELIVERED to, each with its delivery fee. "
+                + "Omit or send [] for collection only. Codes come from GET /marketplace/delivery-towns; "
+                + "an unknown code is 400 unknown_town, a repeated one 400 duplicate_delivery_town.",
+                nullable = true)
+        @Valid
+        @Size(max = 100)
+        List<DeliveryTownFee> deliveryTowns
 ) {
+
+    /** Pre-V14 shape: collection only. */
+    public ListingCreateRequest(String title, String description, String categoryCode,
+                                ItemCondition condition, String city, String area, Long priceCents,
+                                Integer stockQty, UUID merchantId) {
+        this(title, description, categoryCode, condition, city, area, priceCents, stockQty,
+                merchantId, null);
+    }
 }

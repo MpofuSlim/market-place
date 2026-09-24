@@ -110,6 +110,38 @@ public class OrderFulfilment {
     @Column(name = "collect_code_attempts", nullable = false)
     private int collectCodeAttempts;
 
+    // ---- Delivery + tracking (V14) --------------------------------------
+
+    /** This seller's delivery fee on the order, copied from the order's
+     *  per-seller snapshot when the parcel opens. 0 on a COLLECTION order. */
+    @Column(name = "delivery_fee_cents", nullable = false, updatable = false)
+    private long deliveryFeeCents;
+
+    /** {@code TRK-XXXXXXXXXX}: a lookup key for the seller, an operator and
+     *  the buyer — never a credential. Set once, at opening. */
+    @Column(name = "tracking_code", nullable = false, updatable = false, length = 20)
+    private String trackingCode;
+
+    // The courier's LAST known position. Read-only through this entity: only
+    // OrderFulfilmentRepository.recordLocation writes them, so a seller's
+    // save of this row can never put a stale position back.
+
+    @Column(name = "last_latitude", precision = 9, scale = 6, insertable = false, updatable = false)
+    private java.math.BigDecimal lastLatitude;
+
+    @Column(name = "last_longitude", precision = 9, scale = 6, insertable = false, updatable = false)
+    private java.math.BigDecimal lastLongitude;
+
+    @Column(name = "last_accuracy_m", insertable = false, updatable = false)
+    private Integer lastAccuracyMeters;
+
+    @Column(name = "last_location_at", insertable = false, updatable = false)
+    private Instant lastLocationAt;
+
+    /** Who posted it (user uuid) — for an operator looking at a dispute. */
+    @Column(name = "last_location_by", length = 64, insertable = false, updatable = false)
+    private String lastLocationBy;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

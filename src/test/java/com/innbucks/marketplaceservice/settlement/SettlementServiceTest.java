@@ -18,6 +18,7 @@ import com.innbucks.marketplaceservice.order.OrderStatus;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
+import org.springframework.context.ApplicationEventPublisher;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -66,6 +67,7 @@ class SettlementServiceTest {
     private MarketOrderEventRepository eventRepository;
     private AuditService auditService;
     private SimpleMeterRegistry registry;
+    private ApplicationEventPublisher eventPublisher;
     private SettlementService service;
 
     @BeforeEach
@@ -76,9 +78,10 @@ class SettlementServiceTest {
         eventRepository = mock(MarketOrderEventRepository.class);
         auditService = mock(AuditService.class);
         registry = new SimpleMeterRegistry();
+        eventPublisher = mock(ApplicationEventPublisher.class);
         service = new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService,
-                new MarketplaceMetrics(registry), GRACE_HOURS, DISPUTE_WINDOW_DAYS,
+                new MarketplaceMetrics(registry), eventPublisher, GRACE_HOURS, DISPUTE_WINDOW_DAYS,
                 STALE_AFTER_DAYS, 0.0);
         when(settlementRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
@@ -133,14 +136,14 @@ class SettlementServiceTest {
         when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
                 .thenReturn(List.of(parcelA, parcelB));
         when(settlementRepository.openIfAbsent(any(), any(), any(), any(), anyLong(), anyLong(),
-                anyLong(), anyString(), any())).thenReturn(1);
+                anyLong(), anyLong(), anyString(), any())).thenReturn(1);
 
         service.openForOrder(order());
 
         verify(settlementRepository).openIfAbsent(any(), eq(ORDER_ID), eq(parcelA.getId()),
-                eq(MERCHANT_A), eq(4798L), eq(0L), eq(4798L), eq("USD"), any());
+                eq(MERCHANT_A), eq(4798L), eq(0L), eq(4798L), eq(0L), eq("USD"), any());
         verify(settlementRepository).openIfAbsent(any(), eq(ORDER_ID), eq(parcelB.getId()),
-                eq(MERCHANT_B), eq(2599L), eq(0L), eq(2599L), eq("USD"), any());
+                eq(MERCHANT_B), eq(2599L), eq(0L), eq(2599L), eq(0L), eq("USD"), any());
     }
 
     @Test
@@ -148,18 +151,40 @@ class SettlementServiceTest {
     void commissionComesOffTheTop() {
         service = new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService,
-                new MarketplaceMetrics(registry), GRACE_HOURS, DISPUTE_WINDOW_DAYS,
+                new MarketplaceMetrics(registry), eventPublisher, GRACE_HOURS, DISPUTE_WINDOW_DAYS,
                 STALE_AFTER_DAYS, 5.0);
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(item(MERCHANT_A, 1000)));
         when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
                 .thenReturn(List.of(parcel(MERCHANT_A, FulfilmentStatus.PREPARING, null)));
         when(settlementRepository.openIfAbsent(any(), any(), any(), any(), anyLong(), anyLong(),
-                anyLong(), anyString(), any())).thenReturn(1);
+                anyLong(), anyLong(), anyString(), any())).thenReturn(1);
 
         service.openForOrder(order());
 
         verify(settlementRepository).openIfAbsent(any(), any(), any(), any(),
-                eq(1000L), eq(50L), eq(950L), anyString(), any());
+                eq(1000L), eq(50L), eq(950L), anyLong(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("The seller's delivery fee rides their settlement; commission is on the goods only")
+    void deliveryFeeRidesTheSettlementCommissionFree() {
+        service = new SettlementService(settlementRepository, fulfilmentRepository,
+                itemRepository, eventRepository, auditService,
+                new MarketplaceMetrics(registry), eventPublisher, GRACE_HOURS, DISPUTE_WINDOW_DAYS,
+                STALE_AFTER_DAYS, 5.0);
+        OrderFulfilment delivered = parcel(MERCHANT_A, FulfilmentStatus.PREPARING, null);
+        delivered.setDeliveryFeeCents(300);
+        when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(item(MERCHANT_A, 1000)));
+        when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
+                .thenReturn(List.of(delivered));
+        when(settlementRepository.openIfAbsent(any(), any(), any(), any(), anyLong(), anyLong(),
+                anyLong(), anyLong(), anyString(), any())).thenReturn(1);
+
+        service.openForOrder(order());
+
+        // gross 1000 + 300 = 1300; commission 5% of the GOODS (50), not of 1300 (65).
+        verify(settlementRepository).openIfAbsent(any(), any(), any(), any(),
+                eq(1300L), eq(50L), eq(1250L), eq(300L), anyString(), any());
     }
 
     @Test
@@ -169,7 +194,7 @@ class SettlementServiceTest {
         when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
                 .thenReturn(List.of(parcel(MERCHANT_A, FulfilmentStatus.PREPARING, null)));
         when(settlementRepository.openIfAbsent(any(), any(), any(), any(), anyLong(), anyLong(),
-                anyLong(), anyString(), any())).thenReturn(0);
+                anyLong(), anyLong(), anyString(), any())).thenReturn(0);
 
         service.openForOrder(order());
 
@@ -202,7 +227,7 @@ class SettlementServiceTest {
         // was told the money had already gone.
         assertThatThrownBy(() -> new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService, new MarketplaceMetrics(registry),
-                48, 7, STALE_AFTER_DAYS, 0.0))
+                eventPublisher, 48, 7, STALE_AFTER_DAYS, 0.0))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("MARKETPLACE_SETTLEMENT_GRACE_HOURS to at least 168");
     }
@@ -413,6 +438,10 @@ class SettlementServiceTest {
         assertThat(out.getRefundReference()).isEqualTo("RFND-77");
         verify(auditService, times(1)).record(eq(AuditEventType.SETTLEMENT_REFUNDED),
                 eq(OPERATOR.uuid()), eq(s.getId().toString()), anyMap());
+        // The buyer is told the money has left — for the GROSS amount, which is
+        // what they paid for this parcel (goods + delivery), not the seller's net.
+        verify(eventPublisher).publishEvent(new RefundSent(ORDER_ID, s.getId(), 4798, "USD",
+                "RFND-77"));
     }
 
     @Test

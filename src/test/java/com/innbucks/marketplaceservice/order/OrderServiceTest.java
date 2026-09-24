@@ -31,6 +31,9 @@ import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
 import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.support.TestTowns;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTown;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -96,7 +99,9 @@ class OrderServiceTest {
 
     private MarketOrderRepository orderRepository;
     private MarketOrderItemRepository itemRepository;
+    private MarketOrderDeliveryFeeRepository deliveryFeeRepository;
     private ListingRepository listingRepository;
+    private ListingDeliveryTownRepository coverage;
     private OrderTransitionService transitions;
     private IdempotencyService idempotencyService;
     private AuditService auditService;
@@ -113,7 +118,9 @@ class OrderServiceTest {
     void setUp() {
         orderRepository = mock(MarketOrderRepository.class);
         itemRepository = mock(MarketOrderItemRepository.class);
+        deliveryFeeRepository = mock(MarketOrderDeliveryFeeRepository.class);
         listingRepository = mock(ListingRepository.class);
+        coverage = mock(ListingDeliveryTownRepository.class);
         transitions = mock(OrderTransitionService.class);
         idempotencyService = mock(IdempotencyService.class);
         auditService = mock(AuditService.class);
@@ -127,14 +134,16 @@ class OrderServiceTest {
         fulfilmentService = mock(FulfilmentService.class);
         addressService = mock(DeliveryAddressService.class);
         checkoutProperties = new CheckoutProperties();
-        CheckoutPricer pricer = new CheckoutPricer(listingRepository, "USD");
+        CheckoutPricer pricer = new CheckoutPricer(listingRepository, coverage,
+                TestTowns.zimbabwe(), "USD");
         CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
                 mock(BasketViewAssembler.class), cartService, addressService, "USD");
         settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         OrderViewAssembler views = new OrderViewAssembler(itemRepository, fulfilmentService,
                 mock(com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository.class),
                 mock(SellerService.class), checkoutService);
-        service = new OrderService(orderRepository, itemRepository, listingRepository,
+        service = new OrderService(orderRepository, itemRepository, deliveryFeeRepository,
+                listingRepository,
                 transitions, idempotencyService, auditService,
                 new MarketplaceMetrics(registry), objectMapper,
                 mock(org.springframework.context.ApplicationEventPublisher.class),
@@ -1010,10 +1019,14 @@ class OrderServiceTest {
 
         private final UUID listingId = new UUID(0, 1);
 
-        private void oneSellableListing() {
-            when(listingRepository.findAllById(any()))
-                    .thenReturn(List.of(listing(listingId, 1550, "Solar Lantern 20W")));
+        private Listing oneSellableListing() {
+            Listing listing = listing(listingId, 1550, "Solar Lantern 20W");
+            when(listingRepository.findAllById(any())).thenReturn(List.of(listing));
             when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(1);
+            // Delivered to Harare (the saved address's town) for USD 2.00.
+            when(coverage.findByListingIdIn(any()))
+                    .thenReturn(List.of(new ListingDeliveryTown(listingId, "harare", 200)));
+            return listing;
         }
 
         private DeliveryAddress savedAddress() {
@@ -1022,7 +1035,7 @@ class OrderServiceTest {
                     .id(UUID.randomUUID()).buyerUuid(BUYER_UUID).label("Home")
                     .recipientName("Tariro Moyo").recipientMsisdn("+263771234567")
                     .line1("14 Samora Machel Ave").line2("Flat 3B").city("Harare")
-                    .area("Avondale").landmark("Opposite the clinic")
+                    .townCode("harare").area("Avondale").landmark("Opposite the clinic")
                     .defaultAddress(true).createdAt(now).updatedAt(now).version(0L).build();
         }
 
@@ -1129,9 +1142,8 @@ class OrderServiceTest {
         }
 
         @Test
-        void aDeliveryOrderAddsTheCellsFeeToTheTotal() {
-            checkoutProperties.getDelivery().setFeeCents(200);
-            oneSellableListing();
+        void aDeliveryOrderAddsTheSellersTownFeeToTheTotal() {
+            Listing listing = oneSellableListing();
             when(addressService.requireForCheckout(any(), any())).thenReturn(savedAddress());
 
             OrderResponse response = service.createOrder(BUYER,
@@ -1142,6 +1154,62 @@ class OrderServiceTest {
             assertEquals(200, response.deliveryFeeCents());
             // total = subtotal + fee, which is what the payments service collects
             assertEquals(3300, response.totalCents());
+            // The town is snapshotted and the seller's fee fixed at order time:
+            // a reprice before payment must not change what the buyer owes.
+            assertEquals("harare", createdRow().getDeliveryTownCode());
+            ArgumentCaptor<List<MarketOrderDeliveryFee>> fees = ArgumentCaptor.forClass(List.class);
+            verify(deliveryFeeRepository).saveAll(fees.capture());
+            assertEquals(1, fees.getValue().size());
+            assertEquals(listing.getMerchantId(), fees.getValue().getFirst().getMerchantId());
+            assertEquals(200, fees.getValue().getFirst().getFeeCents());
+        }
+
+        @Test
+        void aCollectionOrderRecordsNoDeliveryFee() {
+            oneSellableListing();
+
+            service.createOrder(BUYER, req("0771234567", item(listingId, 1)), RAW_KEY);
+
+            verify(deliveryFeeRepository, never()).saveAll(any());
+            verifyNoInteractions(coverage);
+        }
+
+        @Test
+        void aDeliveryToATownTheSellerDoesNotCoverIsRefusedBeforeAnyStockIsTouched() {
+            oneSellableListing();
+            when(coverage.findByListingIdIn(any()))
+                    .thenReturn(List.of(new ListingDeliveryTown(listingId, "bulawayo", 900)));
+            when(addressService.requireForCheckout(any(), any())).thenReturn(savedAddress());
+
+            ApiException ex = assertThrows(ApiException.class, () -> service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", null, List.of(item(listingId, 1)),
+                            DeliveryMethod.DELIVERY, null, null), RAW_KEY));
+
+            assertEquals("not_delivered_to_town", ex.code());
+            assertEquals("Solar Lantern 20W is not delivered to Harare. Choose collection or "
+                    + "another address.", ex.getMessage());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+        }
+
+        @Test
+        void stockStillOutranksTownCoverageInTheHeadline() {
+            // Pre-V14 refusals stay byte-identical: a short line is still the
+            // 409 it always was, even when another line is not delivered here.
+            UUID shortId = new UUID(0, 2);
+            Listing covered = listing(listingId, 1550, "Solar Lantern 20W");
+            Listing scarce = listing(shortId, 450, "Phone Charger");
+            scarce.setStockQty(1);
+            when(listingRepository.findAllById(any())).thenReturn(List.of(covered, scarce));
+            when(coverage.findByListingIdIn(any()))
+                    .thenReturn(List.of(new ListingDeliveryTown(shortId, "harare", 200)));
+            when(addressService.requireForCheckout(any(), any())).thenReturn(savedAddress());
+
+            ApiException ex = assertThrows(ApiException.class, () -> service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", null,
+                            List.of(item(listingId, 1), item(shortId, 3)),
+                            DeliveryMethod.DELIVERY, null, null), RAW_KEY));
+
+            assertEquals("insufficient_stock", ex.code());
         }
 
         @Test

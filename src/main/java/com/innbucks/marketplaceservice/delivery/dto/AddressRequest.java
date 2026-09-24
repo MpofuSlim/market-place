@@ -38,8 +38,9 @@ public record AddressRequest(
         @Size(max = 160)
         String line2,
 
-        @Schema(example = "Harare")
-        @NotBlank
+        @Schema(description = "Town name. Optional when townCode is sent; otherwise it must "
+                + "match a town from GET /marketplace/delivery-towns (case ignored).",
+                example = "Harare", nullable = true)
         @Size(max = 80)
         String city,
 
@@ -56,5 +57,20 @@ public record AddressRequest(
                 + "demoted in the same transaction. The FIRST address a buyer saves becomes the "
                 + "default whatever this says — a book with one entry and no default helps nobody.",
                 example = "true", nullable = true)
-        Boolean makeDefault) {
+        Boolean makeDefault,
+
+        @Schema(description = "The town, as a code from GET /marketplace/delivery-towns. Preferred "
+                + "over city; one of the two must name a listed town (400 unknown_town otherwise), "
+                + "because a DELIVERY order is only accepted where the seller delivers.",
+                example = "harare", nullable = true)
+        @Size(max = 40)
+        String townCode) {
+
+    /** Pre-V14 shape: the town is matched from {@code city}. */
+    public AddressRequest(String label, String recipientName, String recipientMsisdn, String line1,
+                          String line2, String city, String area, String landmark,
+                          Boolean makeDefault) {
+        this(label, recipientName, recipientMsisdn, line1, line2, city, area, landmark,
+                makeDefault, null);
+    }
 }

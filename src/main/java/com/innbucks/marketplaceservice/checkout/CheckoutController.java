@@ -79,6 +79,9 @@ public class CheckoutController {
                 "totalQuantity": 2,
                 "subtotalCents": 4798,
                 "deliveryFeeCents": 200,
+                "deliveryFees": [
+                  { "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", "feeCents": 200 }
+                ],
                 "totalCents": 4998,
                 "currency": "USD",
                 "deliveryMethod": "DELIVERY",
@@ -91,6 +94,7 @@ public class CheckoutController {
                   "line1": "14 Samora Machel Ave",
                   "line2": "Flat 3B",
                   "city": "Harare",
+                  "townCode": "harare",
                   "area": "Avondale",
                   "landmark": "Opposite the clinic, blue gate",
                   "defaultAddress": true,
@@ -167,7 +171,7 @@ public class CheckoutController {
               "message": "Success",
               "data": {
                 "deliveryMethods": ["DELIVERY", "COLLECTION"],
-                "deliveryFeeCents": 200,
+                "deliveryFeeCents": 0,
                 "currency": "USD",
                 "paymentMethods": [
                   {
@@ -222,6 +226,12 @@ public class CheckoutController {
                     + "`checkoutReady: false` and every failing line in `rejections`, because the "
                     + "shopper needs to SEE the basket in order to fix it; only a malformed "
                     + "request or a missing address is an error.\n\n"
+                    + "**Delivery is per seller and per town.** Each listing names the towns its "
+                    + "seller delivers to and the fee for each. A DELIVERY quote needs every line "
+                    + "to deliver to the address's town — a line that does not comes back in "
+                    + "`rejections` as `NOT_DELIVERED_TO_TOWN`. Each seller ships one parcel, so "
+                    + "each seller charges ONE fee (their dearest line to that town), listed in "
+                    + "`deliveryFees`; `deliveryFeeCents` is their sum.\n\n"
                     + "The totals are what the order will produce for the same body, as long as "
                     + "nothing sells out in between. They are not a promise the order honours — "
                     + "the order recomputes from the listings itself, because a quote a client "
@@ -241,8 +251,15 @@ public class CheckoutController {
             @ApiResponse(responseCode = "403", description = "Not a CUSTOMER",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_FORBIDDEN_403))),
             @ApiResponse(responseCode = "422", description = "The cell does not offer that delivery "
-                    + "method",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_METHOD_422)))
+                    + "method, or the chosen address has no town (saved before towns existed, "
+                    + "with a city that matched none) — edit the address and pick its town",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Method not offered", value = EXAMPLE_METHOD_422),
+                            @ExampleObject(name = "Address has no town", value = """
+                                    {
+                                      "code": "address_town_required",
+                                      "message": "Choose the town for this address before using it for delivery"
+                                    }""")}))
     })
     public ResponseEntity<ApiResult<CheckoutQuoteResponse>> quote(
             @Valid @RequestBody CheckoutQuoteRequest request) {

@@ -3,6 +3,8 @@ package com.innbucks.marketplaceservice.order;
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelTrackingResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelTrackingService;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
 import com.innbucks.marketplaceservice.order.dto.OrderPageResponse;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
@@ -20,6 +22,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -64,6 +67,7 @@ public class OrderController {
     private final OrderService orderService;
     private final com.innbucks.marketplaceservice.settlement.DisputeService disputeService;
     private final com.innbucks.marketplaceservice.fulfilment.FulfilmentService fulfilmentService;
+    private final ParcelTrackingService trackingService;
 
     @PostMapping
     @PreAuthorize("hasRole('CUSTOMER')")
@@ -230,8 +234,9 @@ public class OrderController {
                             @ExampleObject(name = "Concurrent duplicate", value = """
                                     {"code":"request_in_flight","message":"A request with this Idempotency-Key is already in flight"}
                                     """)})),
-            @ApiResponse(responseCode = "422", description = "Listing unavailable, or the key was "
-                    + "reused with a different body. An unavailability refusal carries "
+            @ApiResponse(responseCode = "422", description = "Listing unavailable, a DELIVERY line "
+                    + "its seller does not deliver to the address's town, an address with no town, "
+                    + "or the key was reused with a different body. An unavailability refusal carries "
                     + "`data.rejections` — EVERY failing line, whatever the mix of reasons.",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "Listing unavailable (mixed reasons, all listed)", value = """
@@ -257,6 +262,26 @@ public class OrderController {
                                         ]
                                       }
                                     }
+                                    """),
+                            @ExampleObject(name = "A line not delivered to the address's town", value = """
+                                    {
+                                      "code": "not_delivered_to_town",
+                                      "message": "Solar Lantern 20W is not delivered to Mutare. Choose collection or another address.",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                            "reason": "NOT_DELIVERED_TO_TOWN",
+                                            "message": "Solar Lantern 20W is not delivered to Mutare",
+                                            "requestedQty": 1,
+                                            "unitPriceCents": 1550
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """),
+                            @ExampleObject(name = "Address has no town", value = """
+                                    {"code":"address_town_required","message":"Choose the town for this address before using it for delivery"}
                                     """),
                             @ExampleObject(name = "Key reused with different body", value = """
                                     {"code":"idempotency_key_reuse","message":"Idempotency-Key was already used with a different request body"}
@@ -667,6 +692,103 @@ public class OrderController {
             @PathVariable("fulfilmentId") String fulfilmentId) {
         return ResponseEntity.ok(ApiResult.ok("Thanks - receipt confirmed",
                 orderService.confirmReceived(CurrentUser.get(), parseOrderId(id),
+                        parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
+    }
+
+    @GetMapping("/{id}/fulfilments/{fulfilmentId}/tracking")
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @Operation(summary = "Track a parcel",
+            description = "The tracking screen for one parcel of your order. `trackingStatus` is "
+                    + "one of four stages:\n\n"
+                    + "- **RECEIVED** — paid; the seller is preparing it\n"
+                    + "- **DISPATCHED** — on the road (DELIVERY) or ready at the counter "
+                    + "(COLLECTION)\n"
+                    + "- **DELIVERED** — delivered or collected\n"
+                    + "- **CANCELLED** — the seller could not supply it, or a collection was never "
+                    + "picked up; `cancelledReason` says which in the seller's words, and the "
+                    + "money comes back to you (you are sent an SMS when the refund is made)\n\n"
+                    + "`timeline` lists every stage reached with its time. While a DELIVERY parcel "
+                    + "is DISPATCHED, `liveLocation` is the courier's last reported position — "
+                    + "show it on a map with its age (`recordedAt`), and poll this endpoint every "
+                    + "15-30 seconds while the map is open. It disappears once the parcel is "
+                    + "delivered or cancelled.\n\n"
+                    + "Someone else's order, or a parcel that is not on this order, is the same "
+                    + "404 as one that does not exist.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The parcel's tracking",
+                    content = @Content(mediaType = "application/json",
+                            examples = {
+                                    @ExampleObject(name = "On the road", value = """
+                                            {
+                                              "code": "OK",
+                                              "message": "Success",
+                                              "data": {
+                                                "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                                "orderId": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                                "orderRef": "MKT-4F9A1C22B7D3",
+                                                "trackingCode": "TRK-7F3K9Q2M4X",
+                                                "deliveryMethod": "DELIVERY",
+                                                "trackingStatus": "DISPATCHED",
+                                                "timeline": [
+                                                  { "status": "RECEIVED", "at": "2026-09-24T07:02:11Z" },
+                                                  { "status": "DISPATCHED", "at": "2026-09-24T09:20:00Z" }
+                                                ],
+                                                "destination": {
+                                                  "recipientName": "Tariro Moyo",
+                                                  "recipientMsisdn": "+263771234567",
+                                                  "line1": "14 Samora Machel Ave",
+                                                  "city": "Harare",
+                                                  "area": "Avondale"
+                                                },
+                                                "liveLocation": {
+                                                  "latitude": -17.82922,
+                                                  "longitude": 31.053961,
+                                                  "accuracyMeters": 12,
+                                                  "recordedAt": "2026-09-24T12:14:05Z"
+                                                }
+                                              }
+                                            }"""),
+                                    @ExampleObject(name = "Cancelled", value = """
+                                            {
+                                              "code": "OK",
+                                              "message": "Success",
+                                              "data": {
+                                                "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                                "orderId": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                                "orderRef": "MKT-4F9A1C22B7D3",
+                                                "trackingCode": "TRK-7F3K9Q2M4X",
+                                                "deliveryMethod": "DELIVERY",
+                                                "trackingStatus": "CANCELLED",
+                                                "timeline": [
+                                                  { "status": "RECEIVED", "at": "2026-09-24T07:02:11Z" },
+                                                  { "status": "CANCELLED", "at": "2026-09-24T08:15:00Z" }
+                                                ],
+                                                "cancelledReason": "Out of stock - the last one was damaged in storage"
+                                              }
+                                            }""")})),
+            @ApiResponse(responseCode = "400", description = "Malformed order or parcel id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"invalid_fulfilment_id","message":"Fulfilment id must be a UUID"}
+                                    """))),
+            @ApiResponse(responseCode = "404", description = "No such order owned by the caller, "
+                    + "or no such parcel on it",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"fulfilment_not_found","message":"Fulfilment not found"}
+                                    """)))
+    })
+    public ResponseEntity<ApiResult<ParcelTrackingResponse>> tracking(
+            @Parameter(description = "Order id (UUID)",
+                    example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
+            @PathVariable("id") String id,
+            @Parameter(description = "The parcel, from the order's `fulfilments`",
+                    example = "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31")
+            @PathVariable("fulfilmentId") String fulfilmentId) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResult.ok(trackingService.buyerTracking(CurrentUser.get(),
+                        parseOrderId(id),
                         parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
     }
 

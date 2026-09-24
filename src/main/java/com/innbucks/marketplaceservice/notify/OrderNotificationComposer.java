@@ -219,6 +219,31 @@ public final class OrderNotificationComposer {
                 + (disputeWindowDays == 1 ? " day" : " days") + ". Ref " + orderRef;
     }
 
+    /**
+     * Told to the BUYER when an operator records that their refund has been
+     * SENT, e.g. {@code "Your refund of USD 15.50 for InnBucks Marketplace order
+     * MKT-4F2A9C1B77D0 has been sent. Refund reference ECO-REV-88213. Ref
+     * MKT-4F2A9C1B77D0"}.
+     *
+     * <p>The follow-up to "a refund is being arranged": without it the buyer's
+     * last word from us about their money is a promise. The operator's
+     * reference is included because it is what the buyer quotes to their
+     * wallet provider if the money has not shown; it is operator free text, so
+     * only the fixed parts of this template are pinned to round-trip
+     * {@link SmsTextSanitizer}.
+     */
+    public static String refundSentMessage(String orderRef, long amountCents, String currency,
+                                           String refundReference) {
+        StringBuilder message = new StringBuilder("Your refund of ")
+                .append(money(amountCents, currency))
+                .append(" for InnBucks Marketplace order ").append(orderRef)
+                .append(" has been sent.");
+        if (refundReference != null && !refundReference.isBlank()) {
+            message.append(" Refund reference ").append(refundReference.trim()).append('.');
+        }
+        return message.append(" Ref ").append(orderRef).toString();
+    }
+
     /** Subject for the payout-destination change warning. */
     public static String payoutDestinationSubject() {
         return "Your InnBucks Marketplace payout details changed";

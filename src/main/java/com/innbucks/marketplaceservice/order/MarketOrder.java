@@ -135,6 +135,11 @@ public class MarketOrder {
     @Column(name = "delivery_area", length = 80)
     private String deliveryArea;
 
+    /** The destination town's code (V14 snapshot) — what delivery coverage and
+     *  fees were checked against. Null on COLLECTION and on pre-V14 orders. */
+    @Column(name = "delivery_town_code", length = 40)
+    private String deliveryTownCode;
+
     @Column(name = "delivery_landmark", length = 160)
     private String deliveryLandmark;
 
