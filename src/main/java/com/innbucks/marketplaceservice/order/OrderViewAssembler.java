@@ -1,11 +1,14 @@
 package com.innbucks.marketplaceservice.order;
 
 import com.innbucks.marketplaceservice.checkout.CheckoutService;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.settlement.SettlementDispute;
@@ -41,12 +44,14 @@ public class OrderViewAssembler {
     private final SettlementDisputeRepository disputeRepository;
     private final SellerService sellerService;
     private final CheckoutService checkoutService;
+    private final CollectionPointViews collectionPoints;
 
     /** Single-order assembly. */
     public OrderResponse toResponse(MarketOrder order) {
         List<MarketOrderItem> items = itemRepository.findByOrderId(order.getId());
         List<OrderFulfilment> parcels = fulfilmentService.forOrder(order.getId());
-        return build(order, items, parcels, sellerNames(parcels), disputes(parcels));
+        return build(order, items, parcels, sellerNames(parcels), disputes(parcels),
+                collectionPointsOf(List.of(order)).getOrDefault(order.getId(), Map.of()));
     }
 
     /**
@@ -54,7 +59,8 @@ public class OrderViewAssembler {
      * path, which has just written them and must not read them back.
      */
     public OrderResponse toResponse(MarketOrder order, List<MarketOrderItem> items) {
-        return build(order, items, List.of(), Map.of(), Map.of());
+        return build(order, items, List.of(), Map.of(), Map.of(),
+                collectionPointsOf(List.of(order)).getOrDefault(order.getId(), Map.of()));
     }
 
     /** Page assembly: three extra queries for the whole page, never per row. */
@@ -68,16 +74,28 @@ public class OrderViewAssembler {
                 .flatMap(List::stream).toList();
         Map<UUID, String> sellers = sellerNames(allParcels);
         Map<UUID, DisputeResponse> disputes = disputes(allParcels);
+        Map<UUID, Map<UUID, CollectionPointResponse>> points = collectionPointsOf(page.getContent());
         return page.map(order -> build(order,
                 itemsByOrder.getOrDefault(order.getId(), List.of()),
                 parcelsByOrder.getOrDefault(order.getId(), List.of()),
-                sellers, disputes));
+                sellers, disputes, points.getOrDefault(order.getId(), Map.of())));
+    }
+
+    /** ONE snapshot query (plus one for live hours) for every COLLECTION order
+     *  on the page; DELIVERY orders never ask. */
+    private Map<UUID, Map<UUID, CollectionPointResponse>> collectionPointsOf(List<MarketOrder> orders) {
+        List<UUID> collection = orders.stream()
+                .filter(o -> o.getDeliveryMethod() == DeliveryMethod.COLLECTION)
+                .map(MarketOrder::getId).toList();
+        return collectionPoints.snapshotsFor(collection);
     }
 
     private OrderResponse build(MarketOrder order, List<MarketOrderItem> items,
                                 List<OrderFulfilment> parcels, Map<UUID, String> sellerNames,
-                                Map<UUID, DisputeResponse> disputes) {
+                                Map<UUID, DisputeResponse> disputes,
+                                Map<UUID, CollectionPointResponse> pointBySeller) {
         List<OrderResponse.Line> lines = items.stream().map(OrderViewAssembler::toLine).toList();
+        boolean collection = order.getDeliveryMethod() == DeliveryMethod.COLLECTION;
         return new OrderResponse(
                 order.getId(),
                 order.getOrderRef(),
@@ -99,8 +117,12 @@ public class OrderViewAssembler {
                                 order.getTotalCents(), order.getCurrency(), order.getExpiresAt())
                         : null,
                 FulfilmentService.rollUp(parcels),
-                toParcels(parcels, items, sellerNames, disputes),
-                toRecipient(order));
+                toParcels(parcels, items, sellerNames, disputes, pointBySeller),
+                toRecipient(order),
+                collection
+                        ? CollectionPointViews.perSeller(items.stream()
+                                .map(MarketOrderItem::getMerchantId).toList(), pointBySeller)
+                        : null);
     }
 
     /** Present only when the order was bought for someone else — the block's
@@ -118,7 +140,8 @@ public class OrderViewAssembler {
     private static List<FulfilmentResponse> toParcels(List<OrderFulfilment> parcels,
                                                       List<MarketOrderItem> items,
                                                       Map<UUID, String> sellerNames,
-                                                      Map<UUID, DisputeResponse> disputes) {
+                                                      Map<UUID, DisputeResponse> disputes,
+                                                      Map<UUID, CollectionPointResponse> points) {
         List<FulfilmentResponse> out = new ArrayList<>(parcels.size());
         for (OrderFulfilment parcel : parcels) {
             out.add(new FulfilmentResponse(
@@ -142,7 +165,8 @@ public class OrderViewAssembler {
                     parcel.getUnfulfilledBy(),
                     parcel.getTrackingCode(),
                     TrackingStatus.of(parcel.getStatus()),
-                    parcel.getDeliveryFeeCents()));
+                    parcel.getDeliveryFeeCents(),
+                    points.get(parcel.getMerchantId())));
         }
         return out;
     }

@@ -37,5 +37,11 @@ public record CollectCodeResponse(
                 + "the order named one with a number, otherwise the buyer's. Absent when no "
                 + "message channel is configured on this cell.",
                 example = "****5678", nullable = true)
-        String sentTo) {
+        String sentTo,
+
+        @Schema(description = "Where to show it: the parcel's collection point, as copied when the "
+                + "order was placed, with its current opening hours. Absent when the seller had "
+                + "no collection point. On this screen only - the SMS carrying the code names no "
+                + "place.", nullable = true)
+        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse collectionPoint) {
 }

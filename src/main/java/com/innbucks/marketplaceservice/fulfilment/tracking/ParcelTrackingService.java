@@ -8,6 +8,7 @@ import com.innbucks.marketplaceservice.fulfilment.OrderFulfilmentRepository;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrder;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
@@ -61,6 +62,7 @@ public class ParcelTrackingService {
     private final MarketOrderItemRepository itemRepository;
     private final TrackingProperties properties;
     private final MarketplaceMetrics metrics;
+    private final CollectionPointViews collectionPoints;
 
     // ------------------------------------------------------------------
     // Courier side
@@ -197,7 +199,10 @@ public class ParcelTrackingService {
                 parcel.getStatus() == FulfilmentStatus.UNFULFILLED
                         ? parcel.getUnfulfilledReason() : null,
                 parcel.getStatus() == FulfilmentStatus.UNFULFILLED
-                        ? parcel.getUnfulfilledBy() : null);
+                        ? parcel.getUnfulfilledBy() : null,
+                order.getDeliveryMethod() == DeliveryMethod.COLLECTION
+                        ? collectionPoints.snapshotFor(order.getId(), parcel.getMerchantId())
+                        : null);
     }
 
     /** Every stage the parcel reached, oldest first, from the stamps the
@@ -224,9 +229,7 @@ public class ParcelTrackingService {
     // ------------------------------------------------------------------
 
     private boolean withinBounds(double latitude, double longitude) {
-        return latitude >= properties.getMinLatitude() && latitude <= properties.getMaxLatitude()
-                && longitude >= properties.getMinLongitude()
-                && longitude <= properties.getMaxLongitude();
+        return properties.contains(latitude, longitude);
     }
 
     /** Six decimal places is ~11 cm: finer than any phone's fix, and exactly

@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.catalog.dto;
 import com.innbucks.marketplaceservice.catalog.ItemCondition;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionTown;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
@@ -103,7 +104,12 @@ public record ListingResponse(
 
         @Schema(description = "Towns this listing delivers to, with the fee for each, in the "
                 + "town list's display order. Empty for collection only.")
-        List<DeliveryTownFeeResponse> deliveryTowns
+        List<DeliveryTownFeeResponse> deliveryTowns,
+
+        @Schema(description = "Towns where the seller has a collection point, in the town list's "
+                + "display order (V18). Empty when the seller has set none up - collection is "
+                + "then arranged with the seller directly.")
+        List<CollectionTown> collectionTowns
 ) {
 
     /**
@@ -134,6 +140,16 @@ public record ListingResponse(
     public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
                                        MarketplaceSeller seller, String resolvedName,
                                        List<DeliveryTownFeeResponse> deliveryTowns) {
+        return from(listing, images, categoryName, seller, resolvedName, deliveryTowns, List.of());
+    }
+
+    /** {@code collectionTowns} are the SELLER's collection towns (V18) — a
+     *  property of the seller, carried on each card so a buyer sees "collect in
+     *  Harare" without opening the profile. */
+    public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
+                                       MarketplaceSeller seller, String resolvedName,
+                                       List<DeliveryTownFeeResponse> deliveryTowns,
+                                       List<CollectionTown> collectionTowns) {
         boolean hasPrimary = images.stream().anyMatch(ImageMeta::isPrimaryImage);
         List<String> urls = images.stream()
                 .map(meta -> "/marketplace/catalog/" + listing.getId() + "/images/" + meta.getId())
@@ -164,7 +180,8 @@ public record ListingResponse(
                         ? SellerBadge.unknown(listing.getMerchantId(), resolvedName)
                         : SellerBadge.from(seller, resolvedName),
                 !deliveryTowns.isEmpty(),
-                List.copyOf(deliveryTowns));
+                List.copyOf(deliveryTowns),
+                collectionTowns == null ? List.of() : List.copyOf(collectionTowns));
     }
 
     /** One-decimal average from the denormalized V5 aggregates — zero extra

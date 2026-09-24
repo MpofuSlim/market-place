@@ -137,11 +137,14 @@ class OrderServiceTest {
         CheckoutPricer pricer = new CheckoutPricer(listingRepository, coverage,
                 TestTowns.zimbabwe(), "USD");
         CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
-                mock(BasketViewAssembler.class), cartService, addressService, "USD");
+                mock(BasketViewAssembler.class), cartService, addressService,
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), "USD");
         settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         OrderViewAssembler views = new OrderViewAssembler(itemRepository, fulfilmentService,
                 mock(com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository.class),
-                mock(SellerService.class), checkoutService);
+                mock(SellerService.class), checkoutService,
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
         service = new OrderService(orderRepository, itemRepository, deliveryFeeRepository,
                 listingRepository,
                 transitions, idempotencyService, auditService,
@@ -692,7 +695,7 @@ class OrderServiceTest {
                 Instant.now().plusSeconds(1800), Instant.now(), null,
                 List.of(new OrderResponse.Line(new UUID(0, 1), "Solar Lantern 20W",
                         1550, 2, 3100)),
-                null, null, List.of(), null);
+                null, null, List.of(), null, null);
         when(idempotencyService.claim(anyString(), anyString())).thenReturn(
                 new ClaimResult.Replay(201, objectMapper.writeValueAsString(stored)));
 

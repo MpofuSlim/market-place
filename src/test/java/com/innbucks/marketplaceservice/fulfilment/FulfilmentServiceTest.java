@@ -94,7 +94,8 @@ class FulfilmentServiceTest {
                 mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class),
                 mock(ParcelStockReturner.class),
                 eventPublisher, deliveryFees,
-                TestParcelViews.over(orderRepository, itemRepository, settlementService));
+                TestParcelViews.over(orderRepository, itemRepository, settlementService),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(

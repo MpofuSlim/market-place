@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.checkout.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.delivery.dto.AddressResponse;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
@@ -74,7 +75,13 @@ public record CheckoutQuoteResponse(
         @Schema(description = "DELIVERY only: each seller's delivery fee to the address's town. "
                 + "One parcel per seller, so a seller's fee is the highest of their items' fees to "
                 + "that town, not the sum. Empty for COLLECTION.")
-        List<SellerDeliveryFee> deliveryFees) {
+        List<SellerDeliveryFee> deliveryFees,
+
+        @Schema(description = "COLLECTION only: where each seller's goods would be collected — "
+                + "the point the buyer chose, else the seller's default. A seller with no "
+                + "collection point is listed without one: say \"arrange collection with the "
+                + "seller\". Absent for DELIVERY.", nullable = true)
+        List<SellerCollectionPoint> collectionPoints) {
 
     @Schema(description = "One seller's delivery fee on this checkout")
     public record SellerDeliveryFee(

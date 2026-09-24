@@ -1,6 +1,8 @@
 package com.innbucks.marketplaceservice.order.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointChoice;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -66,7 +68,26 @@ public record CreateOrderRequest(
                 + "order; they are a name the goods are handed to and a number we can message "
                 + "about it.", nullable = true)
         @Valid
-        Recipient recipient) {
+        Recipient recipient,
+
+        @Schema(description = "COLLECTION only: which of each seller's collection points to "
+                + "collect from. A seller you do not name is collected from their DEFAULT point; "
+                + "a seller with no points is arranged directly with them. The chosen point is "
+                + "SNAPSHOT onto the order, so the seller editing or removing it afterwards never "
+                + "moves your collection. Ignored for DELIVERY.", nullable = true)
+        // NON_NULL keeps the idempotency fingerprint of a body that does not use
+        // this field byte-identical to what it was before the field existed.
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        @Valid
+        @Size(max = 50)
+        List<CollectionPointChoice> collectionPoints) {
+
+    /** The shape before collection points existed. */
+    public CreateOrderRequest(String buyerMsisdn, Boolean fromCart, List<Item> items,
+                              DeliveryMethod deliveryMethod, UUID deliveryAddressId,
+                              Recipient recipient) {
+        this(buyerMsisdn, fromCart, items, deliveryMethod, deliveryAddressId, recipient, null);
+    }
 
     @Schema(description = "The person an order is bought for")
     public record Recipient(

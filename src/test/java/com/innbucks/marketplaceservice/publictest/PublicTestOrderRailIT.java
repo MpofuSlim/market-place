@@ -63,10 +63,12 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
     private String jwtSecret;
 
     private String merchantToken;
+    private UUID merchantId;
 
     @BeforeEach
     void mintMerchantToken() {
-        merchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        merchantId = UUID.randomUUID();
+        merchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), merchantId, jwtSecret);
     }
 
     @Test
@@ -112,6 +114,51 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
         mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/orders", "alice")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1));
+    }
+
+    @Test
+    @DisplayName("A token-less buyer quotes and orders against a chosen collection point (V18)")
+    void aPublicBuyerChoosesACollectionPoint() throws Exception {
+        String listingId = publishListing();
+        mockMvc.perform(post("/marketplace/sellers/me/collection-points")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Avondale shop","townCode":"harare","line1":"14 Samora Machel Ave"}"""))
+                .andExpect(status().isCreated());
+        String depot = JsonPath.read(mockMvc.perform(post("/marketplace/sellers/me/collection-points")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Bulawayo depot","townCode":"bulawayo","line1":"22 Fife St"}"""))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "$.data.id");
+        addToCart("alice", listingId, 1);
+        String choice = """
+                "collectionPoints":[{"merchantId":"%s","collectionPointId":"%s"}]"""
+                .formatted(merchantId, depot);
+
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/checkout/quote", "alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromCart\":true,\"deliveryMethod\":\"COLLECTION\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.collectionPoints[0].collectionPoint.name")
+                        .value("Avondale shop"));
+
+        String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "public-collection-point-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromCart\":true,\"buyerMsisdn\":\"0771234567\","
+                                + "\"deliveryMethod\":\"COLLECTION\"," + choice + "}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.collectionPoints[0].collectionPoint.id").value(depot))
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/orders/{o}", "alice", orderId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.collectionPoints[0].collectionPoint.line1")
+                        .value("22 Fife St"));
     }
 
     @Test

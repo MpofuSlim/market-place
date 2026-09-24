@@ -27,6 +27,7 @@ import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFee;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -78,6 +79,7 @@ public class FulfilmentService {
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final MarketOrderDeliveryFeeRepository deliveryFees;
     private final MerchantParcelViewAssembler parcelViews;
+    private final CollectionPointViews collectionPoints;
 
     /** The per-parcel online-guessing budget for a collection code. Field
      *  injection because {@code @RequiredArgsConstructor} covers final fields
@@ -530,7 +532,8 @@ public class FulfilmentService {
         String sentTo = collectCodeNotifier.send(destination, order.getOrderRef(), grouped);
         log.info("collect code minted parcel={} orderRef={} notified={}",
                 parcel.getId(), order.getOrderRef(), sentTo != null);
-        return new CollectCodeResponse(parcel.getId(), code, grouped, now, sentTo);
+        return new CollectCodeResponse(parcel.getId(), code, grouped, now, sentTo,
+                collectionPoints.snapshotFor(order.getId(), parcel.getMerchantId()));
     }
 
     /**

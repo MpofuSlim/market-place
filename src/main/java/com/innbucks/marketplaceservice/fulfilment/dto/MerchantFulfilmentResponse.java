@@ -166,5 +166,10 @@ public record MerchantFulfilmentResponse(
         @Schema(description = "The last message your action sent the buyer, and whether it "
                 + "actually went out. FAILED means the buyer was NOT told - tell them yourself.",
                 nullable = true)
-        BuyerNoticeView buyerNotice) {
+        BuyerNoticeView buyerNotice,
+
+        @Schema(description = "COLLECTION only: which of your collection points the buyer is "
+                + "coming to, as it was when they ordered. Absent when you had no point then — "
+                + "you arrange the handover with the buyer.", nullable = true)
+        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse collectionPoint) {
 }

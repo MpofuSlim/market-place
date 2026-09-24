@@ -7,6 +7,8 @@ import com.innbucks.marketplaceservice.fulfilment.notice.BuyerNoticeView;
 import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelLocation;
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import com.innbucks.marketplaceservice.order.MarketOrder;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
@@ -44,18 +46,21 @@ public class MerchantParcelViewAssembler {
     private final MarketOrderItemRepository itemRepository;
     private final MerchantSettlementRepository settlementRepository;
     private final SettlementDisputeRepository disputeRepository;
+    private final CollectionPointViews collectionPoints;
     private final int maxCollectAttempts;
 
     public MerchantParcelViewAssembler(MarketOrderRepository orderRepository,
                                        MarketOrderItemRepository itemRepository,
                                        MerchantSettlementRepository settlementRepository,
                                        SettlementDisputeRepository disputeRepository,
+                                       CollectionPointViews collectionPoints,
                                        @Value("${marketplace.fulfilment.collect-code-max-attempts}")
                                        int maxCollectAttempts) {
         this.orderRepository = orderRepository;
         this.itemRepository = itemRepository;
         this.settlementRepository = settlementRepository;
         this.disputeRepository = disputeRepository;
+        this.collectionPoints = collectionPoints;
         this.maxCollectAttempts = maxCollectAttempts;
     }
 
@@ -82,6 +87,12 @@ public class MerchantParcelViewAssembler {
         Map<UUID, SettlementDispute> disputes = disputeRepository.findByFulfilmentIdIn(parcelIds)
                 .stream()
                 .collect(Collectors.toMap(SettlementDispute::getFulfilmentId, Function.identity()));
+        // Where each COLLECTION parcel is being collected: one snapshot query
+        // for the page, never one per card.
+        Map<UUID, Map<UUID, CollectionPointResponse>> points = collectionPoints.snapshotsFor(
+                orders.values().stream()
+                        .filter(o -> o.getDeliveryMethod() == DeliveryMethod.COLLECTION)
+                        .map(MarketOrder::getId).toList());
 
         List<MerchantFulfilmentResponse> views = new ArrayList<>(parcels.size());
         for (OrderFulfilment parcel : parcels) {
@@ -92,7 +103,8 @@ public class MerchantParcelViewAssembler {
             }
             views.add(view(parcel, order,
                     itemsByOrder.getOrDefault(order.getId(), List.of()),
-                    settlements.get(parcel.getId()), disputes.get(parcel.getId())));
+                    settlements.get(parcel.getId()), disputes.get(parcel.getId()),
+                    points.getOrDefault(order.getId(), Map.of()).get(parcel.getMerchantId())));
         }
         return views;
     }
@@ -100,7 +112,8 @@ public class MerchantParcelViewAssembler {
     private MerchantFulfilmentResponse view(OrderFulfilment parcel, MarketOrder order,
                                             List<MarketOrderItem> orderItems,
                                             MerchantSettlement settlement,
-                                            SettlementDispute dispute) {
+                                            SettlementDispute dispute,
+                                            CollectionPointResponse collectionPoint) {
         // Only THIS seller's lines: a seller in a multi-seller order learns
         // nothing about what else the buyer bought.
         List<MarketOrderItem> mine = orderItems.stream()
@@ -150,7 +163,8 @@ public class MerchantParcelViewAssembler {
                 ParcelDisputeSummary.of(dispute),
                 codeLive ? parcel.getCollectCodeAttempts() >= maxCollectAttempts : null,
                 codeLive ? Math.max(0, maxCollectAttempts - parcel.getCollectCodeAttempts()) : null,
-                BuyerNoticeView.of(parcel));
+                BuyerNoticeView.of(parcel),
+                collectionPoint);
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {

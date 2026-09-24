@@ -74,6 +74,13 @@ public class CatalogController {
                     "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                     "imageUrls": [
                       "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                    ],
+                    "deliverable": true,
+                    "deliveryTowns": [
+                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                    ],
+                    "collectionTowns": [
+                      { "townCode": "harare", "townName": "Harare" }
                     ]
                   }
                 ],
@@ -109,6 +116,13 @@ public class CatalogController {
                 "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                 "imageUrls": [
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
+                ],
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
                 ]
               }
             }""";
@@ -158,8 +172,9 @@ public class CatalogController {
     private static final String EXAMPLE_UNKNOWN_PARAMETER_400 = """
             {
               "code": "unknown_parameter",
-              "message": "Unknown query parameter 'minPrice'. Supported parameters: category, city, \
-            condition, deliversTo, inStock, maxPriceCents, merchantId, minPriceCents, page, q, size, sort"
+              "message": "Unknown query parameter 'minPrice'. Supported parameters: availableIn, \
+            category, city, collectsIn, condition, deliversTo, inStock, maxPriceCents, merchantId, \
+            minPriceCents, page, q, size, sort"
             }""";
 
     /**
@@ -171,7 +186,8 @@ public class CatalogController {
      */
     static final Set<String> BROWSE_PARAMS = Set.of(
             "q", "category", "condition", "city", "merchantId",
-            "minPriceCents", "maxPriceCents", "inStock", "deliversTo", "sort", "page", "size");
+            "minPriceCents", "maxPriceCents", "inStock", "deliversTo", "collectsIn", "availableIn",
+            "sort", "page", "size");
 
     @Operation(summary = "Browse the catalog",
             description = "ACTIVE listings only. Optional filters, all combinable: case-insensitive "
@@ -183,7 +199,12 @@ public class CatalogController {
                     + "to hide listings sitting at zero stock; and deliversTo=<town code> (from "
                     + "GET /marketplace/delivery-towns) to show only listings whose seller delivers "
                     + "to that town — pass the shopper's default address town so they never add "
-                    + "something that fails at checkout. Ordering is `sort` — newest (default), "
+                    + "something that fails at checkout; collectsIn=<town code> for listings whose "
+                    + "seller has a collection point in that town; and availableIn=<town code> for "
+                    + "either (delivered there OR collectable there) — the one a 'near me' toggle "
+                    + "wants. The three town filters take codes from the town list and refuse an "
+                    + "unknown one; `city` is different — the seller's free-text city, matched "
+                    + "exactly. Ordering is `sort` — newest (default), "
                     + "price_asc or price_desc — each with a stable tiebreaker so paging never "
                     + "repeats or skips a row. Page size is clamped to 50 (never an error). "
                     + "**An unrecognised query parameter is refused with 400 `unknown_parameter`** "
@@ -196,8 +217,8 @@ public class CatalogController {
                             examples = @ExampleObject(name = "browse", value = EXAMPLE_BROWSE_200))),
             @ApiResponse(responseCode = "400", description = "condition outside the enum, an "
                     + "unrecognised sort, an inverted/negative price window, a malformed merchantId, "
-                    + "an unknown deliversTo town, or a query parameter this endpoint does not "
-                    + "support",
+                    + "an unknown deliversTo/collectsIn/availableIn town, or a query parameter this "
+                    + "endpoint does not support",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "invalid-condition",
                                     value = EXAMPLE_INVALID_CONDITION_400),
@@ -241,6 +262,13 @@ public class CatalogController {
                     + "(GET /marketplace/delivery-towns). Unknown code = 400 unknown_town.",
                     example = "bulawayo")
             @RequestParam(value = "deliversTo", required = false) String deliversTo,
+            @Parameter(description = "Only listings whose seller has a collection point in this "
+                    + "town code. Unknown code = 400 unknown_town.", example = "harare")
+            @RequestParam(value = "collectsIn", required = false) String collectsIn,
+            @Parameter(description = "Only listings the shopper can get in this town either way: "
+                    + "delivered there OR collectable there. Unknown code = 400 unknown_town.",
+                    example = "harare")
+            @RequestParam(value = "availableIn", required = false) String availableIn,
             @Parameter(description = "Ordering: newest (default), price_asc or price_desc",
                     example = "price_asc", schema = @Schema(implementation = ListingSort.class))
             @RequestParam(value = "sort", required = false) String sort,
@@ -256,7 +284,7 @@ public class CatalogController {
                 q, category, condition, city, parseMerchantId(merchantId),
                 longParam("minPriceCents", minPriceCents), longParam("maxPriceCents", maxPriceCents),
                 booleanParam("inStock", inStock), ListingSort.parse(sort),
-                intParam(page, 0), intParam(size, 20), deliversTo);
+                intParam(page, 0), intParam(size, 20), deliversTo, collectsIn, availableIn);
         return ApiResult.ok(catalogService.browse(query));
     }
 
@@ -276,7 +304,35 @@ public class CatalogController {
                   "completedOrders": 128,
                   "medianDispatchHours": 20,
                   "buyerConfirmedPercent": 96
-                }
+                },
+                "collectionPoints": [
+                  {
+                    "id": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e",
+                    "name": "Avondale shop",
+                    "townCode": "harare",
+                    "townName": "Harare",
+                    "line1": "14 Samora Machel Ave",
+                    "line2": "Shop 3, Avondale Shopping Centre",
+                    "area": "Avondale",
+                    "landmark": "Next to the pharmacy",
+                    "phone": "+263242123456",
+                    "hoursNote": "Closed on public holidays",
+                    "latitude": -17.798500,
+                    "longitude": 31.045200,
+                    "openingHours": [
+                      { "day": "MONDAY", "opens": "08:00", "closes": "17:00" },
+                      { "day": "TUESDAY", "opens": "08:00", "closes": "17:00" },
+                      { "day": "WEDNESDAY", "opens": "08:00", "closes": "17:00" },
+                      { "day": "THURSDAY", "opens": "08:00", "closes": "17:00" },
+                      { "day": "FRIDAY", "opens": "08:00", "closes": "17:00" },
+                      { "day": "SATURDAY", "opens": "08:00", "closes": "13:00" }
+                    ],
+                    "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
+                    "openNow": true,
+                    "defaultPoint": true,
+                    "updatedAt": "2026-09-24T08:10:22Z"
+                  }
+                ]
               }
             }""";
 
@@ -293,6 +349,9 @@ public class CatalogController {
                     + "**Never 404s:** an unknown merchant answers with a nameless, unverified "
                     + "profile and zeroes, so this endpoint is not an oracle for which merchant ids "
                     + "exist. A null ratingAvg means unrated — render it as such, never as 0. "
+                    + "collectionPoints lists where the seller's goods can be collected (default "
+                    + "first, with hours and openNow in this market's time) and is an empty list "
+                    + "when they have none. "
                     + "Logo, response time and return policy are deliberately absent: the platform "
                     + "stores none of them and will not invent them.")
     @SecurityRequirements({})

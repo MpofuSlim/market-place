@@ -106,9 +106,11 @@ public abstract class PostgresTestContainer {
         jdbc.execute("""
                 TRUNCATE TABLE settlement_dispute, merchant_settlement,
                                market_order_item, market_order_event, order_fulfilment,
-                               market_order_delivery_fee, market_order,
+                               market_order_delivery_fee, market_order_collection_point,
+                               market_order,
                                listing_image, listing_review, listing_favorite,
                                listing_report, listing_delivery_town, cart_item, listing,
+                               seller_collection_point_hours, seller_collection_point,
                                marketplace_seller, delivery_address,
                                idempotency_record, audit_events
                 RESTART IDENTITY""");

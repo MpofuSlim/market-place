@@ -86,7 +86,8 @@ class CollectCodeServiceTest {
                 mock(ParcelStockReturner.class),
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(MarketOrderDeliveryFeeRepository.class),
-                TestParcelViews.over(orderRepository, itemRepository, settlementService));
+                TestParcelViews.over(orderRepository, itemRepository, settlementService),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
         ReflectionTestUtils.setField(service, "maxCollectAttempts", MAX_ATTEMPTS);
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
