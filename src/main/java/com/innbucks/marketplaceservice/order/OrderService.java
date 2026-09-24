@@ -493,13 +493,13 @@ public class OrderService {
     @Transactional
     public OrderResponse confirmReceived(AuthenticatedUser buyer, UUID orderId, UUID fulfilmentId) {
         MarketOrder order = requireOwn(buyer, orderId);
-        OrderFulfilment parcel = fulfilmentService.confirmReceived(buyer, fulfilmentId);
-        if (!parcel.getOrderId().equals(order.getId())) {
-            // The parcel is the buyer's but belongs to a DIFFERENT order of
-            // theirs. Refused rather than quietly confirmed, because the app
-            // would then show the wrong order closing.
-            throw ApiException.notFound("fulfilment_not_found", "Fulfilment not found");
-        }
+        // Checked BEFORE anything moves (as cancelParcel does): a parcel that is
+        // the buyer's but on a DIFFERENT order of theirs is the same 404, or the
+        // app would show the wrong order closing. Checking after the close left
+        // a FULFILMENT_DELIVERED audit row behind — the audit commits in its own
+        // transaction and survived the rollback.
+        requireParcelOnOrder(order, fulfilmentId);
+        fulfilmentService.confirmReceived(buyer, fulfilmentId);
         return views.toResponse(order);
     }
 
@@ -516,13 +516,17 @@ public class OrderService {
         // Checked BEFORE anything moves: another order's parcel — even one of
         // the buyer's own — is the same 404, or the app would show the wrong
         // order changing.
+        requireParcelOnOrder(order, fulfilmentId);
+        fulfilmentService.cancelByBuyer(buyer, fulfilmentId, reason);
+        return views.toResponse(order);
+    }
+
+    private void requireParcelOnOrder(MarketOrder order, UUID fulfilmentId) {
         boolean onThisOrder = fulfilmentService.forOrder(order.getId()).stream()
                 .anyMatch(p -> p.getId().equals(fulfilmentId));
         if (!onThisOrder) {
             throw ApiException.notFound("fulfilment_not_found", "Fulfilment not found");
         }
-        fulfilmentService.cancelByBuyer(buyer, fulfilmentId, reason);
-        return views.toResponse(order);
     }
 
     @Transactional(readOnly = true)

@@ -97,7 +97,11 @@ public record OrderResponse(
                 + "copied when the order was placed; `openingHours` are the point's CURRENT "
                 + "hours. A seller with no collection point is listed without one: say "
                 + "\"arrange collection with the seller\". Absent for DELIVERY.", nullable = true)
-        List<SellerCollectionPoint> collectionPoints) {
+        List<SellerCollectionPoint> collectionPoints,
+
+        @Schema(description = "What you may do with the order as a whole right now, decided by "
+                + "the server (per-parcel actions are on each fulfilment).")
+        OrderActions actions) {
 
     @Schema(description = "The person this order was bought for")
     public record Recipient(

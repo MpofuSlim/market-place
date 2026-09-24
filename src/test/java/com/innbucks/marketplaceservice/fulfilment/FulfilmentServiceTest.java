@@ -95,7 +95,8 @@ class FulfilmentServiceTest {
                 mock(ParcelStockReturner.class),
                 eventPublisher, deliveryFees,
                 TestParcelViews.over(orderRepository, itemRepository, settlementService),
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
@@ -315,6 +316,26 @@ class FulfilmentServiceTest {
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("illegal_fulfilment_state");
         assertThat(p.getDeliveredAt()).isEqualTo(closedAt);
+        assertThat(outcome("illegal_transition")).isEqualTo(1.0);
+        verify(eventRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("A buyer's \"received\" on a parcel the seller already closed is refused AND "
+            + "counted - the race the illegal-transition counter exists to show")
+    void aRefusedBuyerConfirmationIsCounted() {
+        UUID id = UUID.randomUUID();
+        OrderFulfilment p = parcel(id, MERCHANT_A, FulfilmentStatus.DELIVERED);
+        p.setDeliveredBy(DeliveryConfirmer.MERCHANT);
+
+        assertThatThrownBy(() -> service.confirmReceived(BUYER, id))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    assertThat(((ApiException) ex).code()).isEqualTo("illegal_fulfilment_state");
+                    assertThat(ex.getMessage())
+                            .isEqualTo("This parcel is DELIVERED and cannot move to DELIVERED");
+                });
+        assertThat(p.getDeliveredBy()).isEqualTo(DeliveryConfirmer.MERCHANT);
         assertThat(outcome("illegal_transition")).isEqualTo(1.0);
         verify(eventRepository, never()).save(any());
     }

@@ -80,6 +80,7 @@ public class FulfilmentService {
     private final MarketOrderDeliveryFeeRepository deliveryFees;
     private final MerchantParcelViewAssembler parcelViews;
     private final CollectionPointViews collectionPoints;
+    private final BuyerParcelRules buyerRules;
 
     /** The per-parcel online-guessing budget for a collection code. Field
      *  injection because {@code @RequiredArgsConstructor} covers final fields
@@ -289,6 +290,16 @@ public class FulfilmentService {
         if (!order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
             throw notFound();
         }
+        // The rule the buyer's canConfirmReceipt flag is computed from — the
+        // same state-machine check transition() repeats below. A refusal here
+        // is still an illegal move, so it is counted and logged exactly as
+        // transition() would: a buyer's "received" losing a race to the
+        // seller's "delivered" is what that counter exists to show.
+        ApiException refused = buyerRules.confirmReceiptRefusal(parcel, order.getDeliveryMethod());
+        if (refused != null) {
+            countIllegal(parcel, parcel.getStatus(), FulfilmentStatus.DELIVERED);
+            throw refused;
+        }
         close(parcel, order, DeliveryConfirmer.BUYER, "Receipt confirmed by buyer", buyer);
         return parcel;
     }
@@ -396,24 +407,9 @@ public class FulfilmentService {
         if (!order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
             throw notFound();
         }
-        if (parcel.getStatus() != FulfilmentStatus.PREPARING) {
-            throw ApiException.conflict("parcel_not_cancellable", parcel.getStatus()
-                    == FulfilmentStatus.DISPATCHED
-                    ? "The seller has already sent this parcel - contact them, or open a dispute "
-                            + "if it does not arrive"
-                    : "This parcel is " + parcel.getStatus() + " and can no longer be cancelled");
-        }
+        // The rule the buyer's canCancel flag is computed from (BuyerParcelRules).
         MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
-        if (settlement != null && settlement.getStatus() == SettlementStatus.DISPUTED) {
-            throw ApiException.conflict("parcel_disputed",
-                    "This parcel is under dispute - our support team will settle it");
-        }
-        if (settlement == null || settlement.getStatus() != SettlementStatus.HELD) {
-            // No row is a pre-V10 parcel: nothing recorded to turn around, so
-            // cancelling would promise a refund the ledger cannot queue.
-            throw ApiException.conflict("parcel_not_cancellable",
-                    "This parcel can no longer be cancelled - contact support");
-        }
+        throwIfRefused(buyerRules.cancelRefusal(parcel, settlement));
         String reason = blankToNull(TextSanitizer.sanitize(rawReason));
         transition(parcel, order.getDeliveryMethod(), FulfilmentStatus.UNFULFILLED,
                 reason == null ? "Cancelled by buyer" : "Cancelled by buyer: " + reason, buyer,
@@ -507,11 +503,10 @@ public class FulfilmentService {
                 || !order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
             throw notFound();
         }
-        requireCollection(order);
-        if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
-            throw ApiException.conflict("illegal_fulfilment_state",
-                    "This parcel has already been handed over");
-        }
+        // The rule the buyer's canRequestCollectCode flag is computed from. It
+        // refuses an UNFULFILLED parcel too: a code for goods that are no
+        // longer coming would text the collector for nothing.
+        throwIfRefused(buyerRules.collectCodeRefusal(parcel, order.getDeliveryMethod()));
 
         String code = CollectCodes.mint();
         Instant now = Instant.now();
@@ -554,16 +549,24 @@ public class FulfilmentService {
         OrderFulfilment parcel = requireSellerScope(caller, fulfilmentId);
         MarketOrder order = requireOrder(parcel);
         requireCollection(order);
+        // The parcel's own state is checked FIRST — before whether a code
+        // exists, and before the compare. A closed parcel has nothing to hand
+        // over whatever the code situation, and telling the seller to "ask the
+        // buyer to generate one" there would send the buyer to a mint that
+        // refuses (collectCodeRefusal). Before the compare, too, so neither a
+        // correct code presented twice nor a wrong one spends budget.
+        if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
+            throw ApiException.conflict("illegal_fulfilment_state",
+                    "This parcel has already been handed over");
+        }
+        if (parcel.getStatus() == FulfilmentStatus.UNFULFILLED) {
+            throw ApiException.conflict("illegal_fulfilment_state",
+                    "This parcel was cancelled - do not hand it over");
+        }
         if (parcel.getCollectCodeHash() == null) {
             throw ApiException.conflict("collect_code_unavailable",
                     "No collection code has been issued for this parcel - ask the buyer to "
                             + "generate one in their app");
-        }
-        if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
-            // Checked before the compare so a correct code presented twice is
-            // not charged an attempt for the seller's double-tap.
-            throw ApiException.conflict("illegal_fulfilment_state",
-                    "This parcel has already been handed over");
         }
         if (parcel.getCollectCodeAttempts() >= maxCollectAttempts) {
             metrics.collectCodeOutcome("locked");
@@ -593,6 +596,19 @@ public class FulfilmentService {
                 caller, p -> p.setCollectCodeRedeemedAt(Instant.now()));
         metrics.collectCodeOutcome("redeemed");
         return toMerchantView(parcel);
+    }
+
+    private static void throwIfRefused(ApiException refusal) {
+        if (refusal != null) {
+            throw refusal;
+        }
+    }
+
+    /** A refused state move: counted and logged, never applied. */
+    private void countIllegal(OrderFulfilment parcel, FulfilmentStatus from, FulfilmentStatus to) {
+        metrics.fulfilmentOutcome("illegal_transition", 1);
+        log.warn("Illegal fulfilment transition refused id={} orderId={} {} -> {}",
+                parcel.getId(), parcel.getOrderId(), from, to);
     }
 
     /** A code only means anything where somebody physically collects. */
@@ -651,9 +667,7 @@ public class FulfilmentService {
                             java.util.function.Consumer<OrderFulfilment> mutation) {
         FulfilmentStatus from = parcel.getStatus();
         if (!FulfilmentStateMachine.isLegal(from, to, method)) {
-            metrics.fulfilmentOutcome("illegal_transition", 1);
-            log.warn("Illegal fulfilment transition refused id={} orderId={} {} -> {}",
-                    parcel.getId(), parcel.getOrderId(), from, to);
+            countIllegal(parcel, from, to);
             throw ApiException.conflict("illegal_fulfilment_state",
                     "This parcel is " + from + " and cannot move to " + to);
         }

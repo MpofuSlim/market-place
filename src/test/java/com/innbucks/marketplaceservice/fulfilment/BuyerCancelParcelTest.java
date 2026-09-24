@@ -81,7 +81,8 @@ class BuyerCancelParcelTest {
                 mock(CollectCodeNotifier.class), stockReturner, eventPublisher,
                 mock(MarketOrderDeliveryFeeRepository.class),
                 TestParcelViews.over(orderRepository, itemRepository, settlementService),
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         order(DeliveryMethod.DELIVERY);
     }

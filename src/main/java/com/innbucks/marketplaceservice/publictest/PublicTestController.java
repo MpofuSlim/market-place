@@ -561,7 +561,8 @@ public class PublicTestController {
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable) {
         AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_list");
-        return ResponseEntity.ok(ApiResult.ok(
+        // no-store, as the authenticated twin: the parcels' `actions` change with time.
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResult.ok(
                 OrderPageResponse.from(orderService.getMine(buyer, pageable))));
     }
 
@@ -577,7 +578,7 @@ public class PublicTestController {
     public ResponseEntity<ApiResult<OrderResponse>> myOrder(
             @PathVariable String handle, @PathVariable String orderId) {
         AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_read");
-        return ResponseEntity.ok(ApiResult.ok(
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResult.ok(
                 orderService.getOrder(buyer, parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"))));
     }
 

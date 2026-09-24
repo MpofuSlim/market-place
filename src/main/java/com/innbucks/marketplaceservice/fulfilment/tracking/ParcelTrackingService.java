@@ -2,17 +2,20 @@ package com.innbucks.marketplaceservice.fulfilment.tracking;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilmentRepository;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrder;
-import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository;
+import com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -63,6 +66,9 @@ public class ParcelTrackingService {
     private final TrackingProperties properties;
     private final MarketplaceMetrics metrics;
     private final CollectionPointViews collectionPoints;
+    private final MerchantSettlementRepository settlementRepository;
+    private final SettlementDisputeRepository disputeRepository;
+    private final BuyerParcelRules buyerRules;
 
     // ------------------------------------------------------------------
     // Courier side
@@ -186,6 +192,12 @@ public class ParcelTrackingService {
         }
         boolean inTransit = order.getDeliveryMethod() == DeliveryMethod.DELIVERY
                 && parcel.getStatus() == FulfilmentStatus.DISPATCHED;
+        // The same actions and deadlines the order view shows, from the SAME
+        // rules the buyer endpoints enforce (BuyerParcelRules).
+        BuyerParcelRules.BuyerParcelState state = buyerRules.stateOf(order.getStatus(),
+                order.getDeliveryMethod(), parcel,
+                settlementRepository.findByFulfilmentId(parcel.getId()).orElse(null),
+                disputeRepository.findByFulfilmentId(parcel.getId()).isPresent(), Instant.now());
         return new ParcelTrackingResponse(
                 parcel.getId(),
                 order.getId(),
@@ -194,7 +206,8 @@ public class ParcelTrackingService {
                 order.getDeliveryMethod(),
                 TrackingStatus.of(parcel.getStatus()),
                 timeline(parcel),
-                FulfilmentDestination.from(order),
+                // The buyer's copy names the address-book entry it came from.
+                FulfilmentDestination.forBuyer(order),
                 inTransit ? ParcelLocation.of(parcel) : null,
                 parcel.getStatus() == FulfilmentStatus.UNFULFILLED
                         ? parcel.getUnfulfilledReason() : null,
@@ -202,7 +215,13 @@ public class ParcelTrackingService {
                         ? parcel.getUnfulfilledBy() : null,
                 order.getDeliveryMethod() == DeliveryMethod.COLLECTION
                         ? collectionPoints.snapshotFor(order.getId(), parcel.getMerchantId())
-                        : null);
+                        : null,
+                state.actions(),
+                state.receivedAt(),
+                state.closedAt(),
+                state.closedBy(),
+                state.disputableUntil(),
+                state.paymentReleasesAt());
     }
 
     /** Every stage the parcel reached, oldest first, from the stamps the

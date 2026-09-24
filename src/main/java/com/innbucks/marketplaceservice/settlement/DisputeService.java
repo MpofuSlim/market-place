@@ -4,17 +4,16 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
+import com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilmentRepository;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrder;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
-import com.innbucks.marketplaceservice.order.OrderStatus;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
 import com.innbucks.marketplaceservice.settlement.dto.ResolveDisputeRequest;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -22,7 +21,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -63,7 +61,7 @@ public class DisputeService {
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
     private final ApplicationEventPublisher eventPublisher;
-    private final Duration disputeWindow;
+    private final BuyerParcelRules buyerRules;
 
     public DisputeService(SettlementDisputeRepository disputeRepository,
                           MerchantSettlementRepository settlementRepository,
@@ -73,7 +71,7 @@ public class DisputeService {
                           AuditService auditService,
                           MarketplaceMetrics metrics,
                           ApplicationEventPublisher eventPublisher,
-                          @Value("${marketplace.settlement.dispute-window-days}") long disputeWindowDays) {
+                          BuyerParcelRules buyerRules) {
         this.disputeRepository = disputeRepository;
         this.settlementRepository = settlementRepository;
         this.fulfilmentRepository = fulfilmentRepository;
@@ -82,7 +80,7 @@ public class DisputeService {
         this.auditService = auditService;
         this.metrics = metrics;
         this.eventPublisher = eventPublisher;
-        this.disputeWindow = Duration.ofDays(disputeWindowDays);
+        this.buyerRules = buyerRules;
     }
 
     // ------------------------------------------------------------------
@@ -104,18 +102,16 @@ public class DisputeService {
                 .filter(p -> p.getOrderId().equals(order.getId()))
                 .orElseThrow(() -> ApiException.notFound("fulfilment_not_found",
                         "Fulfilment not found"));
-        if (order.getStatus() != OrderStatus.PAID) {
-            // An unpaid order has no money to argue over; cancel/expiry is its path.
-            throw ApiException.conflict("order_not_paid", "Only a paid order can be disputed");
-        }
+        // The rule the buyer's canDispute flag is computed from (BuyerParcelRules):
+        // paid order, a settlement to freeze, money still arguable, inside the
+        // window, never disputed before — refused in that order.
         MerchantSettlement settlement = settlementRepository.findByFulfilmentId(parcel.getId())
-                .orElseThrow(() -> ApiException.conflict("settlement_missing",
-                        "No settlement is recorded for this parcel yet - please contact support"));
-        requireWithinWindow(parcel, settlement);
-        if (disputeRepository.findByFulfilmentId(parcel.getId()).isPresent()) {
-            // One dispute per parcel, EVER — see SettlementDispute.
-            throw ApiException.conflict("dispute_already_raised",
-                    "This parcel has already been disputed");
+                .orElse(null);
+        boolean alreadyDisputed = disputeRepository.findByFulfilmentId(parcel.getId()).isPresent();
+        ApiException refusal = buyerRules.disputeRefusal(order.getStatus(), parcel, settlement,
+                alreadyDisputed, Instant.now());
+        if (refusal != null) {
+            throw refusal;
         }
 
         settlementService.freeze(settlement, reason);
@@ -149,37 +145,6 @@ public class DisputeService {
         log.info("dispute opened id={} orderRef={} parcel={} reason={}",
                 dispute.getId(), order.getOrderRef(), parcel.getId(), reason);
         return DisputeResponse.from(dispute, settlement);
-    }
-
-    /**
-     * The window: undelivered = disputable while money can still be stopped;
-     * delivered = {@code disputeWindow} from the delivery stamp. Terminal
-     * settlements refuse with codes that say WHICH way it already went.
-     */
-    private void requireWithinWindow(OrderFulfilment parcel, MerchantSettlement settlement) {
-        switch (settlement.getStatus()) {
-            case PAID_OUT -> throw ApiException.conflict("settlement_already_paid_out",
-                    "The seller has already been paid for this parcel - please contact support");
-            case REFUNDED -> throw ApiException.conflict("settlement_already_refunded",
-                    "This parcel has already been refunded");
-            case DISPUTED -> throw ApiException.conflict("dispute_already_raised",
-                    "This parcel has already been disputed");
-            // V12: the seller already declared they cannot supply this and the
-            // money is queued to come back. Without this case the open would
-            // reach freeze(), where REFUND_DUE -> DISPUTED is illegal, and the
-            // buyer would be told their settlement was in a bad state instead
-            // of being told they are already getting a refund.
-            case REFUND_DUE -> throw ApiException.conflict("refund_already_due",
-                    "The seller could not supply this parcel - your refund is already being "
-                            + "arranged");
-            default -> { /* HELD / RELEASABLE — arguable */ }
-        }
-        Instant deliveredAt = parcel.getDeliveredAt();
-        if (deliveredAt != null && deliveredAt.plus(disputeWindow).isBefore(Instant.now())) {
-            throw ApiException.conflict("dispute_window_closed",
-                    "This parcel was delivered more than "
-                            + disputeWindow.toDays() + " days ago and can no longer be disputed");
-        }
     }
 
     // ------------------------------------------------------------------

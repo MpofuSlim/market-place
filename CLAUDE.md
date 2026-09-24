@@ -1031,6 +1031,77 @@ never change either casually.
     `UserNotifyGatewayContractTest`, `BuyerNoticeTest`, and end to end by
     `SellerAlertsAndBuyerCancelIT` (shares `NotificationFlowIT`'s mocked
     channels, which now include `MerchantAdminResolver`).
+* **The buyer's parcel ACTIONS are computed from the endpoints' own rules
+  (`fulfilment/BuyerParcelRules`).** The app used to decide which buttons to
+  show from a parcel's stage and delivery method — re-deriving rules this
+  service owns, correct only until one of them changed here. Now every
+  buyer-facing parcel (each order's `fulfilments[]` and the tracking view)
+  carries `actions: {canConfirmReceipt, canRequestCollectCode, canCancel,
+  canDispute}`, and the order carries `actions.canCancel`.
+  * **One rule, two readers.** Each `BuyerParcelRules` method returns the
+    refusal the endpoint throws (or null when allowed): `confirmReceiptRefusal`
+    (the state machine's own check), `collectCodeRefusal`, `cancelRefusal`,
+    `disputeRefusal`. The endpoints (`FulfilmentService.confirmReceived` /
+    `cancelByBuyer` / `mintCollectCode`, `DisputeService.open`) throw exactly
+    that; `stateOf` sets each flag to "that refusal is null". So a flag cannot
+    disagree with the endpoint it advertises, and moving the rules here
+    changed no response byte (the existing refusal tests pinned it). The
+    order-level `canCancel` reads `OrderStateMachine` — the cancel endpoint's
+    own rule. **Do not compute a flag any other way.** `BuyerParcelRulesTest`
+    walks the whole matrix (parcel state × method × money state × dispute ×
+    delivery time × order status) and fails if any flag differs from its rule.
+  * **Batch, never per parcel**: `OrderViewAssembler` loads the page's
+    settlements with ONE `findByFulfilmentIdIn` (disputes were already one
+    query), because `canCancel` and `canDispute` read the money state.
+  * **Flags are advance notice, not a guarantee** — the seller can act between
+    read and tap, and the endpoint still answers its usual 409. The actions
+    that return the whole order (receipt, parcel cancel, order cancel) re-render
+    fresh flags; after a dispute or a collect code the app re-reads the order.
+    Buyer order reads (and their public mirrors) are `Cache-Control: no-store`,
+    because `canDispute` changes with time. On a SUPER_ADMIN read the flags
+    still describe the order's BUYER. An idempotent replay returns the stored
+    creation response, flags frozen as they were then.
+  * **Beside the flags, the buyer view now says how a parcel ended and what the
+    money will do**, all derived, nothing stored: `closedAt` / `closedBy`
+    (`ParcelCloseMethod`, the seller card's vocabulary — present means
+    finished), `receivedAt` (= `deliveredAt` when the BUYER confirmed or the
+    RECIPIENT's code was redeemed; absent for a seller's own "delivered", which
+    is their word and still disputable), `disputableUntil` (deliveredAt + the
+    dispute window, only while `canDispute` — an UPPER bound: once the buyer
+    confirms, the money can be paid out sooner and a paid-out parcel cannot be
+    disputed) and `paymentReleasesAt` (the HELD settlement's `releasable_at` —
+    the same rule as the seller card's `settlementClearsAt`; the grace is only
+    guaranteed to be at least the window, so it can be later than
+    `disputableUntil`, never earlier).
+  * **Endpoint fixes that had to ship with the flags, or the flags would lie**:
+    minting a collection code for an UNFULFILLED parcel is refused (it sent the
+    collector an SMS for goods that were no longer theirs); a seller presenting
+    a code for an UNFULFILLED parcel is refused BEFORE the compare (a wrong code
+    used to spend budget first); and `OrderService.confirmReceived` checks the
+    parcel is on the order BEFORE closing it (a wrong-order 404 used to leave a
+    FULFILMENT_DELIVERED audit row behind, since the audit commits in its own
+    transaction). The seller's "mark delivered" Swagger no longer promises that
+    a buyer's later confirmation releases the money early — DELIVERED is
+    terminal, so it cannot.
+  * **Deliberately unchanged** (flagged to the owner, not decided here):
+    `canConfirmReceipt` is true from PREPARING, because the endpoint allows a
+    buyer to confirm a parcel the seller never dispatched (a handover in
+    person) — and that releases the money at once. A buyer's confirmation
+    after a seller's own close is still refused.
+  * **`addressId` on the buyer's destination**: `FulfilmentDestination.forBuyer`
+    adds `market_order.delivery_address_id` (provenance only — the book entry
+    may since be edited or deleted) on the buyer's order and tracking views;
+    `from()` — the seller card and the courier run — never carries it, so a
+    seller cannot correlate one buyer's orders by address entry. The quote's
+    `deliveryAddress` already had `id` (it is the live `AddressResponse`).
+  * Pinned by `BuyerParcelRulesTest` (matrix + parity + the window boundary),
+    the UNFULFILLED cases in `CollectCodeServiceTest`, the wrong-order case in
+    `OrderServiceTest`, and end to end by `ParcelActionsFlowIT` (at each step
+    of a collection handover, a seller-closed delivery past its window, a
+    dispute, a buyer cancel and an unpaid order, the flags match what the
+    endpoints then accept or refuse; `addressId` is on the buyer's copies and
+    absent from the seller's and the courier's) plus the paid public-order case
+    in `PublicTestOrderRailIT`.
 * **A seller says WHERE buyers collect (V18): collection points.** Before V18
   a COLLECTION order meant "arrange it with the seller": no address, no hours,
   and nothing on the order to say which counter. Now a seller keeps up to

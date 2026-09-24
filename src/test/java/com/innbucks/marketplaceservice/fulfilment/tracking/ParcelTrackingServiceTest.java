@@ -75,7 +75,10 @@ class ParcelTrackingServiceTest {
         registry = new SimpleMeterRegistry();
         service = new ParcelTrackingService(fulfilmentRepository, orderRepository, itemRepository,
                 new TrackingProperties(), new MarketplaceMetrics(registry),
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                mock(com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.class),
+                mock(com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository.class),
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
     }
 
     private MarketOrder order(DeliveryMethod method) {

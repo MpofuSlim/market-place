@@ -57,7 +57,49 @@ public record ParcelTrackingResponse(
                 + "placed, with the point's current opening hours (`openNow` in local time). "
                 + "Absent when the seller had no collection point — arrange it with them.",
                 nullable = true)
-        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse collectionPoint) {
+        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse collectionPoint,
+
+        @Schema(description = "What the order's buyer may do with this parcel right now, decided "
+                + "by the server's own rules - show exactly these actions. (On an operator's read "
+                + "of the order they still describe the buyer.)")
+        com.innbucks.marketplaceservice.fulfilment.dto.ParcelActions actions,
+
+        @Schema(description = "When the goods reached the buyer's side on evidence: your own "
+                + "\"I have received it\", or the collection code redeemed at the counter. Absent "
+                + "while the parcel is open, and absent when the SELLER marked it delivered - that "
+                + "is their word, which you can still dispute (see `disputableUntil`).",
+                example = "2026-09-16T15:40:00Z", nullable = true)
+        Instant receivedAt,
+
+        @Schema(description = "When the parcel finished, whichever way (delivered, collected or "
+                + "cancelled). Absent while it is still open - present means finished.",
+                example = "2026-09-16T15:40:00Z", nullable = true)
+        Instant closedAt,
+
+        @Schema(description = "How it finished: BUYER_CONFIRMED (you confirmed receipt), "
+                + "COLLECTION_CODE (your code was redeemed at the counter), SELLER_MARKED (the "
+                + "seller marked a delivery delivered), NOT_COLLECTED, CANNOT_SUPPLY (the seller "
+                + "declined it), BUYER_CANCELLED. Absent while open.",
+                example = "COLLECTION_CODE", nullable = true)
+        com.innbucks.marketplaceservice.fulfilment.ParcelCloseMethod closedBy,
+
+        @Schema(description = "The last moment to report a problem with a DELIVERED parcel (the "
+                + "delivery time plus this market's dispute window) - AT THE LATEST: once you "
+                + "confirm receipt the seller can be paid sooner, and a paid-out parcel can no "
+                + "longer be disputed, so always read `actions.canDispute`. Present only while "
+                + "that flag is true and the parcel has been delivered; an undelivered parcel can "
+                + "be disputed with no deadline.",
+                example = "2026-09-23T15:40:00Z", nullable = true)
+        Instant disputableUntil,
+
+        @Schema(description = "When your payment is released to the seller automatically, unless "
+                + "you report a problem first. The clock runs only after the seller marked a "
+                + "delivery delivered, and never ends before `disputableUntil`. Absent when there "
+                + "is no clock: the parcel is not delivered yet, your own confirmation or a "
+                + "collection code already released it, or the money is disputed or being "
+                + "refunded.",
+                example = "2026-09-23T15:40:00Z", nullable = true)
+        Instant paymentReleasesAt) {
 
     @Schema(description = "A stage the parcel reached, and when")
     public record Stage(
