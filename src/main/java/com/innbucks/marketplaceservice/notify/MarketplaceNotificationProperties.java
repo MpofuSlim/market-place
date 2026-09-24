@@ -36,10 +36,9 @@ public class MarketplaceNotificationProperties {
         /**
          * Notify each merchant's admin users when an order containing their
          * listings is PAID. ON by default since
-         * {@link UserServiceMerchantAdminResolver} landed — user-service now
-         * serves {@code GET /users/internal/merchants/{id}/admins}, which it
-         * answers by chaining through loyalty's {@code merchants.admin_email}
-         * (a MERCHANT_ADMIN's user row does not name their merchant).
+         * {@link UserServiceMerchantAdminResolver} landed. The recipients are
+         * the OWNERs and ADMINs of the selling organization, from user-service's
+         * {@code GET /users/internal/organizations/{id}/admins}.
          *
          * <p>Safe to have on against a cell whose user-service is older than
          * that endpoint: the lookup 404s, resolves nobody, and the notifier

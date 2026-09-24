@@ -38,10 +38,11 @@ never change either casually.
 * **Identity** — user-service mints the fleet JWTs; this service only
   VERIFIES them (HS256 shared secret + RS256 dual-verify selected by the
   token's own `alg` header when `JWT_PUBLIC_KEY` is set). Roles used here:
-  `CUSTOMER` (buyers), `MERCHANT_ADMIN` (sellers, scoped by the JWT's
-  `merchantId` claim), and `SUPER_ADMIN` (fleet oversight: manages ANY
+  `CUSTOMER` (buyers), `MERCHANT_ADMIN` (sellers — **derived here from the
+  ORGANIZATION claims, never taken from the roles claim**; see "A seller is an
+  ORGANIZATION" below), and `SUPER_ADMIN` (fleet oversight: manages ANY
   merchant's listings — update/status/image upload+delete, no ownership
-  check, no `merchantId` claim needed — reads ALL listings via
+  check, no seller scope needed — reads ALL listings via
   `GET /marketplace/listings/mine` (optional `?merchantId=` filter) and ALL
   orders via `GET /marketplace/orders` (optional `?buyerUuid=`) plus any
   single order by id; **cannot place or cancel orders** — those stay
@@ -49,11 +50,12 @@ never change either casually.
   MERCHANT_ADMIN-only — an explicit owner decision (2026-08-05); do not
   re-add SHOP_ADMIN without the owner asking.** Merchant scope comes from
   the JWT, NEVER from a request body — with ONE deliberate, owner-approved
-  exception: SUPER_ADMIN creates listings ON BEHALF of a merchant via the
-  optional `merchantId` field on the create request (400
-  `merchant_id_required` if omitted, since admin tokens carry no merchant
-  claim). For MERCHANT_ADMIN callers that field is refused whenever it
-  differs from their claim (422 `merchant_scope_mismatch`), so the invariant
+  exception: SUPER_ADMIN creates listings ON BEHALF of a seller via the
+  optional `merchantId` field on the create request — the seller
+  ORGANIZATION's id, picked from user-service's `GET /admin/organizations`
+  (400 `merchant_id_required` if omitted, since admin tokens carry no seller
+  scope). For MERCHANT_ADMIN callers that field is refused whenever it
+  differs from their scope (422 `merchant_scope_mismatch`), so the invariant
   stays intact for merchants. The principal uuid prefers the `userUuid`
   claim (fleet tokens carry the login identifier, not the uuid, in `sub`).
 * **Payments** — there is NO InnBucks Merchant API client in this repo. The
@@ -70,6 +72,35 @@ never change either casually.
   module.
 
 ## Security invariants (do not weaken without a called-out reason)
+
+* **A seller is an ORGANIZATION (step 2 of the fleet organizations plan).**
+  user-service no longer mints a `merchantId` claim for merchant admins (it
+  was resolved from loyalty's `merchants.admin_email`: one person per
+  merchant, none at all for someone running two businesses). `JwtFilter`
+  now derives seller authority from the organization claims user-service V39
+  mints: the session's `orgId`, when `orgRole` is OWNER or ADMIN and
+  `products` holds `marketplace` (`sellingOrganizationOf`). That org id IS the
+  seller scope — `AuthenticatedUser.merchantId` — and `MERCHANT_ADMIN` is
+  added or dropped to match (`sellerRoles`).
+  * **The role alone grants nothing.** A bare `MERCHANT_ADMIN`, a legacy
+    `merchantId` claim, STAFF, a loyalty-only business, or a session that
+    has not chosen among several organizations is refused at
+    `@PreAuthorize` (403 `FORBIDDEN`) before any handler runs. Conversely an
+    ADMIN colleague added through `/organizations` with no staff role at all
+    IS a seller. Pinned by `JwtFilterSellerScopeTest` and the organization
+    cases in `SecuritySurfaceIT`.
+  * **The API name `merchantId` was kept on purpose** — every seller column,
+    DTO field and query parameter uses it, and renaming would be a breaking
+    change for no behavioural gain. Its VALUE is now an organization id.
+    `shopId` on a verified principal is always null (a loyalty shop id means
+    nothing beside an organization).
+  * **Existing rows were minted with loyalty merchant ids**, so a cell
+    switching over needs its seller columns remapped (or reset) in the same
+    deploy — see `docs/fleet-wiring.md`. Nothing here can do it: this service
+    never knew which organization owned a loyalty merchant.
+  * `merchant_scope_missing` stays as defence in depth for a principal built
+    without a scope; through the real filter it is now unreachable, because
+    no scope means no `MERCHANT_ADMIN`.
 
 * **Fail-closed secrets guard** (`config/ProductionSecretsGuard`):
   "deployment" = an active-profile set with NO `dev`/`test`/`it`/`local`
@@ -688,9 +719,10 @@ never change either casually.
   * **V13 backfills nothing** — no destination was ever collected, so every
     existing seller correctly has none.
 
-* **A seller's NAME comes from loyalty when nobody here has set one.** This
-  service stores merchant IDS and no merchant NAMES — `Listing.merchantId` and
-  `MarketOrderItem.merchantId` are loyalty ids copied off a JWT claim — and
+* **A seller's NAME comes from the organization registry (user-service) when
+  nobody here has set one.** This service stores seller IDS and no NAMES —
+  `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling
+  ORGANIZATION's id, taken from the seller's JWT — and
   `display_name` is written by exactly ONE path: `approve(...)` with an
   optional `displayName`. So until an operator approved a seller *with a name
   typed in*, the admin queue rendered "Unnamed merchant", the finance payout
@@ -711,35 +743,36 @@ never change either casually.
     seller never leaves the box. That scoping is also what keeps the resolver
     off the catalogue's critical path as sellers get approved: the ask shrinks.
   * **Never mutate the entity with a resolved name.** These are JPA entities;
-    writing loyalty's value onto `MarketplaceSeller.displayName` inside an open
+    writing the registry's value onto `MarketplaceSeller.displayName` inside an open
     transaction would let dirty-checking PERSIST it, silently turning our
     column into a stale copy of the registry and defeating operator-wins. The
     resolved name is passed to the DTO factories (`SellerResponse.from(s, name)`,
     `SellerBadge.from(seller, name)`) and never written back.
   * **Best-effort, and it must be**: nothing here DECIDES on a name — ownership
     comes from our own `merchant_id` columns, money from the settlement ledger,
-    authorization from the JWT. A 401, a 404 (a loyalty too old to serve the
-    endpoint), a 5xx, a timeout and a blank `INTERNAL_API_TOKEN` all yield the
-    same empty map, which every caller already renders as no name. So
-    **marketplace can deploy ahead of loyalty** — the deploy order is free,
-    exactly as with `MerchantAdminResolver`.
+    authorization from the JWT. A 401, a 404 (a user-service without the
+    organization surface), a 5xx, a timeout and a blank `INTERNAL_API_TOKEN`
+    all yield the same empty map, which every caller already renders as no
+    name.
   * **The cache is names ONLY, and that is the whole safety argument.** A
     cached balance or a cached ownership would be a correctness bug no TTL
     makes safe; a cached label is at worst minutes stale (the same narrow
     licence as the middleware's `CustomerNameResolver`). **Successes only** —
-    a failed lookup is never cached, so a loyalty blip cannot pin every
+    a failed lookup is never cached, so a user-service blip cannot pin every
     merchant as nameless for a whole TTL. The TTL
     (`marketplace.merchant-names.ttl-seconds`, default 300) is a staleness
     budget, and since this service has no name-write path it is the complete
     invalidation story — **if one is ever added, it must evict**. Do NOT widen
-    this into a general cache in front of loyalty.
-  * Loyalty side is `GET /loyalty/internal/merchants/names?ids=` (InnRewards),
-    plain-map body, unknown ids omitted rather than 404ing the batch, capped at
-    200 ids per call and chunked here above that. No gateway or SecurityConfig
-    change — `/loyalty/internal/**` is already permitAll there and edge-denied
-    by `loyalty-internal-deny`.
+    this into a general cache in front of user-service.
+  * The registry side is user-service's `GET /users/internal/organizations/
+    names?ids=` (`ticketing-system`), `ApiResult` body with `data:
+    [{organizationId, name}]`, unknown ids omitted rather than 404ing the
+    batch, 400 above 200 ids per call — chunked here to stay under it. No
+    gateway change: `/users/internal/**` is edge-denied by
+    `user-internal-deny`. (It read loyalty's `merchants/names` while a seller
+    id was a loyalty merchant id; that endpoint is gone.)
   * Pinned by `MerchantNameResolutionTest` (local-wins, gap-scoping, batching,
-    absent-not-placeholder) and `LoyaltyMerchantNameResolverContractTest`
+    absent-not-placeholder) and `UserServiceOrganizationNameResolverContractTest`
     (the wire shape, every failure mode, the cache, and `verify(0, ...)` on a
     blank token).
 * **An unauthenticated PRE-CHECKOUT surface, for building the app before login
@@ -945,34 +978,22 @@ copied from the middleware/ticketing discipline):**
   the order's lines by the snapshot `merchant_id` and notifies each merchant's
   admin users via `UserNotifyGateway` with THAT merchant's lines + subtotal.
   **ON by default** since `UserServiceMerchantAdminResolver` landed.
-  * **It took THREE repos, because the merchantId→person link is in none of
-    the obvious places.** This service stores no user↔merchant link at all
-    (`merchantId` is a loyalty id copied off a JWT claim). user-service cannot
-    answer it either: `users.loyalty_merchant_id` is stamped on SHOP_ADMIN /
-    SHOP_USER rows only, so a **MERCHANT_ADMIN's own row does not name their
-    merchant** — which is exactly why `AuthService.resolveMerchantIdClaim`
-    resolves the JWT claim by asking loyalty at every login. The binding lives
-    in loyalty's `merchants.admin_email`, and until this work it was readable
-    only email→merchant. So the chain is `merchantId` →
-    (`GET /users/internal/merchants/{id}/admins`) → (`GET /loyalty/internal/
-    merchants/{id}/admin-email`) → the user row, and only the first hop is
-    visible from here.
+  * **The recipients are the selling organization's OWNERs and ADMINs**, from
+    user-service's `GET /users/internal/organizations/{id}/admins` (active
+    accounts only) — the snapshot `merchant_id` IS that organization's id. So
+    a colleague added to the business gets the next paid-order notification,
+    and one removed does not. It used to be a three-repo chain through
+    loyalty's `merchants.admin_email` that reached one person at most; that
+    chain and its endpoints are gone.
   * **Not the shop-staff endpoint** (`/users/internal/shop-staff/by-merchant/
-    {id}/contacts`), which already resolves users by `loyalty_merchant_id` and
-    would have needed no loyalty hop. It returns shop STAFF, and the fulfilment
-    queue is `hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')` — answering with staff
-    notifies people who cannot open the screen the notification is about, while
-    still not telling the one person who can.
-  * **Every miss is the same empty list**, by design at both hops: unknown
-    merchant, no admin on file, no account here yet, an inactive account, a
-    non-MERCHANT_ADMIN account, and a user-service or loyalty outage. The
-    caller's next step is identical for all of them, and a distinguishable
-    answer would make an S2S surface an existence oracle for merchants and
-    accounts. user-service logs which one it was.
-  * **Safe to run ahead of the other two repos.** A user-service too old to
-    serve the endpoint 404s, the resolver returns empty and the notifier meters
-    `outcome=no_recipients` — the pre-existing behaviour, not a failure. Same
-    for a loyalty without its endpoint. So the deploy order is free.
+    {id}/contacts`): it returns loyalty shop STAFF, keyed by a loyalty merchant
+    id no seller row holds any more — and the fulfilment queue is
+    `hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')`, so staff could not open the
+    screen the notification is about anyway.
+  * **Every miss is the same empty list**: an unknown organization, one whose
+    runners are all inactive, a user-service outage. The caller's next step is
+    identical, and a distinguishable answer would make an S2S surface an
+    existence oracle. The notifier meters `outcome=no_recipients`.
   * **`MerchantAdminResolver.Unavailable` and its `@ConditionalOnMissingBean`
     fallback are GONE.** That conditional is only reliable in auto-configuration;
     against a component-scanned bean it can evaluate before the component is

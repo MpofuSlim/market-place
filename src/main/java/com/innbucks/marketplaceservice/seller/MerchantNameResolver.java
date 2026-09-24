@@ -9,7 +9,8 @@ import java.util.UUID;
  *
  * <p><b>Why this seam exists.</b> This service stores merchant IDS and no
  * merchant NAMES: {@code Listing.merchantId} and
- * {@code MarketOrderItem.merchantId} are loyalty ids copied off a JWT claim.
+ * {@code MarketOrderItem.merchantId} are ORGANIZATION ids taken from the
+ * seller's JWT ({@code orgId}), and the names live in user-service.
  * Every surface that should say who is selling — the buyer-facing badge, the
  * public seller profile, the admin trust queue, the finance payout report —
  * therefore had a UUID and nothing else, and rendered "Unnamed merchant".

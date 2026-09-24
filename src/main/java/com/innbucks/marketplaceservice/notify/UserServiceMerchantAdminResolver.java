@@ -15,19 +15,18 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The real {@link MerchantAdminResolver}: asks user-service which accounts run
- * a merchant, over the S2S {@code GET /users/internal/merchants/{id}/admins}
- * endpoint authenticated by the shared {@code X-Internal-Token}.
+ * The real {@link MerchantAdminResolver}: asks user-service who runs a seller,
+ * over the S2S {@code GET /users/internal/organizations/{id}/admins} endpoint
+ * authenticated by the shared {@code X-Internal-Token}.
  *
- * <p><b>Why identity is not resolvable here.</b> The marketplace stores no
- * user↔merchant link at all — {@code Listing.merchantId} and
- * {@code MarketOrderItem.merchantId} are loyalty merchant ids copied off a JWT
- * claim. Behind this one call, user-service chains further: a MERCHANT_ADMIN's
- * user row does not name their merchant either (that column is stamped on shop
- * staff only), so it resolves through loyalty's {@code merchants.admin_email}.
- * All of that is deliberately invisible from here — this service asks one
- * question of the service that owns identity and gets {@code userUuid}s back,
- * which is exactly what {@link UserNotifyGateway} addresses.
+ * <p>A seller's {@code merchantId} is the id of the ORGANIZATION that sells
+ * (user-service V39) — the value this service's JWT filter takes from the
+ * {@code orgId} claim. So "who runs this seller" is "who is an OWNER or ADMIN
+ * of this organization", which user-service answers directly with
+ * {@code userUuid}s — exactly what {@link UserNotifyGateway} addresses. It used
+ * to be a three-hop chain through loyalty's {@code merchants.admin_email}, and
+ * reached one person at most; a colleague added to the business now gets the
+ * next paid-order notification too.
  *
  * <p><b>Best-effort, and it must be:</b> the only caller is
  * {@link MerchantOrderNotifier}, which runs inside the never-throws
@@ -73,12 +72,12 @@ public class UserServiceMerchantAdminResolver implements MerchantAdminResolver {
         }
         try {
             MerchantAdminsEnvelope body = restClient.get()
-                    .uri("/users/internal/merchants/{merchantId}/admins", merchantId)
+                    .uri("/users/internal/organizations/{organizationId}/admins", merchantId)
                     .header("X-Internal-Token", internalToken)
                     .retrieve()
                     // Swallowed rather than thrown: 401 (token drift), 404 (a
-                    // user-service too old to serve this yet) and 5xx all mean
-                    // the same thing to the caller — nobody to notify.
+                    // user-service without the organization surface) and 5xx
+                    // all mean the same thing to the caller — nobody to notify.
                     .onStatus(HttpStatusCode::isError, (req, res) -> {})
                     .body(MerchantAdminsEnvelope.class);
             return uuidsOf(body, merchantId);

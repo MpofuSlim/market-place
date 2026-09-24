@@ -32,16 +32,22 @@ public final class TestJwts {
         return forUser(userUuid).role("CUSTOMER").sign(secret);
     }
 
-    /** MERCHANT_ADMIN token scoped to the given merchant — the merchantId
-     *  claim is the ONLY place listing writes take their merchant scope from. */
+    /**
+     * A seller's token: the OWNER of an organization holding the marketplace
+     * product, acting for it — the shape user-service mints since the
+     * organizations model (V39). {@code merchantId} here IS that organization's
+     * id; it is where every seller write and read takes its scope from.
+     */
     public static String merchantAdmin(UUID userUuid, UUID merchantId, String secret) {
-        return forUser(userUuid).role("MERCHANT_ADMIN").merchantId(merchantId).sign(secret);
+        return forUser(userUuid).role("MERCHANT_ADMIN")
+                .organization(merchantId, "OWNER", List.of("marketplace")).sign(secret);
     }
 
-    /** MERCHANT_ADMIN token carrying NO merchantId claim — the shape a
-     *  misconfigured or legacy seller token has. Every merchant-scoped read
-     *  and write must refuse it (403 merchant_scope_missing) rather than
-     *  defaulting it to "all merchants". */
+    /**
+     * A MERCHANT_ADMIN role with NO organization claims — a pre-organizations
+     * token, or a session that has not chosen among several businesses. The
+     * role alone makes nobody a seller, so every seller surface must refuse it.
+     */
     public static String merchantAdminWithoutMerchant(UUID userUuid, String secret) {
         return forUser(userUuid).role("MERCHANT_ADMIN").sign(secret);
     }
@@ -62,6 +68,9 @@ public final class TestJwts {
         private List<String> roles = List.of();
         private UUID merchantId;
         private UUID shopId;
+        private UUID organizationId;
+        private String organizationRole;
+        private List<String> products;
         private String phoneNumber;
         // Default: valid for 1 hour from now.
         private long ttlMillis = 3_600_000L;
@@ -80,8 +89,18 @@ public final class TestJwts {
             return this;
         }
 
+        /** The LEGACY {@code merchantId} claim user-service no longer mints
+         *  for sellers — kept so a test can prove it is ignored. */
         public Builder merchantId(UUID merchantId) {
             this.merchantId = merchantId;
+            return this;
+        }
+
+        /** The organization claims ({@code orgId}, {@code orgRole}, {@code products}). */
+        public Builder organization(UUID organizationId, String organizationRole, List<String> products) {
+            this.organizationId = organizationId;
+            this.organizationRole = organizationRole;
+            this.products = products;
             return this;
         }
 
@@ -115,6 +134,15 @@ public final class TestJwts {
             }
             if (shopId != null) {
                 builder.claim("shopId", shopId.toString());
+            }
+            if (organizationId != null) {
+                builder.claim("orgId", organizationId.toString());
+            }
+            if (organizationRole != null) {
+                builder.claim("orgRole", organizationRole);
+            }
+            if (products != null) {
+                builder.claim("products", products);
             }
             if (phoneNumber != null) {
                 builder.claim("phoneNumber", phoneNumber);

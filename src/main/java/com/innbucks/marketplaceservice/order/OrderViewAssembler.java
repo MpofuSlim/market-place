@@ -162,7 +162,7 @@ public class OrderViewAssembler {
         if (merchantIds.isEmpty()) {
             return Map.of();
         }
-        // Operator-set name wins; the loyalty registry fills the gaps, so a
+        // Operator-set name wins; the organization registry fills the gaps, so a
         // buyer's order no longer names an unapproved seller by UUID. Still
         // one batch for the page, and still best-effort: an unreachable
         // registry leaves the name absent exactly as before.

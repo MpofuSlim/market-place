@@ -35,8 +35,7 @@ class JwtUtilTest {
             "unit-test-other-secret-0123456789abcdefghijklmnopqrs";
 
     private static final String USER_UUID = "0b9f4a6e-1c2d-4e5f-8a7b-9c0d1e2f3a4b";
-    private static final String MERCHANT_ID = "11111111-2222-3333-4444-555555555555";
-    private static final String SHOP_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    private static final String ORGANIZATION_ID = "11111111-2222-3333-4444-555555555555";
 
     private static KeyPair rsaKeyPair;
 
@@ -84,8 +83,9 @@ class JwtUtilTest {
                 .audience().add(JwtUtil.TOKEN_AUDIENCE).and()
                 .subject(USER_UUID)
                 .claim("roles", List.of("MERCHANT_ADMIN", "SHOP_ADMIN"))
-                .claim("merchantId", MERCHANT_ID)
-                .claim("shopId", SHOP_ID)
+                .claim("orgId", ORGANIZATION_ID)
+                .claim("orgRole", "OWNER")
+                .claim("products", List.of("loyalty", "marketplace"))
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusSeconds(600)));
     }
@@ -107,8 +107,9 @@ class JwtUtilTest {
         assertThat(util.extractUserUuid(token)).isEqualTo(USER_UUID);
         // LinkedHashSet keeps mint order.
         assertThat(util.extractRoles(token)).containsExactly("MERCHANT_ADMIN", "SHOP_ADMIN");
-        assertThat(util.extractMerchantId(token)).isEqualTo(MERCHANT_ID);
-        assertThat(util.extractShopId(token)).isEqualTo(SHOP_ID);
+        assertThat(util.extractOrganizationId(token)).isEqualTo(ORGANIZATION_ID);
+        assertThat(util.extractOrganizationRole(token)).isEqualTo("OWNER");
+        assertThat(util.extractProducts(token)).containsExactly("loyalty", "marketplace");
     }
 
     @Test
@@ -142,7 +143,7 @@ class JwtUtilTest {
 
         assertThat(util.isTokenValid(token)).isTrue();
         assertThat(util.extractUserUuid(token)).isEqualTo(USER_UUID);
-        assertThat(util.extractMerchantId(token)).isEqualTo(MERCHANT_ID);
+        assertThat(util.extractOrganizationId(token)).isEqualTo(ORGANIZATION_ID);
     }
 
     @Test
@@ -229,18 +230,20 @@ class JwtUtilTest {
     }
 
     @Test
-    void nonUuidOrAbsentScopeClaimsYieldNull() {
+    void nonUuidOrAbsentOrganizationClaimsYieldNothing() {
         JwtUtil util = hs256OnlyUtil();
-        // merchantId/shopId are canonicalised to UUIDs — anything else is null,
-        // so a mangled claim can never widen a merchant's scope.
+        // orgId is canonicalised to a UUID — anything else is null, so a
+        // mangled claim can never widen a seller's scope.
         String token = validClaims()
-                .claim("merchantId", "not-a-uuid")
-                .claim("shopId", null)
+                .claim("orgId", "not-a-uuid")
+                .claim("orgRole", null)
+                .claim("products", null)
                 .signWith(hmacKey(SECRET))
                 .compact();
 
-        assertThat(util.extractMerchantId(token)).isNull();
-        assertThat(util.extractShopId(token)).isNull();
+        assertThat(util.extractOrganizationId(token)).isNull();
+        assertThat(util.extractOrganizationRole(token)).isNull();
+        assertThat(util.extractProducts(token)).isEmpty();
     }
 
     @Test

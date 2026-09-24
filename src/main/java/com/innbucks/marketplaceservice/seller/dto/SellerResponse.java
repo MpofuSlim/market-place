@@ -50,7 +50,7 @@ public record SellerResponse(
 
     /**
      * With the trading name already resolved — the operator-set one when there
-     * is one, otherwise the loyalty registry's. Passed in rather than looked
+     * is one, otherwise the organization registry's. Passed in rather than looked
      * up here so a page of sellers resolves its names in ONE batch, and so the
      * DTO stays free of a network dependency.
      */

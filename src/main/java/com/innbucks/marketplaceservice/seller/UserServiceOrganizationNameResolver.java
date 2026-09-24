@@ -20,9 +20,15 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * The real {@link MerchantNameResolver}: asks loyalty-service over the S2S
- * {@code GET /loyalty/internal/merchants/names} endpoint, authenticated by the
+ * The real {@link MerchantNameResolver}: asks user-service over the S2S
+ * {@code GET /users/internal/organizations/names} endpoint, authenticated by the
  * shared {@code X-Internal-Token}.
+ *
+ * <p>A seller's {@code merchantId} is the id of the ORGANIZATION that sells
+ * (user-service V39), so its trading name is the organization's name, and
+ * user-service is the registry. This used to ask loyalty for a loyalty
+ * merchant's name, back when the seller id was a loyalty merchant id copied off
+ * a claim user-service no longer mints.
  *
  * <p>Resolved by service NAME through Eureka on the {@code @LoadBalanced}
  * builder, like every other in-fleet caller here — never a hardcoded
@@ -39,12 +45,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * makes safe; a cached name is a label that is at worst a few minutes stale.
  * (Same reasoning, and the same narrow licence, as the middleware's
  * {@code CustomerNameResolver}.) <b>Do not widen this into a general cache in
- * front of loyalty.</b>
+ * front of user-service.</b>
  *
  * <p>Two properties hold it up:
  * <ul>
  *   <li><b>Successes only.</b> A failed or absent lookup is never cached, so a
- *       loyalty blip cannot pin every merchant as nameless for a whole TTL —
+ *       user-service blip cannot pin every merchant as nameless for a whole TTL —
  *       the next page retries. The cost is that a sustained outage re-asks,
  *       which is the right way round for something this cheap to fail.</li>
  *   <li><b>The TTL is a staleness budget</b>: the worst-case delay before a
@@ -55,9 +61,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @Component
-public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
+public class UserServiceOrganizationNameResolver implements MerchantNameResolver {
 
-    /** Loyalty's own ceiling on one lookup. Larger asks are chunked. */
+    /** user-service's own ceiling on one lookup. Larger asks are chunked. */
     private static final int MAX_IDS_PER_CALL = 200;
 
     private final RestClient restClient;
@@ -65,18 +71,18 @@ public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
     private final Duration ttl;
     private final ConcurrentHashMap<UUID, Cached> cache = new ConcurrentHashMap<>();
 
-    public LoyaltyMerchantNameResolver(
+    public UserServiceOrganizationNameResolver(
             @Qualifier("loadBalancedRestClientBuilder") RestClient.Builder builder,
-            @Value("${loyalty-service.base-url:http://loyalty-service}") String loyaltyBaseUrl,
-            @Value("${loyalty-service.connect-timeout-ms:2000}") int connectTimeoutMs,
-            @Value("${loyalty-service.read-timeout-ms:5000}") int readTimeoutMs,
+            @Value("${user-service.base-url:http://user-service}") String userServiceBaseUrl,
+            @Value("${user-service.connect-timeout-ms:2000}") int connectTimeoutMs,
+            @Value("${user-service.read-timeout-ms:5000}") int readTimeoutMs,
             @Value("${marketplace.merchant-names.ttl-seconds:300}") long ttlSeconds,
             @Value("${innbucks.internal-api-token:}") String internalToken) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
         factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
         this.restClient = builder.clone()
-                .baseUrl(loyaltyBaseUrl)
+                .baseUrl(userServiceBaseUrl)
                 .requestFactory(factory)
                 .build();
         this.internalToken = internalToken;
@@ -109,7 +115,7 @@ public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
             log.warn("Skipping merchant-name lookup; INTERNAL_API_TOKEN is not configured");
             return Map.copyOf(resolved);
         }
-        // Chunked to loyalty's own cap: a payout run or a wide catalogue page
+        // Chunked to user-service's own cap: a payout run or a wide catalogue page
         // can legitimately name more merchants than one call accepts, and
         // splitting is strictly better than being refused.
         for (int from = 0; from < misses.size(); from += MAX_IDS_PER_CALL) {
@@ -123,13 +129,13 @@ public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
         try {
             String joined = String.join(",", ids.stream().map(UUID::toString).toList());
             NamesEnvelope body = restClient.get()
-                    .uri(uri -> uri.path("/loyalty/internal/merchants/names")
+                    .uri(uri -> uri.path("/users/internal/organizations/names")
                             .queryParam("ids", joined).build())
                     .header("X-Internal-Token", internalToken)
                     .retrieve()
                     // Swallowed rather than thrown: 401 (token drift), 404 (a
-                    // loyalty too old to serve this yet) and 5xx all mean the
-                    // same thing here — no names, render none.
+                    // user-service without the organization surface) and 5xx
+                    // all mean the same thing here — no names, render none.
                     .onStatus(HttpStatusCode::isError, (req, res) -> {})
                     .body(NamesEnvelope.class);
             return absorb(body);
@@ -141,30 +147,30 @@ public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
 
     /** Reads the rows we understand and caches only what actually resolved. */
     private Map<UUID, String> absorb(NamesEnvelope body) {
-        if (body == null || body.merchants() == null || body.merchants().isEmpty()) {
+        if (body == null || body.data() == null || body.data().isEmpty()) {
             return Map.of();
         }
         Instant expiresAt = Instant.now().plus(ttl);
         Map<UUID, String> out = new LinkedHashMap<>();
-        for (MerchantName row : body.merchants()) {
-            if (row == null || row.merchantId() == null || row.merchantId().isBlank()) {
+        for (OrganizationName row : body.data()) {
+            if (row == null || row.organizationId() == null || row.organizationId().isBlank()) {
                 continue;
             }
             String name = row.name() == null || row.name().isBlank() ? null : row.name().trim();
             if (name == null) {
-                // Defensive only: loyalty's merchants.name is NOT NULL, so a
-                // known merchant always carries one and a missing row means
-                // the id names nothing. Should that ever change, a blank is
+                // Defensive only: organizations.name is NOT NULL, so a known
+                // organization always carries one and a missing row means the
+                // id names nothing. Should that ever change, a blank is
                 // nothing to render and nothing to cache — a name added later
                 // should appear on the next page, not after a TTL.
                 continue;
             }
             try {
-                UUID id = UUID.fromString(row.merchantId().trim());
+                UUID id = UUID.fromString(row.organizationId().trim());
                 out.put(id, name);
                 cache.put(id, new Cached(name, expiresAt));
             } catch (IllegalArgumentException ignored) {
-                log.warn("Unparseable merchantId in names response — skipped");
+                log.warn("Unparseable organizationId in names response — skipped");
             }
         }
         return out;
@@ -173,12 +179,12 @@ public class LoyaltyMerchantNameResolver implements MerchantNameResolver {
     private record Cached(String name, Instant expiresAt) {
     }
 
-    /** Loyalty's internal surface serves PLAIN maps, not the ApiResult envelope. */
+    /** user-service's standard {@code ApiResult} envelope, trimmed to what we read. */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record NamesEnvelope(List<MerchantName> merchants) {
+    record NamesEnvelope(List<OrganizationName> data) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record MerchantName(String merchantId, String name) {
+    record OrganizationName(String organizationId, String name) {
     }
 }

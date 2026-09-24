@@ -58,7 +58,7 @@ public class SellerService {
 
     /**
      * The name to SHOW for each of these merchants: the operator-set trading
-     * name when there is one, otherwise the loyalty registry's, best-effort.
+     * name when there is one, otherwise the organization registry's, best-effort.
      *
      * <h2>Why local wins</h2>
      * {@code display_name} is only ever written by {@code approve}, and an
@@ -70,7 +70,7 @@ public class SellerService {
      * An approved, named seller costs no network call at all. The lookup is
      * scoped to the ids that have no local name, which on a mature cell is a
      * shrinking minority — and it is the reason this can sit on the catalogue
-     * path without making a browse depend on loyalty being up.
+     * path without making a browse depend on user-service being up.
      *
      * <p>Nothing here throws. A merchant with no name anywhere is simply
      * absent from the map, which every caller already renders as no name —

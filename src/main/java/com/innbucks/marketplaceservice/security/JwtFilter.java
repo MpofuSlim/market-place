@@ -15,7 +15,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -52,6 +54,10 @@ public class JwtFilter extends OncePerRequestFilter {
      *  change is rejected immediately instead of living out its TTL. */
     private final TokenVersionStore tokenVersionStore;
 
+    static final String MERCHANT_ADMIN = "MERCHANT_ADMIN";
+    static final String MARKETPLACE_PRODUCT = "marketplace";
+    private static final Set<String> RUNS_ORGANIZATION = Set.of("OWNER", "ADMIN");
+
     private static final List<String> EXCLUDED_PATHS = List.of(
             "/swagger-ui",
             "/v3/api-docs",
@@ -84,11 +90,15 @@ public class JwtFilter extends OncePerRequestFilter {
         String homeCountry = null;
         try {
             if (jwtUtil.isTokenValid(token) && !isRejected(token, request)) {
+                String seller = sellingOrganizationOf(
+                        jwtUtil.extractOrganizationId(token),
+                        jwtUtil.extractOrganizationRole(token),
+                        jwtUtil.extractProducts(token));
                 AuthenticatedUser user = new AuthenticatedUser(
                         jwtUtil.extractUserUuid(token),
-                        jwtUtil.extractRoles(token),
-                        jwtUtil.extractMerchantId(token),
-                        jwtUtil.extractShopId(token),
+                        sellerRoles(jwtUtil.extractRoles(token), seller),
+                        seller,
+                        null,
                         jwtUtil.extractPhoneNumber(token),
                         jwtUtil.extractCountry(token));
 
@@ -104,9 +114,8 @@ public class JwtFilter extends OncePerRequestFilter {
                 homeCountry = user.country();
                 // TRACE, not DEBUG: this line carries identity + authz on every
                 // authenticated request. Keep it off by default everywhere.
-                log.trace("JWT authenticated uuid={} roles={} merchantId={} shopId={} path={}",
-                        user.uuid(), user.roles(), user.merchantId(), user.shopId(),
-                        request.getRequestURI());
+                log.trace("JWT authenticated uuid={} roles={} sellerOrganization={} path={}",
+                        user.uuid(), user.roles(), user.merchantId(), request.getRequestURI());
             }
         } catch (Exception e) {
             // Defensive: if claim extraction blows up for any reason (corrupt
@@ -132,6 +141,42 @@ public class JwtFilter extends OncePerRequestFilter {
                 MDC.remove(HOME_COUNTRY_MDC_KEY);
             }
         }
+    }
+
+    /**
+     * The organization a caller SELLS for, or null. Seller authority here is
+     * decided by the organization claims (user-service V39), never by the role
+     * alone: the session's {@code orgId}, when the caller is its OWNER or ADMIN
+     * and it holds the {@code marketplace} product. Every part is required —
+     * STAFF does not run the business, a loyalty-only business does not sell
+     * here, and a session that has not chosen among several organizations has
+     * nothing to sell for. Product and role names match exactly, as
+     * user-service mints them.
+     */
+    static String sellingOrganizationOf(String organizationId, String organizationRole, Set<String> products) {
+        if (organizationId == null || organizationRole == null || products == null) {
+            return null;
+        }
+        if (!RUNS_ORGANIZATION.contains(organizationRole) || !products.contains(MARKETPLACE_PRODUCT)) {
+            return null;
+        }
+        return organizationId;
+    }
+
+    /**
+     * The token's roles with {@code MERCHANT_ADMIN} decided by
+     * {@link #sellingOrganizationOf} alone: dropped when the token carries it
+     * without a selling organization (a loyalty-only merchant admin, a
+     * pre-organizations token), added when it does not but the caller runs a
+     * selling organization (an ADMIN colleague with no staff role at all).
+     */
+    static Set<String> sellerRoles(Set<String> tokenRoles, String sellingOrganization) {
+        Set<String> roles = new LinkedHashSet<>(tokenRoles == null ? Set.of() : tokenRoles);
+        roles.remove(MERCHANT_ADMIN);
+        if (sellingOrganization != null) {
+            roles.add(MERCHANT_ADMIN);
+        }
+        return roles;
     }
 
     /**

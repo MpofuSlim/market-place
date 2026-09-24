@@ -1,0 +1,86 @@
+package com.innbucks.marketplaceservice.security;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.util.Set;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Pins the ONE rule that makes a caller a seller here since user-service
+ * stopped minting a {@code merchantId} claim: the session's {@code orgId}, when
+ * the caller is that organization's OWNER or ADMIN and it holds the
+ * {@code marketplace} product. {@link JwtFilter} derives both the seller scope
+ * ({@link AuthenticatedUser#merchantId()}) and the {@code MERCHANT_ADMIN} role
+ * from exactly this; the role in the token's roles claim is not honoured alone.
+ *
+ * <p>Each refusal below is a real account shape: STAFF (a shop assistant added
+ * to the business), a loyalty-only business, a session that has not chosen
+ * among several organizations, and a token minted before organizations existed.
+ */
+class JwtFilterSellerScopeTest {
+
+    private static final String ORG = "7b1e2c4d-9f3a-4e5b-8c6d-0a1b2c3d4e5f";
+
+    @Test
+    @DisplayName("the OWNER of an organization with the marketplace product sells for it")
+    void owner_withMarketplace_sellsForTheOrganization() {
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "OWNER", Set.of("loyalty", "marketplace"))).isEqualTo(ORG);
+    }
+
+    @Test
+    @DisplayName("an ADMIN colleague sells for it too")
+    void admin_withMarketplace_sellsForTheOrganization() {
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "ADMIN", Set.of("marketplace"))).isEqualTo(ORG);
+    }
+
+    @Test
+    @DisplayName("STAFF does not run the business, so sells for nobody")
+    void staff_sellsForNobody() {
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "STAFF", Set.of("marketplace"))).isNull();
+    }
+
+    @Test
+    @DisplayName("a business without the marketplace product sells nothing, however senior the caller")
+    void organizationWithoutMarketplace_sellsNothing() {
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "OWNER", Set.of("loyalty", "ticketing"))).isNull();
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "OWNER", Set.of())).isNull();
+    }
+
+    @Test
+    @DisplayName("no organization chosen, or a pre-organizations token, sells nothing")
+    void noOrganizationClaims_sellsNothing() {
+        assertThat(JwtFilter.sellingOrganizationOf(null, "OWNER", Set.of("marketplace"))).isNull();
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, null, Set.of("marketplace"))).isNull();
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "OWNER", null)).isNull();
+    }
+
+    @Test
+    @DisplayName("names match exactly, as user-service mints them")
+    void matchIsExact() {
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "OWNER", Set.of("MARKETPLACE"))).isNull();
+        assertThat(JwtFilter.sellingOrganizationOf(ORG, "owner", Set.of("marketplace"))).isNull();
+    }
+
+    @Test
+    @DisplayName("a bare MERCHANT_ADMIN role is dropped when there is no selling organization")
+    void bareRole_isDropped() {
+        assertThat(JwtFilter.sellerRoles(Set.of("MERCHANT_ADMIN", "CUSTOMER"), null))
+                .containsExactly("CUSTOMER");
+    }
+
+    @Test
+    @DisplayName("a selling organization grants MERCHANT_ADMIN even to a token without the role")
+    void sellingOrganization_grantsTheRole() {
+        assertThat(JwtFilter.sellerRoles(Set.of("CUSTOMER"), ORG))
+                .containsExactlyInAnyOrder("CUSTOMER", "MERCHANT_ADMIN");
+    }
+
+    @Test
+    @DisplayName("every other role passes through untouched")
+    void otherRoles_passThrough() {
+        assertThat(JwtFilter.sellerRoles(Set.of("SUPER_ADMIN"), null)).containsExactly("SUPER_ADMIN");
+        assertThat(JwtFilter.sellerRoles(null, null)).isEmpty();
+    }
+}

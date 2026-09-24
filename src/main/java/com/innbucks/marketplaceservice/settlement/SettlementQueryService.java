@@ -145,7 +145,7 @@ public class SettlementQueryService {
         List<UUID> merchantIds = rows.stream().map(PayoutRow::getMerchantId).toList();
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(merchantIds);
         // The name finance checks a transfer against. Operator-set wins; the
-        // loyalty registry fills the gap, so a seller who was never approved
+        // organization registry fills the gap, so a seller who was never approved
         // is no longer a bare UUID on the sheet money is paid from. One batch
         // for the whole report, and an unreachable registry just leaves the
         // column as it was.
