@@ -41,6 +41,23 @@ class ParcelCloseMethodTest {
     }
 
     @Test
+    @DisplayName("A buyer's cancellation is never read as the seller failing to supply (V16)")
+    void buyerCancellationIsItsOwnClose() {
+        for (DeliveryMethod method : DeliveryMethod.values()) {
+            OrderFulfilment cancelled = parcel(FulfilmentStatus.UNFULFILLED, null, false);
+            cancelled.setUnfulfilledBy(UnfulfilledBy.BUYER);
+            assertThat(ParcelCloseMethod.of(cancelled, method))
+                    .isEqualTo(ParcelCloseMethod.BUYER_CANCELLED);
+            assertThat(ParcelCloseMethod.closedAt(cancelled)).isEqualTo(cancelled.getUnfulfilledAt());
+
+            OrderFulfilment declined = parcel(FulfilmentStatus.UNFULFILLED, null, false);
+            declined.setUnfulfilledBy(UnfulfilledBy.SELLER);
+            assertThat(ParcelCloseMethod.of(declined, method))
+                    .isEqualTo(ParcelCloseMethod.CANNOT_SUPPLY);
+        }
+    }
+
+    @Test
     @DisplayName("An open parcel has no close method and no close time")
     void openParcelsAreNotClosed() {
         for (FulfilmentStatus open : new FulfilmentStatus[]{FulfilmentStatus.PREPARING,

@@ -72,14 +72,21 @@ public record FulfilmentResponse(
                 example = "2026-09-16T15:40:00Z", nullable = true)
         Instant collectCodeRedeemedAt,
 
-        @Schema(description = "Why the seller could not supply this parcel, in their words. "
-                + "Present only on an UNFULFILLED parcel — show it, because it is the whole "
-                + "explanation the buyer gets for goods that are not coming.",
+        @Schema(description = "Why the parcel is not coming, in the words of whoever ended it "
+                + "(see `unfulfilledBy`). Present only on an UNFULFILLED parcel — show a seller's "
+                + "reason, because it is the whole explanation the buyer gets for goods that are "
+                + "not coming.",
                 example = "Out of stock - the last one was damaged in storage", nullable = true)
         String unfulfilledReason,
 
         @Schema(example = "2026-09-18T09:15:00Z", nullable = true)
         Instant unfulfilledAt,
+
+        @Schema(description = "Who ended an UNFULFILLED parcel: BUYER when you cancelled it "
+                + "(`unfulfilledReason` is then your own reason, if you gave one), SELLER when "
+                + "they could not supply it or it was never collected. Absent otherwise.",
+                example = "SELLER", nullable = true)
+        com.innbucks.marketplaceservice.fulfilment.UnfulfilledBy unfulfilledBy,
 
         @Schema(description = "Quote this to the seller or support; the live tracking screen is "
                 + "GET /marketplace/orders/{orderId}/fulfilments/{fulfilmentId}/tracking",

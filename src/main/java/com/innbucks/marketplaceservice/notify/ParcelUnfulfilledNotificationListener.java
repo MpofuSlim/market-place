@@ -61,7 +61,7 @@ public class ParcelUnfulfilledNotificationListener {
         }
         metrics.notificationOutcome("parcel_unfulfilled", outcome);
         // What the seller's card shows (V15): whether the buyer was actually told.
-        noticeRecorder.record(event.fulfilmentId(), BuyerNoticeKind.CANCELLED,
+        noticeRecorder.record(event.fulfilmentId(), event.orderRef(), BuyerNoticeKind.CANCELLED,
                 BuyerNoticeOutcome.fromMetricOutcome(outcome));
     }
 

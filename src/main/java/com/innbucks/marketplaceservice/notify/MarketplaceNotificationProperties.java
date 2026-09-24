@@ -17,6 +17,7 @@ public class MarketplaceNotificationProperties {
     private final RestockAlerts restockAlerts = new RestockAlerts();
     private final MerchantOrders merchantOrders = new MerchantOrders();
     private final ParcelUpdates parcelUpdates = new ParcelUpdates();
+    private final SellerAlerts sellerAlerts = new SellerAlerts();
 
     @Data
     public static class RestockAlerts {
@@ -59,5 +60,24 @@ public class MarketplaceNotificationProperties {
          * Costs up to two SMS per parcel.
          */
         private boolean enabled = true;
+    }
+
+    @Data
+    public static class SellerAlerts {
+        /**
+         * Tell the selling organization's OWNERs and ADMINs, in their bell (and
+         * through whatever channel user-service picks for them), when something
+         * needs them: a dispute, a collection left on the shelf, a payout, a
+         * buyer who could not be told, a buyer who cancelled. ON by default.
+         */
+        private boolean enabled = true;
+        /**
+         * Where the portal shows one order's parcel. {@code {orderRef}} is
+         * replaced. A deployment setting, so the portal can move its routes
+         * without a release of this service.
+         */
+        private String parcelLink = "/marketplace/parcels?q={orderRef}";
+        /** Where the portal shows the seller's earnings. */
+        private String earningsLink = "/marketplace/earnings";
     }
 }

@@ -94,8 +94,8 @@ public class SettlementViewAssembler {
 
     /**
      * Why this money went (or is going) back to the buyer: the seller's own
-     * reason when they declined the parcel, the operator's note when a dispute
-     * was decided for the buyer. Null on every row where no refund is in play.
+     * reason when they declined the parcel, the buyer's when they cancelled it
+     * (V16), the operator's note when a dispute was decided for the buyer. Null on every row where no refund is in play.
      */
     static String refundReason(MerchantSettlement s, OrderFulfilment parcel,
                                SettlementDispute dispute) {
@@ -105,6 +105,11 @@ public class SettlementViewAssembler {
         }
         if (parcel != null && parcel.getUnfulfilledReason() != null) {
             return parcel.getUnfulfilledReason();
+        }
+        if (parcel != null && parcel.getUnfulfilledBy()
+                == com.innbucks.marketplaceservice.fulfilment.UnfulfilledBy.BUYER) {
+            // A buyer need not say why; the row must still say what happened.
+            return "Cancelled by the buyer";
         }
         if (dispute != null && dispute.getStatus() == DisputeStatus.REFUNDED) {
             return dispute.getResolutionNote();

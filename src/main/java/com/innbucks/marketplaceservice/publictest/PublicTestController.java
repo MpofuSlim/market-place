@@ -621,6 +621,32 @@ public class PublicTestController {
                         parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
     }
 
+    @PostMapping("/buyers/{handle}/orders/{orderId}/fulfilments/{fulfilmentId}/cancel")
+    @Operation(summary = "[TEST] Cancel a paid parcel before it is sent",
+            description = "While the seller is still preparing it (`trackingStatus: RECEIVED`): "
+                    + "the stock goes back on sale and the parcel's money is queued for refund. "
+                    + "Body `{ \"reason\": \"...\" }` is optional. Afterwards the parcel reads "
+                    + "`unfulfilledBy: BUYER`.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Parcel cancelled; the whole order is returned"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "409", description = "Already sent (parcel_not_cancellable) "
+                    + "or under dispute (parcel_disputed)")
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> cancelParcel(
+            @PathVariable String handle, @PathVariable String orderId,
+            @PathVariable String fulfilmentId,
+            @Valid @RequestBody(required = false)
+            com.innbucks.marketplaceservice.fulfilment.dto.CancelParcelRequest request) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_cancel_parcel");
+        return ResponseEntity.ok(ApiResult.ok("Parcel cancelled - your refund is on its way",
+                orderService.cancelParcel(buyer,
+                        parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"),
+                        parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"),
+                        request == null ? null : request.reason())));
+    }
+
     @PostMapping("/buyers/{handle}/orders/{orderId}/fulfilments/{fulfilmentId}/collect-code")
     @Operation(summary = "[TEST] Mint a collection handover code",
             description = "COLLECTION parcels only. **The response is the only place the code is "

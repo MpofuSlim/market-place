@@ -155,18 +155,18 @@ class ParcelProgressNotificationListenerTest {
 
         listener.onParcelProgressed(new ParcelProgressed(UUID.randomUUID(), REF, BUYER,
                 DeliveryMethod.COLLECTION, FulfilmentStatus.DISPATCHED, false, parcel));
-        verify(recorder).record(parcel, BuyerNoticeKind.READY_TO_COLLECT, BuyerNoticeOutcome.SMS);
+        verify(recorder).record(parcel, REF, BuyerNoticeKind.READY_TO_COLLECT, BuyerNoticeOutcome.SMS);
 
         when(whatsApp.isConfigured()).thenReturn(true);
         doThrow(new IllegalStateException("down")).when(sms).sendSms(anyString(), anyString(), anyString());
         listener.onParcelProgressed(new ParcelProgressed(UUID.randomUUID(), REF, BUYER,
                 DeliveryMethod.DELIVERY, FulfilmentStatus.DELIVERED, false, parcel));
-        verify(recorder).record(parcel, BuyerNoticeKind.DELIVERED_BY_SELLER,
+        verify(recorder).record(parcel, REF, BuyerNoticeKind.DELIVERED_BY_SELLER,
                 BuyerNoticeOutcome.WHATSAPP);
 
         properties.getParcelUpdates().setEnabled(false);
         listener.onParcelProgressed(new ParcelProgressed(UUID.randomUUID(), REF, BUYER,
                 DeliveryMethod.DELIVERY, FulfilmentStatus.DISPATCHED, false, parcel));
-        verify(recorder).record(parcel, BuyerNoticeKind.DISPATCHED, BuyerNoticeOutcome.NOT_SENT);
+        verify(recorder).record(parcel, REF, BuyerNoticeKind.DISPATCHED, BuyerNoticeOutcome.NOT_SENT);
     }
 }

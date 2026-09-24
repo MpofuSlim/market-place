@@ -195,7 +195,9 @@ public class ParcelTrackingService {
                 FulfilmentDestination.from(order),
                 inTransit ? ParcelLocation.of(parcel) : null,
                 parcel.getStatus() == FulfilmentStatus.UNFULFILLED
-                        ? parcel.getUnfulfilledReason() : null);
+                        ? parcel.getUnfulfilledReason() : null,
+                parcel.getStatus() == FulfilmentStatus.UNFULFILLED
+                        ? parcel.getUnfulfilledBy() : null);
     }
 
     /** Every stage the parcel reached, oldest first, from the stamps the

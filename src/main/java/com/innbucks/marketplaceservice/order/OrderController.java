@@ -695,6 +695,89 @@ public class OrderController {
                         parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
     }
 
+    @PostMapping("/{id}/fulfilments/{fulfilmentId}/cancel")
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @Operation(summary = "Cancel a paid parcel before it is sent",
+            description = "Calls off ONE parcel of a PAID order while the seller is still "
+                    + "preparing it. Its units go back on sale, and the money for it — goods "
+                    + "and that seller's delivery fee — is queued for refund. You get an SMS "
+                    + "when the refund is actually sent. The seller is told not to send it.\n\n"
+                    + "Only while the parcel is `PREPARING` (`trackingStatus: RECEIVED`). Once "
+                    + "the seller has sent it or set it aside for collection it can no longer be "
+                    + "cancelled here: contact the seller, or open a dispute if it never arrives. "
+                    + "A parcel you are already disputing is left to the support team.\n\n"
+                    + "Afterwards the parcel reads `status: UNFULFILLED`, "
+                    + "`trackingStatus: CANCELLED`, `unfulfilledBy: BUYER` — show \"You cancelled "
+                    + "this\", not the seller-declined wording. An UNPAID order is cancelled with "
+                    + "`POST /{id}/cancel` instead. The body is optional.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Parcel cancelled; the whole order "
+                    + "comes back",
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = OrderResponse.class),
+                            examples = @ExampleObject(value = """
+                                    {
+                                      "code": "OK",
+                                      "message": "Parcel cancelled - your refund is on its way",
+                                      "data": {
+                                        "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                        "orderRef": "MKT-4F9A1C22B7D3",
+                                        "status": "PAID",
+                                        "fulfilmentStatus": "UNFULFILLED",
+                                        "fulfilments": [
+                                          {
+                                            "id": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                                            "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                            "sellerName": "Sunrise Electronics",
+                                            "status": "UNFULFILLED",
+                                            "unfulfilledReason": "Ordered the wrong size",
+                                            "unfulfilledAt": "2026-09-24T10:02:00Z",
+                                            "unfulfilledBy": "BUYER",
+                                            "trackingCode": "TRK-7F3K9Q2M4X",
+                                            "trackingStatus": "CANCELLED",
+                                            "deliveryFeeCents": 800
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """))),
+            @ApiResponse(responseCode = "400", description = "Malformed id, or a reason over 255 "
+                    + "characters",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"invalid_fulfilment_id","message":"Fulfilment id must be a UUID"}
+                                    """))),
+            @ApiResponse(responseCode = "404", description = "No such order owned by the caller, or "
+                    + "no such parcel on it",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = """
+                                    {"code":"fulfilment_not_found","message":"Fulfilment not found"}
+                                    """))),
+            @ApiResponse(responseCode = "409", description = "Too late to cancel, or under dispute",
+                    content = @Content(mediaType = "application/json",
+                            examples = {
+                                    @ExampleObject(name = "Already sent", value = """
+                                            {"code":"parcel_not_cancellable","message":"The seller has already sent this parcel - contact them, or open a dispute if it does not arrive"}
+                                            """),
+                                    @ExampleObject(name = "Under dispute", value = """
+                                            {"code":"parcel_disputed","message":"This parcel is under dispute - our support team will settle it"}
+                                            """)}))
+    })
+    public ResponseEntity<ApiResult<OrderResponse>> cancelParcel(
+            @Parameter(description = "Order id (UUID)",
+                    example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
+            @PathVariable("id") String id,
+            @Parameter(description = "The parcel being cancelled, from the order's `fulfilments`",
+                    example = "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31")
+            @PathVariable("fulfilmentId") String fulfilmentId,
+            @Valid @RequestBody(required = false)
+            com.innbucks.marketplaceservice.fulfilment.dto.CancelParcelRequest request) {
+        return ResponseEntity.ok(ApiResult.ok("Parcel cancelled - your refund is on its way",
+                orderService.cancelParcel(CurrentUser.get(), parseOrderId(id),
+                        parseId(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"),
+                        request == null ? null : request.reason())));
+    }
+
     @GetMapping("/{id}/fulfilments/{fulfilmentId}/tracking")
     @PreAuthorize("hasRole('CUSTOMER')")
     @Operation(summary = "Track a parcel",

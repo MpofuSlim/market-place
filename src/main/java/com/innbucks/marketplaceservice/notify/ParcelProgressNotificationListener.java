@@ -75,7 +75,7 @@ public class ParcelProgressNotificationListener {
         }
         metrics.notificationOutcome(type, outcome);
         // What the seller's card shows (V15): whether the buyer was actually told.
-        noticeRecorder.record(event.fulfilmentId(), kindOf(event),
+        noticeRecorder.record(event.fulfilmentId(), event.orderRef(), kindOf(event),
                 BuyerNoticeOutcome.fromMetricOutcome(outcome));
     }
 

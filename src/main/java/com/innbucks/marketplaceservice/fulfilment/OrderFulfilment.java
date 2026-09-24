@@ -87,6 +87,19 @@ public class OrderFulfilment {
     @Column(name = "stock_returned", nullable = false)
     private boolean stockReturned;
 
+    /** Who ended it (V16) — SELLER for a decline or a no-show, BUYER for a
+     *  cancellation before dispatch. Set with the UNFULFILLED move, null
+     *  otherwise (CHECK-enforced). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "unfulfilled_by", length = 16)
+    private UnfulfilledBy unfulfilledBy;
+
+    /** When the seller was told this collection has waited too long (V16).
+     *  Claimed by the sweep's own bulk UPDATE before it sends, never through
+     *  the entity — so, like the location columns, it is read-only here. */
+    @Column(name = "collection_overdue_alerted_at", insertable = false, updatable = false)
+    private Instant collectionOverdueAlertedAt;
+
     // ---- Collection handover code (V11) --------------------------------
     // Set only on a COLLECTION parcel, and only once the buyer has asked for a
     // code. The plaintext is never stored — see CollectCodes.

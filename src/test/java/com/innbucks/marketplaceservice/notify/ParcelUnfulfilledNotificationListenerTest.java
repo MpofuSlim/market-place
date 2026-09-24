@@ -158,6 +158,6 @@ class ParcelUnfulfilledNotificationListenerTest {
         listener.onParcelUnfulfilled(new ParcelUnfulfilled(event.orderId(), REF, "+263771234567",
                 "out of stock", 1550, "USD", false, parcel));
 
-        verify(recorder).record(parcel, BuyerNoticeKind.CANCELLED, BuyerNoticeOutcome.FAILED);
+        verify(recorder).record(parcel, REF, BuyerNoticeKind.CANCELLED, BuyerNoticeOutcome.FAILED);
     }
 }
