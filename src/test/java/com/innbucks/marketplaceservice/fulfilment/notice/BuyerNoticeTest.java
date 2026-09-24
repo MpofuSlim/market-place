@@ -2,10 +2,12 @@ package com.innbucks.marketplaceservice.fulfilment.notice;
 
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilmentRepository;
+import com.innbucks.marketplaceservice.notify.SellerAlertService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,7 +36,8 @@ class BuyerNoticeTest {
     @DisplayName("The recorder writes by bulk update, and a database fault never escapes it")
     void recorderNeverThrows() {
         OrderFulfilmentRepository repository = mock(OrderFulfilmentRepository.class);
-        BuyerNoticeRecorder recorder = new BuyerNoticeRecorder(repository);
+        BuyerNoticeRecorder recorder = new BuyerNoticeRecorder(repository,
+                mock(SellerAlertService.class));
         UUID parcel = UUID.randomUUID();
 
         recorder.record(parcel, BuyerNoticeKind.DISPATCHED, BuyerNoticeOutcome.FAILED);
@@ -47,6 +50,49 @@ class BuyerNoticeTest {
         // No parcel id (an event from before V15): nothing to write, nothing thrown.
         assertThatCode(() -> recorder.record(null, BuyerNoticeKind.CANCELLED,
                 BuyerNoticeOutcome.SMS)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("A buyer we could not reach is the seller's to tell - alerted on FAILED only")
+    void aFailedNoticeAlertsTheSeller() {
+        OrderFulfilmentRepository repository = mock(OrderFulfilmentRepository.class);
+        SellerAlertService alerts = mock(SellerAlertService.class);
+        BuyerNoticeRecorder recorder = new BuyerNoticeRecorder(repository, alerts);
+        UUID parcelId = UUID.randomUUID();
+        UUID merchantId = UUID.randomUUID();
+        OrderFulfilment parcel = new OrderFulfilment();
+        parcel.setId(parcelId);
+        parcel.setMerchantId(merchantId);
+        when(repository.findById(parcelId)).thenReturn(Optional.of(parcel));
+
+        recorder.record(parcelId, "MKT-4F9A1C22B7D3", BuyerNoticeKind.DISPATCHED,
+                BuyerNoticeOutcome.FAILED);
+        verify(alerts).buyerNotReached(merchantId, "MKT-4F9A1C22B7D3", parcelId,
+                "that it is on its way");
+
+        // Delivered (or deliberately not sent) is not the seller's problem.
+        recorder.record(parcelId, "MKT-4F9A1C22B7D3", BuyerNoticeKind.DISPATCHED,
+                BuyerNoticeOutcome.SMS);
+        recorder.record(parcelId, "MKT-4F9A1C22B7D3", BuyerNoticeKind.DISPATCHED,
+                BuyerNoticeOutcome.WHATSAPP);
+        recorder.record(parcelId, "MKT-4F9A1C22B7D3", BuyerNoticeKind.DISPATCHED,
+                BuyerNoticeOutcome.NOT_SENT);
+        // The legacy 3-arg form has no reference to put in an alert.
+        recorder.record(parcelId, BuyerNoticeKind.DISPATCHED, BuyerNoticeOutcome.FAILED);
+        verify(alerts).buyerNotReached(any(), anyString(), any(), anyString());
+
+        // A lookup that blows up still never escapes.
+        when(repository.findById(parcelId)).thenThrow(new IllegalStateException("db down"));
+        assertThatCode(() -> recorder.record(parcelId, "MKT-4F9A1C22B7D3",
+                BuyerNoticeKind.CANCELLED, BuyerNoticeOutcome.FAILED)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("Every notice kind names what the buyer missed")
+    void everyKindHasWording() {
+        for (BuyerNoticeKind kind : BuyerNoticeKind.values()) {
+            assertThat(BuyerNoticeRecorder.whatWeFailedToSay(kind)).isNotBlank();
+        }
     }
 
     @Test

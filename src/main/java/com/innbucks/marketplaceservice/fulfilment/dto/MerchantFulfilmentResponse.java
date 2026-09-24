@@ -116,7 +116,9 @@ public record MerchantFulfilmentResponse(
                 example = "2026-09-16T15:40:00Z", nullable = true)
         Instant collectCodeRedeemedAt,
 
-        @Schema(description = "The reason you gave for not supplying this parcel",
+        @Schema(description = "Why this parcel is not being sent: the reason you gave when you "
+                + "declined it, or the buyer's own when they cancelled it (`closedBy: "
+                + "BUYER_CANCELLED` - absent if they gave none)",
                 example = "Out of stock - the last one was damaged in storage", nullable = true)
         String unfulfilledReason,
 

@@ -79,7 +79,8 @@ class CatalogServiceTest {
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
                         mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe()),
                 sellerService, reviewService,
-                mock(com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService.class));
+                mock(com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService.class),
+                TestTowns.zimbabwe());
     }
 
     private static CatalogService.BrowseQuery query(String q, String category,
@@ -386,6 +387,64 @@ class CatalogServiceTest {
         spec.toPredicate(root, query, cb);
 
         verify(cb).equal(merchantPath, merchantId);
+    }
+
+    private static CatalogService.BrowseQuery deliversTo(String town) {
+        return new CatalogService.BrowseQuery(null, null, null, null, null, null, null, null,
+                ListingSort.NEWEST, 0, 20, town);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void deliversToIsAnExistsSubqueryOnThatTownsCoverage() {
+        // "Delivers to my town" must be a correlated EXISTS over the listing's
+        // own coverage rows — never a join, which would repeat a listing once
+        // per town it covers and break paging.
+        Path<Object> idPath = mock(Path.class);
+        when(root.get("id")).thenReturn(idPath);
+        jakarta.persistence.criteria.Subquery<Integer> covers =
+                mock(jakarta.persistence.criteria.Subquery.class);
+        Root<ListingDeliveryTown> row = mock(Root.class);
+        Path<Object> rowListing = mock(Path.class);
+        Path<Object> rowTown = mock(Path.class);
+        when(query.subquery(Integer.class)).thenReturn(covers);
+        when(covers.from(ListingDeliveryTown.class))
+                .thenReturn(row);
+        when(covers.select(any())).thenReturn(covers);
+        when(row.get("listingId")).thenReturn(rowListing);
+        when(row.get("townCode")).thenReturn(rowTown);
+
+        // Spelled the way a person types it: normalised to the catalogue code.
+        Specification<Listing> spec = browseAndCaptureSpec(deliversTo("  Harare "));
+        spec.toPredicate(root, query, cb);
+
+        verify(cb).equal(rowListing, idPath);
+        verify(cb).equal(rowTown, "harare");
+        verify(cb).exists(covers);
+    }
+
+    @Test
+    void anUnknownDeliversToTownIs400NotAnEmptyPage() {
+        ApiException ex = assertThatApiException(
+                () -> catalogService.browse(deliversTo("atlantis")));
+
+        assertThat(ex.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(ex.code()).isEqualTo("unknown_town");
+        assertThat(ex.getMessage()).contains("deliversTo");
+        verifyNoInteractions(listingRepository);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aBlankDeliversToIsNoFilter() {
+        Path<Object> statusPath = mock(Path.class);
+        when(root.get("status")).thenReturn(statusPath);
+
+        Specification<Listing> spec = browseAndCaptureSpec(deliversTo("  "));
+        spec.toPredicate(root, query, cb);
+
+        verify(cb).equal(statusPath, ListingStatus.ACTIVE);
+        verifyNoMoreInteractions(cb);
     }
 
     @SuppressWarnings("unchecked")

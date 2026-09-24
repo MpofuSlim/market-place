@@ -44,9 +44,14 @@ public record ParcelTrackingResponse(
                 nullable = true)
         ParcelLocation liveLocation,
 
-        @Schema(description = "Why it was cancelled, in the seller's words (CANCELLED only)",
-                example = "Out of stock", nullable = true)
-        String cancelledReason) {
+        @Schema(description = "Why it was cancelled, in the words of whoever cancelled it "
+                + "(CANCELLED only)", example = "Out of stock", nullable = true)
+        String cancelledReason,
+
+        @Schema(description = "Who cancelled it (CANCELLED only): BUYER when you did, SELLER when "
+                + "they could not supply it or it was never collected", example = "SELLER",
+                nullable = true)
+        com.innbucks.marketplaceservice.fulfilment.UnfulfilledBy cancelledBy) {
 
     @Schema(description = "A stage the parcel reached, and when")
     public record Stage(

@@ -159,7 +159,7 @@ public class CatalogController {
             {
               "code": "unknown_parameter",
               "message": "Unknown query parameter 'minPrice'. Supported parameters: category, city, \
-            condition, inStock, maxPriceCents, merchantId, minPriceCents, page, q, size, sort"
+            condition, deliversTo, inStock, maxPriceCents, merchantId, minPriceCents, page, q, size, sort"
             }""";
 
     /**
@@ -171,7 +171,7 @@ public class CatalogController {
      */
     static final Set<String> BROWSE_PARAMS = Set.of(
             "q", "category", "condition", "city", "merchantId",
-            "minPriceCents", "maxPriceCents", "inStock", "sort", "page", "size");
+            "minPriceCents", "maxPriceCents", "inStock", "deliversTo", "sort", "page", "size");
 
     @Operation(summary = "Browse the catalog",
             description = "ACTIVE listings only. Optional filters, all combinable: case-insensitive "
@@ -179,8 +179,11 @@ public class CatalogController {
                     + "electronics) also matches listings in its children (e.g. tv-audio); condition "
                     + "(NEW/USED_LIKE_NEW/USED_GOOD/USED_FAIR); city (exact, case-insensitive — "
                     + "geo/radius search is future work); merchantId ('more from this seller'); an "
-                    + "inclusive minPriceCents/maxPriceCents window in MINOR units; and inStock=true "
-                    + "to hide listings sitting at zero stock. Ordering is `sort` — newest (default), "
+                    + "inclusive minPriceCents/maxPriceCents window in MINOR units; inStock=true "
+                    + "to hide listings sitting at zero stock; and deliversTo=<town code> (from "
+                    + "GET /marketplace/delivery-towns) to show only listings whose seller delivers "
+                    + "to that town — pass the shopper's default address town so they never add "
+                    + "something that fails at checkout. Ordering is `sort` — newest (default), "
                     + "price_asc or price_desc — each with a stable tiebreaker so paging never "
                     + "repeats or skips a row. Page size is clamped to 50 (never an error). "
                     + "**An unrecognised query parameter is refused with 400 `unknown_parameter`** "
@@ -193,7 +196,8 @@ public class CatalogController {
                             examples = @ExampleObject(name = "browse", value = EXAMPLE_BROWSE_200))),
             @ApiResponse(responseCode = "400", description = "condition outside the enum, an "
                     + "unrecognised sort, an inverted/negative price window, a malformed merchantId, "
-                    + "or a query parameter this endpoint does not support",
+                    + "an unknown deliversTo town, or a query parameter this endpoint does not "
+                    + "support",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "invalid-condition",
                                     value = EXAMPLE_INVALID_CONDITION_400),
@@ -201,7 +205,9 @@ public class CatalogController {
                             @ExampleObject(name = "invalid-price-range",
                                     value = EXAMPLE_INVALID_PRICE_RANGE_400),
                             @ExampleObject(name = "unknown-parameter",
-                                    value = EXAMPLE_UNKNOWN_PARAMETER_400)}))
+                                    value = EXAMPLE_UNKNOWN_PARAMETER_400),
+                            @ExampleObject(name = "unknown-town", value = """
+                                    {"code":"unknown_town","message":"deliversTo 'johannesburg' is not a town we deliver to. GET /marketplace/delivery-towns lists them."}""")}))
     })
     @GetMapping
     public ApiResult<ListingPageResponse> browse(
@@ -231,6 +237,10 @@ public class CatalogController {
                     + "may sit at stockQty 0.", example = "true",
                     schema = @Schema(type = "boolean"))
             @RequestParam(value = "inStock", required = false) String inStock,
+            @Parameter(description = "Only listings whose seller delivers to this town code "
+                    + "(GET /marketplace/delivery-towns). Unknown code = 400 unknown_town.",
+                    example = "bulawayo")
+            @RequestParam(value = "deliversTo", required = false) String deliversTo,
             @Parameter(description = "Ordering: newest (default), price_asc or price_desc",
                     example = "price_asc", schema = @Schema(implementation = ListingSort.class))
             @RequestParam(value = "sort", required = false) String sort,
@@ -246,7 +256,7 @@ public class CatalogController {
                 q, category, condition, city, parseMerchantId(merchantId),
                 longParam("minPriceCents", minPriceCents), longParam("maxPriceCents", maxPriceCents),
                 booleanParam("inStock", inStock), ListingSort.parse(sort),
-                intParam(page, 0), intParam(size, 20));
+                intParam(page, 0), intParam(size, 20), deliversTo);
         return ApiResult.ok(catalogService.browse(query));
     }
 

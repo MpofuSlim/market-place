@@ -919,6 +919,84 @@ never change either casually.
     `SettlementViewAssemblerTest`, `ParcelCloseMethodTest`,
     `SellerParcelSearchTest`, `BuyerNoticeTest`, `MarketZoneTest`,
     `StatementCsvTest` and the listener tests.
+* **"Delivers to my town", the seller's bell, and a buyer who can call a
+  parcel off (V16).**
+  * **`deliversTo=<town code>` on the catalogue browse** is a correlated
+    `EXISTS` over `listing_delivery_town`, appended like every other filter —
+    **never a join**, which would repeat a listing once per town it covers and
+    break paging. The code is normalised through `DeliveryTownCatalog.require`,
+    so an unknown town is **400 `unknown_town`**, not an empty page (an empty
+    page would tell the shopper nobody delivers to them). `BROWSE_PARAMS`
+    carries it, so the unknown-parameter guard stays in step.
+  * **Seller alerts go to the portal bell through the existing
+    `/users/internal/{uuid}/notify`, now TYPED** (`UserNotice`: `type`,
+    `severity`, `subjectKind`/`subjectId`, `deepLink`; optional keys are
+    ABSENT from the body when unset, so a plain notice is the pre-V16 body byte
+    for byte). `SellerAlertService` sends to every OWNER/ADMIN of the selling
+    organization (`MerchantAdminResolver`) and **never throws**. Types:
+    `ORDER_PAID` (the existing new-order notice, now typed and linked),
+    `PARCEL_DISPUTED`, `COLLECTION_OVERDUE`, `PAYOUT_SENT`,
+    `BUYER_NOT_NOTIFIED`, `ORDER_CANCELLED_BY_BUYER` — user-service stores an
+    unknown type as-is, so none needed a user-service change. Metric
+    `marketplace.notifications{type=seller_*}`.
+  * **Deep links are deployment templates**
+    (`marketplace.notifications.seller-alerts.parcel-link`, default
+    `/marketplace/parcels?q={orderRef}`; `earnings-link`,
+    `/marketplace/earnings`), because the server supplies the link and the
+    portal keeps no type→route map. Change the config when the portal's routes
+    move — not the code.
+  * **Each alert rides an event published INSIDE the deciding transaction**
+    (`DisputeOpened`, `PayoutRecorded`, `ParcelCancelledByBuyer`) and is sent
+    by `SellerAlertListener` AFTER_COMMIT on the notification pool — a
+    rolled-back dispute, payout or cancel alerts nobody. **One alert per payout
+    RUN**, mirroring the one audit row per run. The dispute alert carries the
+    reason label only, never the buyer's free-text detail (that is the
+    operator's).
+  * **`BUYER_NOT_NOTIFIED` fires from `BuyerNoticeRecorder`** when every
+    channel of a seller-triggered buyer SMS FAILED — the seller's action went
+    through, the buyer does not know, and only the seller can now tell them.
+    `NOT_SENT` (a deployment choice) alerts nobody.
+  * **`CollectionOverdueSweeper` alerts ONCE per parcel**: it CLAIMS
+    `order_fulfilment.collection_overdue_alerted_at` with a conditional bulk
+    UPDATE before sending (at most once — a crash loses an alert rather than
+    repeating it daily), and uses the same
+    `marketplace.fulfilment.collection-overdue-days` as the seller's stats, so
+    the bell and the `readyToCollectOverdue` counter cannot disagree. Daily
+    (`MARKETPLACE_COLLECTION_OVERDUE_CRON`), ShedLock-elected, per-row isolated.
+    The marker column is read-only on the entity (the V15 reason).
+  * **A buyer can cancel a PAID parcel while it is PREPARING**
+    (`POST /marketplace/orders/{id}/fulfilments/{fulfilmentId}/cancel`, body
+    `{reason?}`, CUSTOMER; public-test mirror under `/buyers/{handle}/…`). Same
+    three moves as a seller's decline in one transaction — UNFULFILLED, stock
+    back (`returnOnce`), HELD → REFUND_DUE — and the parcel records
+    **`unfulfilled_by = BUYER`** (V16; `SELLER` for a decline or a no-show,
+    backfilled SELLER on every existing UNFULFILLED row). It is **refused
+    before anything moves** whenever the refund could not honestly be queued:
+    DISPATCHED or closed → 409 `parcel_not_cancellable`; money DISPUTED → 409
+    `parcel_disputed` (the operator owns it); money not HELD, or no settlement
+    row → 409 `parcel_not_cancellable`. A seller's decline may close a parcel
+    whose money is elsewhere because refusing would leave it open; a buyer's
+    cancel has no such need, so it must not promise a refund the ledger then
+    does not queue.
+  * **The seller is alerted; the buyer is NOT SMSed** (they did it on the screen
+    in front of them) — hence its own event, not `ParcelUnfulfilled`. They hear
+    again when the operator records the refund (`RefundSent`). Audit
+    `FULFILMENT_UNFULFILLED` with `cancelledByBuyer: true`, actor = the buyer,
+    no free text.
+  * **Every surface says who ended it**: `ParcelCloseMethod.BUYER_CANCELLED`
+    (derived from `unfulfilled_by`, still never stored) on the seller's card
+    and earnings row, `unfulfilledBy` on the buyer's order, `cancelledBy` on
+    tracking, and `refundReason` falls back to "Cancelled by the buyer" when
+    they gave none. **`chk_fulfilment_unfulfilled_by` needs its explicit
+    `IS NOT NULL`**: `NULL IN (...)` is UNKNOWN and a CHECK that evaluates to
+    UNKNOWN passes — the first draft accepted an UNFULFILLED row naming nobody,
+    and only the real-Postgres IT caught it.
+  * Pinned by `SellerAlertServiceTest`, `BuyerCancelParcelTest`,
+    `CollectionOverdueSweeperTest`, the deliversTo cases in
+    `CatalogServiceTest`, the typed/plain cases in
+    `UserNotifyGatewayContractTest`, `BuyerNoticeTest`, and end to end by
+    `SellerAlertsAndBuyerCancelIT` (shares `NotificationFlowIT`'s mocked
+    channels, which now include `MerchantAdminResolver`).
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling

@@ -82,11 +82,18 @@ public class MerchantOrderNotifier {
                     + "merchant notification skipped", merchantId, order.orderRef());
             return;
         }
-        String subject = OrderNotificationComposer.merchantOrderSubject(order.orderRef());
-        String message = OrderNotificationComposer.merchantOrderMessage(
-                order.orderRef(), lines, order.currency());
+        // Typed and linked, so the bell entry opens the order's parcel rather
+        // than sitting there as a GENERAL line of text.
+        UserNotice notice = new UserNotice(
+                OrderNotificationComposer.merchantOrderSubject(order.orderRef()),
+                OrderNotificationComposer.merchantOrderMessage(
+                        order.orderRef(), lines, order.currency()),
+                SellerAlertService.TYPE_ORDER_PAID, UserNotice.INFO, "ORDER",
+                order.orderId().toString(),
+                properties.getSellerAlerts().getParcelLink().replace("{orderRef}",
+                        order.orderRef()));
         for (UUID admin : admins) {
-            boolean accepted = userNotifyGateway.notify(admin, subject, message);
+            boolean accepted = userNotifyGateway.notify(admin, notice);
             metrics.notificationOutcome("merchant_order", accepted ? "sent" : "failed");
         }
     }

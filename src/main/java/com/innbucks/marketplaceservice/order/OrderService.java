@@ -493,6 +493,28 @@ public class OrderService {
         return views.toResponse(order);
     }
 
+    /**
+     * The buyer cancels one parcel of a PAID order before the seller sends it
+     * (V16). Per parcel, like {@link #confirmReceived}: a multi-seller order
+     * ships one seller at a time, so it is called off one seller at a time.
+     * The whole order comes back so the app re-renders from one response.
+     */
+    @Transactional
+    public OrderResponse cancelParcel(AuthenticatedUser buyer, UUID orderId, UUID fulfilmentId,
+                                      String reason) {
+        MarketOrder order = requireOwn(buyer, orderId);
+        // Checked BEFORE anything moves: another order's parcel — even one of
+        // the buyer's own — is the same 404, or the app would show the wrong
+        // order changing.
+        boolean onThisOrder = fulfilmentService.forOrder(order.getId()).stream()
+                .anyMatch(p -> p.getId().equals(fulfilmentId));
+        if (!onThisOrder) {
+            throw ApiException.notFound("fulfilment_not_found", "Fulfilment not found");
+        }
+        fulfilmentService.cancelByBuyer(buyer, fulfilmentId, reason);
+        return views.toResponse(order);
+    }
+
     @Transactional(readOnly = true)
     public Page<OrderResponse> getMine(AuthenticatedUser buyer, Pageable pageable) {
         return withItems(orderRepository.findByBuyerUuid(UUID.fromString(buyer.uuid()), pageable));

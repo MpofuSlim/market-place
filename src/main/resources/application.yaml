@@ -188,6 +188,10 @@ marketplace:
     settlement-release-cron: ${MARKETPLACE_SETTLEMENT_RELEASE_CRON:0 */15 * * * *}
     # Daily is the right cadence for a report nobody can action in minutes.
     stale-escrow-cron: ${MARKETPLACE_STALE_ESCROW_CRON:0 20 6 * * *}
+    # Tells a seller, once per parcel, that a collection has waited at their
+    # counter longer than fulfilment.collection-overdue-days. Daily, before
+    # the working day starts.
+    collection-overdue-cron: ${MARKETPLACE_COLLECTION_OVERDUE_CRON:0 0 5 * * *}
     # Nightly tamper-evidence walk over the audit chain.
     audit-verify-cron: ${MARKETPLACE_AUDIT_VERIFY_CRON:0 30 3 * * *}
   audit:
@@ -218,6 +222,17 @@ marketplace:
       # word. Leave ON: the "delivered" message is what lets a buyer dispute a
       # false delivery before the escrow pays the seller.
       enabled: ${MARKETPLACE_PARCEL_UPDATES_ENABLED:true}
+    seller-alerts:
+      # The seller portal's bell (user-service /notifications) for things that
+      # need the seller: a dispute, a collection left too long, a payout sent,
+      # a buyer our SMS did not reach, a buyer cancelling before dispatch. Sent
+      # to every OWNER/ADMIN of the selling organization; never-throws.
+      enabled: ${MARKETPLACE_SELLER_ALERTS_ENABLED:true}
+      # Where each alert's deepLink points in the portal. {orderRef} is
+      # replaced with the order's reference. Change these when the portal's
+      # routes change — no client keeps its own type->route map.
+      parcel-link: ${MARKETPLACE_SELLER_PARCEL_LINK:/marketplace/parcels?q={orderRef}}
+      earnings-link: ${MARKETPLACE_SELLER_EARNINGS_LINK:/marketplace/earnings}
 
 innbucks:
   country: ${INNBUCKS_COUNTRY:ZW}

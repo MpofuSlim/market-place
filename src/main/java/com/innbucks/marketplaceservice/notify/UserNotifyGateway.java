@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -64,6 +65,17 @@ public class UserNotifyGateway {
      * (returns false).
      */
     public boolean notify(UUID userUuid, String subject, String message) {
+        return notify(userUuid, UserNotice.plain(subject, message));
+    }
+
+    /**
+     * Sends a notice with whatever of type / severity / subject / deep link it
+     * carries. Absent fields are left OUT of the body rather than sent as
+     * null, so the wire shape for a plain notice is exactly what it always was.
+     */
+    public boolean notify(UUID userUuid, UserNotice notice) {
+        String subject = notice == null ? null : notice.subject();
+        String message = notice == null ? null : notice.message();
         if (userUuid == null || subject == null || subject.isBlank()
                 || message == null || message.isBlank()) {
             log.debug("Skipping user notify: uuid present={} subject blank={} message blank={}",
@@ -76,7 +88,7 @@ public class UserNotifyGateway {
                     .uri("/users/internal/{uuid}/notify", userUuid)
                     .header("X-Internal-Token", internalToken)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of("subject", subject, "message", message))
+                    .body(body(notice))
                     .retrieve()
                     .toBodilessEntity();
             metrics.notificationOutcome("user_notify", "accepted");
@@ -88,6 +100,24 @@ public class UserNotifyGateway {
             metrics.notificationOutcome("user_notify", "failed");
             log.warn("User notify failed userUuid={} cause={}", userUuid, e.toString());
             return false;
+        }
+    }
+
+    private static Map<String, String> body(UserNotice notice) {
+        Map<String, String> body = new LinkedHashMap<>();
+        body.put("subject", notice.subject());
+        body.put("message", notice.message());
+        putIfPresent(body, "type", notice.type());
+        putIfPresent(body, "severity", notice.severity());
+        putIfPresent(body, "subjectKind", notice.subjectKind());
+        putIfPresent(body, "subjectId", notice.subjectId());
+        putIfPresent(body, "deepLink", notice.deepLink());
+        return body;
+    }
+
+    private static void putIfPresent(Map<String, String> body, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            body.put(key, value);
         }
     }
 }

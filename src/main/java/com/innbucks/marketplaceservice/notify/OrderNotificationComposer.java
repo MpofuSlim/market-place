@@ -297,6 +297,66 @@ public final class OrderNotificationComposer {
                 + " on InnBucks Marketplace";
     }
 
+    // ------------------------------------------------------------------
+    // Seller alerts (the portal bell). Same GSM-safe discipline: user-service
+    // may deliver any of these by SMS.
+    // ------------------------------------------------------------------
+
+    public static String disputeOpenedSubject(String orderRef) {
+        return "Buyer dispute on order " + orderRef;
+    }
+
+    public static String disputeOpenedMessage(String orderRef, String reasonLabel) {
+        return "The buyer has disputed their parcel from order " + orderRef
+                + (reasonLabel == null ? "" : " - " + reasonLabel)
+                + ". The money for it is on hold until our team decides. Ref " + orderRef;
+    }
+
+    public static String collectionOverdueSubject(String orderRef) {
+        return "Order " + orderRef + " not collected yet";
+    }
+
+    public static String collectionOverdueMessage(String orderRef, int days) {
+        return "Order " + orderRef + " has been ready to collect for " + days + " days. Contact "
+                + "the buyer, or close it as not collected so they are refunded. Ref " + orderRef;
+    }
+
+    public static String payoutSentSubject(long netCents, String currency) {
+        return "Payout sent - " + money(netCents, currency);
+    }
+
+    public static String payoutSentMessage(long netCents, String currency, int parcels,
+                                           String payoutReference) {
+        return "We have paid you " + money(netCents, currency) + " for " + parcels
+                + (parcels == 1 ? " parcel" : " parcels")
+                + ". Payout reference " + payoutReference + ".";
+    }
+
+    public static String buyerNotReachedSubject(String orderRef) {
+        return "Buyer not notified - order " + orderRef;
+    }
+
+    /** {@code what} completes "We could not tell the buyer of order X ...". */
+    public static String buyerNotReachedMessage(String orderRef, String what) {
+        return "We could not message the buyer of order " + orderRef + " " + what
+                + ". Please contact them. Ref " + orderRef;
+    }
+
+    public static String cancelledByBuyerSubject(String orderRef) {
+        return "Order " + orderRef + " cancelled by the buyer";
+    }
+
+    public static String cancelledByBuyerMessage(String orderRef, String buyerReason) {
+        String reason = "";
+        if (buyerReason != null && !buyerReason.isBlank()) {
+            String trimmed = buyerReason.trim();
+            reason = " Reason - " + trimmed + (trimmed.endsWith(".") ? "" : ".");
+        }
+        return "The buyer cancelled order " + orderRef + " before you sent it - do not send it."
+                + reason + " The items are back in your stock and the buyer will be refunded. "
+                + "Ref " + orderRef;
+    }
+
     /**
      * Cents → major units, e.g. {@code (2599, "USD") -> "USD 25.99"}. Always
      * two decimals; Locale.ROOT so a JVM locale can never swap the separator.
