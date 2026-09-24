@@ -119,6 +119,68 @@ public class CheckoutController {
               }
             }""";
 
+    /** A COLLECTION quote: each seller's collection point is resolved (the
+     *  buyer's choice, else the seller's default). Same listing and seller as
+     *  {@link #EXAMPLE_QUOTE_200}; the point matches the seller portal's
+     *  collection-point examples. */
+    private static final String EXAMPLE_QUOTE_COLLECTION_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "items": [
+                  {
+                    "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    "quantity": 2,
+                    "lineTotalCents": 4798
+                  }
+                ],
+                "lineCount": 1,
+                "totalQuantity": 2,
+                "subtotalCents": 4798,
+                "deliveryFeeCents": 0,
+                "totalCents": 4798,
+                "currency": "USD",
+                "deliveryMethod": "COLLECTION",
+                "deliveryMethods": ["DELIVERY", "COLLECTION"],
+                "checkoutReady": true,
+                "collectionPoints": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "collectionPoint": {
+                      "id": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e",
+                      "name": "Avondale shop",
+                      "townCode": "harare",
+                      "townName": "Harare",
+                      "line1": "14 Samora Machel Ave",
+                      "line2": "Shop 3, Avondale Shopping Centre",
+                      "area": "Avondale",
+                      "landmark": "Next to the pharmacy",
+                      "phone": "+263242123456",
+                      "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
+                      "openNow": true
+                    }
+                  }
+                ]
+              }
+            }""";
+
+    public static final String EXAMPLE_UNKNOWN_COLLECTION_POINT_400 = """
+            {
+              "code": "unknown_collection_point",
+              "message": "That collection point is not one of this seller's - choose again from their collection points",
+              "data": {
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "collectionPointId": "9b3e41d7-6c2a-4f18-8d5e-0a7c2b9f1e36"
+              }
+            }""";
+
+    public static final String EXAMPLE_DUPLICATE_COLLECTION_POINT_400 = """
+            {
+              "code": "duplicate_collection_point_choice",
+              "message": "collectionPoints names the same seller more than once"
+            }""";
+
     private static final String EXAMPLE_QUOTE_NOT_READY_200 = """
             {
               "code": "OK",
@@ -225,13 +287,22 @@ public class CheckoutController {
                     + "changes method or address. A basket with problems still returns 200 with "
                     + "`checkoutReady: false` and every failing line in `rejections`, because the "
                     + "shopper needs to SEE the basket in order to fix it; only a malformed "
-                    + "request or a missing address is an error.\n\n"
+                    + "request, a missing address or a stale collection-point choice is an "
+                    + "error.\n\n"
                     + "**Delivery is per seller and per town.** Each listing names the towns its "
                     + "seller delivers to and the fee for each. A DELIVERY quote needs every line "
                     + "to deliver to the address's town — a line that does not comes back in "
                     + "`rejections` as `NOT_DELIVERED_TO_TOWN`. Each seller ships one parcel, so "
                     + "each seller charges ONE fee (their dearest line to that town), listed in "
                     + "`deliveryFees`; `deliveryFeeCents` is their sum.\n\n"
+                    + "**Collection is per seller too.** A COLLECTION quote lists, in "
+                    + "`collectionPoints`, where each seller's goods would be collected: the point "
+                    + "named in the request's optional `collectionPoints` "
+                    + "(`[{merchantId, collectionPointId}]`), else the seller's default. A seller "
+                    + "with no point is listed without one - collection is arranged with them. A "
+                    + "choice that is not that seller's point (removed since the screen loaded) is "
+                    + "a 400 `unknown_collection_point` whose `data` names the seller; send the "
+                    + "same `collectionPoints` on the order.\n\n"
                     + "The totals are what the order will produce for the same body, as long as "
                     + "nothing sells out in between. They are not a promise the order honours — "
                     + "the order recomputes from the listings itself, because a quote a client "
@@ -241,13 +312,20 @@ public class CheckoutController {
                     content = @Content(examples = {
                             @ExampleObject(name = "Ready to order", value = EXAMPLE_QUOTE_200),
                             @ExampleObject(name = "Something needs fixing first",
-                                    value = EXAMPLE_QUOTE_NOT_READY_200)})),
+                                    value = EXAMPLE_QUOTE_NOT_READY_200),
+                            @ExampleObject(name = "Collection, point resolved per seller",
+                                    value = EXAMPLE_QUOTE_COLLECTION_200)})),
             @ApiResponse(responseCode = "400",
-                    description = "Both/neither basket source, an empty cart, or a DELIVERY quote "
-                            + "with no address to send to",
+                    description = "Both/neither basket source, an empty cart, a DELIVERY quote "
+                            + "with no address to send to, a collection-point choice that is not "
+                            + "that seller's, or one seller named twice in collectionPoints",
                     content = @Content(examples = {
                             @ExampleObject(name = "No address", value = EXAMPLE_ADDRESS_REQUIRED_400),
-                            @ExampleObject(name = "Two basket sources", value = EXAMPLE_AMBIGUOUS_400)})),
+                            @ExampleObject(name = "Two basket sources", value = EXAMPLE_AMBIGUOUS_400),
+                            @ExampleObject(name = "Stale collection point",
+                                    value = EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
+                            @ExampleObject(name = "Seller named twice",
+                                    value = EXAMPLE_DUPLICATE_COLLECTION_POINT_400)})),
             @ApiResponse(responseCode = "403", description = "Not a CUSTOMER",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_FORBIDDEN_403))),
             @ApiResponse(responseCode = "422", description = "The cell does not offer that delivery "

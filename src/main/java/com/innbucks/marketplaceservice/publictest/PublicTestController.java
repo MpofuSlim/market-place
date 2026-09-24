@@ -7,6 +7,7 @@ import com.innbucks.marketplaceservice.cart.dto.CartItemRequest;
 import com.innbucks.marketplaceservice.cart.dto.CartQuantityRequest;
 import com.innbucks.marketplaceservice.cart.dto.CartResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
+import com.innbucks.marketplaceservice.checkout.CheckoutController;
 import com.innbucks.marketplaceservice.checkout.CheckoutService;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutOptionsResponse;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteRequest;
@@ -478,7 +479,10 @@ public class PublicTestController {
                     + "malformed request or a missing address is an error.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The quote, ready or not"),
-            @ApiResponse(responseCode = "400", description = "Malformed request, or DELIVERY with no address"),
+            @ApiResponse(responseCode = "400", description = "Malformed request, DELIVERY with no "
+                    + "address, or a `collectionPoints` choice that is not that seller's "
+                    + "(`unknown_collection_point`, data names the seller) or names a seller twice "
+                    + "(`duplicate_collection_point_choice`)"),
             @ApiResponse(responseCode = "404", description = "The surface is off, or the address is not this handle's",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404)))
     })
@@ -527,12 +531,15 @@ public class PublicTestController {
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order placed; stock reserved, awaiting payment"),
             @ApiResponse(responseCode = "400", description = "Missing `Idempotency-Key` (checked first), "
-                    + "missing or invalid `buyerMsisdn`, or a malformed basket",
+                    + "missing or invalid `buyerMsisdn`, a malformed basket, or a stale or "
+                    + "duplicated `collectionPoints` choice",
                     content = @Content(examples = {
                             @ExampleObject(name = "No idempotency key", value = """
                                     {"code":"idempotency_key_required","message":"Idempotency-Key header is required","data":null}"""),
                             @ExampleObject(name = "No payer number", value = """
-                                    {"code":"invalid_msisdn","message":"buyerMsisdn is required","data":null}""")})),
+                                    {"code":"invalid_msisdn","message":"buyerMsisdn is required","data":null}"""),
+                            @ExampleObject(name = "Stale collection point",
+                                    value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400)})),
             @ApiResponse(responseCode = "404", description = "The surface is off, or this cell has no api-key configured",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
             @ApiResponse(responseCode = "409", description = "A line lost the stock race, or the key is in flight"),

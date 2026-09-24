@@ -76,11 +76,15 @@ public class CollectionPointResolver {
             List<CollectionPoint> options = bySeller.getOrDefault(seller, List.of());
             UUID wanted = chosen.get(seller);
             if (wanted != null) {
+                // data names the seller and the stale choice, so a client with
+                // several sellers in the basket re-asks for the right one.
                 CollectionPoint match = options.stream()
                         .filter(p -> p.getId().equals(wanted)).findFirst()
                         .orElseThrow(() -> ApiException.badRequest("unknown_collection_point",
                                 "That collection point is not one of this seller's - choose "
-                                        + "again from their collection points"));
+                                        + "again from their collection points")
+                                .withDetails(Map.of("merchantId", seller.toString(),
+                                        "collectionPointId", wanted.toString())));
                 out.put(seller, match);
             } else if (!options.isEmpty()) {
                 // Ordered default first (findForMerchants), so the head IS the default.

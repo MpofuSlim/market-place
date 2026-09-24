@@ -34,7 +34,9 @@ import java.util.UUID;
  * promotes the oldest survivor. The index stops two defaults; only this
  * service can stop zero, so every write for one seller takes that seller's
  * row lock first — two concurrent first points must not both try to become
- * the default and turn a double-tap into a 500.
+ * the default and turn a double-tap into a 500. The first write for a seller
+ * with no record yet creates it race-safely before locking
+ * ({@link SellerService#ensureExistsAndLock}).
  *
  * <p><b>Replace, never merge</b> — the payout destination's rule. A point is
  * redefined whole, hours included: "move the address" and "rename it" are
@@ -70,19 +72,23 @@ public class CollectionPointService {
     @Transactional
     public CollectionPointResponse create(AuthenticatedUser caller, UUID merchantId,
                                          CollectionPointRequest request, boolean bySeller) {
-        sellerService.ensureExists(merchantId);
-        sellers.lockForUpdate(merchantId);
-        if (points.countByMerchantId(merchantId) >= MAX_POINTS_PER_SELLER) {
-            throw ApiException.conflict("collection_point_limit_reached",
-                    "You can have at most " + MAX_POINTS_PER_SELLER + " collection points");
-        }
         Instant now = Instant.now();
         CollectionPoint point = CollectionPoint.builder()
                 .id(UUID.randomUUID())
                 .merchantId(merchantId)
                 .createdAt(now)
                 .build();
+        // Validate FIRST: apply() writes nothing, so a refused request never
+        // creates (or audits) a seller record it then rolls back.
         List<CollectionPointHours> weekly = apply(point, request, now);
+        // Race-safe even for a seller with no row yet — a plain ensureExists
+        // then lockForUpdate would let two first taps both insert the seller
+        // and 500 on its primary key before the lock could serialise them.
+        sellerService.ensureExistsAndLock(merchantId);
+        if (points.countByMerchantId(merchantId) >= MAX_POINTS_PER_SELLER) {
+            throw ApiException.conflict("collection_point_limit_reached",
+                    "You can have at most " + MAX_POINTS_PER_SELLER + " collection points");
+        }
         points.saveAndFlush(point);
         hours.saveAll(weekly);
         boolean first = points.countByMerchantId(merchantId) == 1;

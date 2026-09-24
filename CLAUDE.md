@@ -1137,8 +1137,12 @@ never change either casually.
     that seller's `marketplace_seller` row lock**
     (`MarketplaceSellerRepository.lockForUpdate`). Without it, two concurrent
     first points both try to become the default and a double-tap is a 500
-    (this service maps no constraint violation to a 4xx). `is_default` is
-    read-only on the entity and changed only by the bulk statements.
+    (this service maps no constraint violation to a 4xx). **A lock needs a row
+    to lock**: `create` goes through `SellerService.ensureExistsAndLock`, which
+    is the race-safe `ensureExists` (below) followed by the lock, and it
+    validates the request BEFORE touching the seller record, so a refused
+    first request registers nobody. `is_default` is read-only on the entity
+    and changed only by the bulk statements.
   * **Replace, never merge** — a point is redefined whole, hours included (the
     payout-destination rule). Hard delete; orders keep their snapshot.
   * **Hours are market-local wall-clock times** (`TIME`, never instants), at
@@ -1163,7 +1167,9 @@ never change either casually.
     directly exactly as before V18. `CollectionPointResolver` is shared by quote
     and order (the `CheckoutPricer` reason: the point a buyer was quoted is the
     point the order records). A point that is not that seller's = 400
-    `unknown_collection_point`; one seller named twice = 400
+    `unknown_collection_point`, whose `data` names the `merchantId` and the
+    stale `collectionPointId` (a multi-seller basket must know WHICH choice to
+    redo); one seller named twice = 400
     `duplicate_collection_point_choice`; a choice for a seller no longer in the
     basket is ignored. The new request field is
     `@JsonInclude(NON_NULL)` so an old body fingerprints the same for
@@ -1189,8 +1195,30 @@ never change either casually.
     `CollectionPointResolverTest`, the collection cases in `CatalogServiceTest`,
     and end to end by `CollectionPointFlowIT` (CRUD, default promotion, the cap,
     owner-scoped 404s, the admin override, browse against real SQL, the
-    snapshot surviving an edit and a delete) plus the public-test case in
-    `PublicTestOrderRailIT`.
+    snapshot surviving an edit and a delete, a brand-new seller's concurrent
+    double-tap, a refused first request registering nobody) plus the
+    public-test case in `PublicTestOrderRailIT`; `SellerServiceTest` pins
+    `ensureExistsAndLock`.
+* **The seller record is created race-safely, on first sight
+  (`SellerService.ensureExists`).** A merchant becomes a seller by doing the
+  thing sellers do (a first listing, a payout destination, a collection point),
+  so their `marketplace_seller` row is created on that first write. It was a
+  find-then-save: two concurrent first writes (a double-tapped "create
+  listing", two portal tabs) both missed the row and both inserted, and the
+  loser 500'd on the primary key (no `DataIntegrityViolationException`
+  mapping exists) and left a second `SELLER_REGISTERED` on the audit chain for
+  a registration that rolled back. It is now `insertIfAbsent` —
+  `INSERT … ON CONFLICT (merchant_id) DO NOTHING` — so the loser's insert
+  waits for the winner and then does nothing; `SELLER_REGISTERED` is audited
+  only by the call whose insert returned 1; the row is then read back (under
+  READ COMMITTED the read runs after that wait, so it sees the winner's
+  committed row). Every caller **validates its request BEFORE ensuring the
+  record**, because the audit row commits in its own REQUIRES_NEW transaction
+  and would survive a refused request's rollback. Pinned by
+  `SellerServiceTest`, `PayoutDestinationTest`, the ordering checks in
+  `ListingServiceTest`, and `SellerRecordConcurrencyIT` (real concurrent first
+  listings and first payout destinations; refused first requests register
+  nobody).
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling
