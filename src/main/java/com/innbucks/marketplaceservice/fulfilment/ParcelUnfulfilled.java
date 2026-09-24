@@ -4,19 +4,26 @@ import java.util.UUID;
 
 /**
  * In-process domain event: a seller declared they cannot supply one parcel
- * (V12). Published inside the declining transaction and consumed
- * {@code AFTER_COMMIT}, so a buyer is never told their goods are not coming
- * because of a transaction that then rolled back.
+ * (V12), or closed a collection the buyer never came for. Published inside the
+ * declining transaction and consumed {@code AFTER_COMMIT}, so a buyer is never
+ * told their goods are not coming because of a transaction that then rolled
+ * back.
  *
  * <p>Carries what the message needs so the listener composes without
  * re-reading the order — the same shape as {@code OrderPaid}.
+ *
+ * <p>{@code notCollected} tells the two apart, because they are different
+ * things to say to a buyer: "the seller cannot supply this" versus "you never
+ * picked this up". Telling someone who simply did not come that the seller ran
+ * out of stock would be a small lie with the platform's name on it.
  */
 public record ParcelUnfulfilled(UUID orderId,
                                 String orderRef,
                                 String buyerMsisdn,
                                 String sellerReason,
                                 long refundDueCents,
-                                String currency) {
+                                String currency,
+                                boolean notCollected) {
 
     /** Whether the platform actually queued money back. A parcel whose money
      *  was already disputed or paid out turns nothing around here, and the

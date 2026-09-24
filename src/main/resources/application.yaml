@@ -142,8 +142,10 @@ marketplace:
     # grace-hours: how long a SELLER-CLOSED delivery stays HELD before the
     # sweeper releases it — the buyer's chance to object to the weaker
     # evidence. A buyer's own confirmation releases immediately and never
-    # waits this out.
-    grace-hours: ${MARKETPLACE_SETTLEMENT_GRACE_HOURS:48}
+    # waits this out. MUST be at least dispute-window-days x 24: the service
+    # refuses to start otherwise, because a shorter grace lets a seller's
+    # own "delivered" be paid out while the buyer can still dispute it.
+    grace-hours: ${MARKETPLACE_SETTLEMENT_GRACE_HOURS:168}
     # How long after DELIVERY a parcel can still be disputed. Undelivered
     # parcels are disputable for as long as the money has not been paid out.
     dispute-window-days: ${MARKETPLACE_SETTLEMENT_DISPUTE_WINDOW_DAYS:7}
@@ -191,6 +193,12 @@ marketplace:
       # the notifier meters outcome=no_recipients, which is the old behaviour,
       # not a failure.
       enabled: ${MARKETPLACE_MERCHANT_ORDER_ALERTS_ENABLED:true}
+    parcel-updates:
+      # SMS (WhatsApp fallback) to the buyer when a seller dispatches a parcel,
+      # sets it aside for collection, or closes it as delivered on their own
+      # word. Leave ON: the "delivered" message is what lets a buyer dispute a
+      # false delivery before the escrow pays the seller.
+      enabled: ${MARKETPLACE_PARCEL_UPDATES_ENABLED:true}
 
 innbucks:
   country: ${INNBUCKS_COUNTRY:ZW}

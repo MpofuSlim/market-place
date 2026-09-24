@@ -49,11 +49,20 @@ import java.util.function.Consumer;
  *       wait out a grace window would punish exactly the confirmation the
  *       product wants to encourage.</li>
  *   <li>Seller closes the parcel themselves → HELD for a grace window
- *       ({@code marketplace.settlement.grace-hours}, default 48) that is the
+ *       ({@code marketplace.settlement.grace-hours}, default 168) that is the
  *       buyer's chance to object, then released by the sweeper. The window
  *       prices the weaker evidence: a seller's own say-so buys them their
- *       money two days later, not never.</li>
+ *       money a week later, not never.</li>
  * </ul>
+ *
+ * <p><b>The grace window must cover the buyer's dispute window</b>, and this
+ * service refuses to start when it does not. A seller-closed parcel becomes
+ * payable when the grace lapses, and once it is PAID_OUT a dispute is refused
+ * ({@code settlement_already_paid_out}). With the old 48-hour grace against a
+ * 7-day dispute window, a buyer who reported a parcel that never came on day 3
+ * found the money already gone — the seller's word, unchallenged for two days,
+ * was enough to be paid. Equal windows close that: the seller's money becomes
+ * payable exactly when the buyer's right to object ends.
  *
  * <p><b>Every status change goes through {@link #transition}</b> — legality,
  * mutation, the order-journal row (kind SETTLEMENT) and the metric in one
@@ -85,8 +94,10 @@ public class SettlementService {
                              AuditService auditService,
                              MarketplaceMetrics metrics,
                              @Value("${marketplace.settlement.grace-hours}") long graceHours,
+                             @Value("${marketplace.settlement.dispute-window-days}") long disputeWindowDays,
                              @Value("${marketplace.settlement.stale-after-days}") long staleAfterDays,
                              @Value("${marketplace.settlement.commission-percent}") double commissionPercent) {
+        requireGraceCoversDisputeWindow(graceHours, disputeWindowDays);
         this.settlementRepository = settlementRepository;
         this.fulfilmentRepository = fulfilmentRepository;
         this.itemRepository = itemRepository;
@@ -96,6 +107,22 @@ public class SettlementService {
         this.grace = Duration.ofHours(graceHours);
         this.staleAfter = Duration.ofDays(staleAfterDays);
         this.commissionPercent = commissionPercent;
+    }
+
+    /**
+     * Refuses a configuration under which a seller's own "delivered" could be
+     * paid out while the buyer can still dispute it. Fails at BOOT, loudly,
+     * rather than per parcel: the gap it prevents is silent — nothing errors,
+     * a buyer is simply told the money has already gone.
+     */
+    static void requireGraceCoversDisputeWindow(long graceHours, long disputeWindowDays) {
+        if (Duration.ofHours(graceHours).compareTo(Duration.ofDays(disputeWindowDays)) < 0) {
+            throw new IllegalStateException("marketplace.settlement.grace-hours (" + graceHours
+                    + "h) is shorter than the buyer's dispute window (" + disputeWindowDays
+                    + " days): a seller-closed parcel could be paid out while the buyer can still "
+                    + "dispute it. Set MARKETPLACE_SETTLEMENT_GRACE_HOURS to at least "
+                    + (disputeWindowDays * 24) + ".");
+        }
     }
 
     // ------------------------------------------------------------------

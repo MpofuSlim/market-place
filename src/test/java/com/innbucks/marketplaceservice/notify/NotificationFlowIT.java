@@ -179,11 +179,53 @@ class NotificationFlowIT extends PostgresTestContainer {
         verify(sms, never()).sendSms(anyString(), anyString(), anyString());
     }
 
+    @Test
+    void aSellerDispatchTellsTheBuyerAfterCommit() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        UUID listingId = seedActiveListing(5, merchantId);
+        String created = mockMvc.perform(post("/marketplace/orders")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .header("Idempotency-Key", "notify-flow-3")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"buyerMsisdn":"+263771234567","items":[{"listingId":"%s","quantity":1}]}"""
+                                .formatted(listingId)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+        String orderRef = JsonPath.read(created, "$.data.orderRef");
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentRef\":\"INB-PAY-0003\",\"amountCents\":1550}"))
+                .andExpect(status().isOk());
+        String paid = mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/marketplace/orders/{id}", orderId)
+                        .header("Authorization", "Bearer " + customerToken))
+                .andReturn().getResponse().getContentAsString();
+        String fulfilmentId = JsonPath.read(paid, "$.data.fulfilments[0].id");
+
+        // The seller sets the collection aside at the counter.
+        String sellerToken = TestJwts.merchantAdmin(UUID.randomUUID(), merchantId, jwtSecret);
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/dispatch", fulfilmentId)
+                        .header("Authorization", "Bearer " + sellerToken))
+                .andExpect(status().isOk());
+
+        String expected = "Your InnBucks Marketplace order " + orderRef + " is ready to collect. "
+                + "Get your collection code in the app and show it at the counter. Ref " + orderRef;
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                verify(sms).sendSms("+263771234567", expected, orderRef));
+    }
+
     private UUID seedActiveListing(int stockQty) {
+        return seedActiveListing(stockQty, UUID.randomUUID());
+    }
+
+    private UUID seedActiveListing(int stockQty, UUID merchantId) {
         Instant now = Instant.now();
         Listing listing = Listing.builder()
                 .id(UUID.randomUUID())
-                .merchantId(UUID.randomUUID())
+                .merchantId(merchantId)
                 .title("Solar Lantern 20W")
                 .priceCents(1550L)
                 .currency("USD")

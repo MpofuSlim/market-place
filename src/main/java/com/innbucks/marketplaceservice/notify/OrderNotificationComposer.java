@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.notify;
 
 import com.innbucks.marketplaceservice.catalog.Listing;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.OrderPaid;
 import com.innbucks.marketplaceservice.seller.PayoutMethod;
@@ -140,8 +141,26 @@ public final class OrderNotificationComposer {
      */
     public static String parcelUnfulfilledMessage(String orderRef, String sellerReason,
                                                   long refundDueCents, String currency) {
-        StringBuilder message = new StringBuilder("Sorry - a seller cannot supply part of your "
-                + "InnBucks Marketplace order " + orderRef + ".");
+        return parcelUnfulfilledMessage(orderRef, sellerReason, refundDueCents, currency, false);
+    }
+
+    /**
+     * {@link #parcelUnfulfilledMessage(String, String, long, String)} with the
+     * no-show case: a COLLECTION parcel the buyer never came for, e.g.
+     * {@code "A collection from your InnBucks Marketplace order MKT-4F2A9C1B77D0
+     * was not picked up, so the seller has cancelled it. Reason - not collected
+     * within 5 days. A refund of USD 15.50 is being arranged. Ref
+     * MKT-4F2A9C1B77D0"}. Worded as what happened rather than as the seller's
+     * failure — the goods were ready, the buyer did not come.
+     */
+    public static String parcelUnfulfilledMessage(String orderRef, String sellerReason,
+                                                  long refundDueCents, String currency,
+                                                  boolean notCollected) {
+        StringBuilder message = new StringBuilder(notCollected
+                ? "A collection from your InnBucks Marketplace order " + orderRef
+                        + " was not picked up, so the seller has cancelled it."
+                : "Sorry - a seller cannot supply part of your InnBucks Marketplace order "
+                        + orderRef + ".");
         if (sellerReason != null && !sellerReason.isBlank()) {
             message.append(" Reason - ").append(sellerReason.trim());
             if (!sellerReason.trim().endsWith(".")) {
@@ -152,6 +171,52 @@ public final class OrderNotificationComposer {
                 ? " A refund of " + money(refundDueCents, currency) + " is being arranged."
                 : " Our support team will be in touch.");
         return message.append(" Ref ").append(orderRef).toString();
+    }
+
+    /**
+     * Told to the BUYER when a seller dispatches a parcel, e.g. {@code "Your
+     * InnBucks Marketplace order MKT-4F2A9C1B77D0 is on its way. Ref
+     * MKT-4F2A9C1B77D0"}, or — on a COLLECTION order, where DISPATCHED means set
+     * aside at the counter — {@code "... is ready to collect. Get your
+     * collection code in the app and show it at the counter. Ref ..."}.
+     *
+     * <p>The collection copy points at the code on purpose: it is now the only
+     * way a collection is handed over, and a buyer who arrives without one
+     * cannot be served.
+     *
+     * <p>The seller's dispatch note (courier, waybill) is deliberately NOT
+     * relayed here, although the app shows it. It is seller free text, and an
+     * SMS carries the platform's name — a note reading "pay the courier USD 5
+     * on arrival" would reach the buyer looking like our instruction.
+     */
+    public static String parcelDispatchedMessage(String orderRef, DeliveryMethod method,
+                                                 boolean partOfOrder) {
+        String subject = (partOfOrder ? "Part of your" : "Your")
+                + " InnBucks Marketplace order " + orderRef;
+        return method == DeliveryMethod.COLLECTION
+                ? subject + " is ready to collect. Get your collection code in the app and show "
+                        + "it at the counter. Ref " + orderRef
+                : subject + " is on its way. Ref " + orderRef;
+    }
+
+    /**
+     * Told to the BUYER when the SELLER closes a parcel as delivered on their
+     * own word, e.g. {@code "The seller has marked your InnBucks Marketplace
+     * order MKT-4F2A9C1B77D0 as delivered. Not received it - report it in the
+     * app within 7 days. Ref MKT-4F2A9C1B77D0"}.
+     *
+     * <p>This message IS the buyer's protection against a false "delivered":
+     * the escrow holds the seller's money for exactly the dispute window, and a
+     * window nobody knows is running protects nobody. So it names the window in
+     * days and says what to do, and it goes out whether or not the claim is
+     * true — the buyer is the only one who knows.
+     */
+    public static String parcelDeliveredBySellerMessage(String orderRef, boolean partOfOrder,
+                                                        long disputeWindowDays) {
+        return "The seller has marked " + (partOfOrder ? "part of your" : "your")
+                + " InnBucks Marketplace order " + orderRef + " as delivered. Not received it - "
+                + "report it in the app within " + disputeWindowDays
+                + (disputeWindowDays == 1 ? " day" : " days") + ". Ref " + orderRef;
     }
 
     /** Subject for the payout-destination change warning. */

@@ -502,7 +502,9 @@ An order carries `fulfilmentStatus` and a `fulfilments[]` array — **one parcel
 
 ### `POST /marketplace/orders/{id}/fulfilments/{fulfilmentId}/received`
 
-The buyer confirms receipt. **This releases the seller's money immediately** — it is the strongest evidence the platform has, so it waits for nothing. A seller's own close instead starts a 48-hour grace window.
+The buyer confirms receipt. **This releases the seller's money immediately** — it is the strongest evidence the platform has, so it waits for nothing. A seller's own close (DELIVERY orders only) instead holds the money for the buyer's whole dispute window, 7 days by default, and the buyer gets an SMS: *"The seller has marked your InnBucks Marketplace order MKT-… as delivered. Not received it - report it in the app within 7 days."* Make sure that SMS has somewhere to land: the order screen's "report a problem" action.
+
+The buyer is also told by SMS when a parcel is dispatched: *"… is on its way"* for a delivery, or *"… is ready to collect. Get your collection code in the app and show it at the counter."* for a collection.
 
 Prompt for it. It is the single most useful thing a buyer can do, and it is what makes fast payouts possible for good sellers.
 
@@ -537,7 +539,8 @@ For a **COLLECTION** parcel: mints the code that proves a handover at the counte
 - **Show `groupedCode`** (and a QR of `code`) — it is the form a human reads aloud.
 - **The plaintext exists only here and in the SMS.** No merchant surface has ever seen it: a seller who could read a code could redeem it themselves and take the instant payout with the goods still on the shelf.
 - **Lost code → mint again**, which replaces the live one.
-- Redeeming it closes the parcel as `deliveredBy: RECIPIENT` and **releases the seller's money immediately** — that instant payout is exactly the seller's incentive to ask for a code rather than self-closing into the grace window.
+- Redeeming it closes the parcel as `deliveredBy: RECIPIENT` and **releases the seller's money immediately**.
+- **On a collection the code is required.** The seller cannot mark a collection delivered on their own word, so the buyer must bring a code (or tap "received" after collecting). Surface the "Get collection code" action prominently once the parcel is `DISPATCHED` ("ready to collect").
 - `sentTo` is masked and reports what actually happened. It is absent when no message channel is configured on the cell.
 
 ---

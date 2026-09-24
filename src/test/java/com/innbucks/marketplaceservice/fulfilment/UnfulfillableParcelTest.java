@@ -83,12 +83,16 @@ class UnfulfillableParcelTest {
                         .listingId(UUID.randomUUID()).merchantId(MERCHANT_A)
                         .titleSnapshot("Solar Lantern 20W").unitPriceCents(1550)
                         .quantity(2).lineTotalCents(3100).build()));
+        orderDeliveredBy(DeliveryMethod.COLLECTION);
+    }
+
+    private void orderDeliveredBy(DeliveryMethod method) {
         Instant now = Instant.now();
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(MarketOrder.builder()
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(UUID.randomUUID())
                 .buyerMsisdn("+263771234567").status(OrderStatus.PAID)
                 .subtotalCents(3100).deliveryFeeCents(0).totalCents(3100).currency("USD")
-                .deliveryMethod(DeliveryMethod.COLLECTION)
+                .deliveryMethod(method)
                 .expiresAt(now).paidAt(now).createdAt(now).updatedAt(now).build()));
     }
 
@@ -148,6 +152,34 @@ class UnfulfillableParcelTest {
         assertThat(event.getValue().sellerReason()).isEqualTo("Out of stock");
         assertThat(event.getValue().refundDueCents()).isEqualTo(3100);
         assertThat(event.getValue().refundQueued()).isTrue();
+        // Declined while PREPARING: the seller could not supply it.
+        assertThat(event.getValue().notCollected()).isFalse();
+    }
+
+    @Test
+    @DisplayName("A COLLECTION the buyer never came for closes as not collected: stock back, refund queued")
+    void aCollectionNoShowClosesAsNotCollected() {
+        // The seller cannot close a collection as delivered on their own word,
+        // so this is how a no-show ends. The goods never left the counter.
+        OrderFulfilment parcel = parcel(FulfilmentStatus.DISPATCHED);
+        MerchantSettlement settlement = settlement(SettlementStatus.HELD);
+        when(settlementService.forParcel(parcel.getId())).thenReturn(settlement);
+
+        service.markUnfulfillable(SELLER, parcel.getId(), reason("Not collected within 5 days"));
+
+        assertThat(parcel.getStatus()).isEqualTo(FulfilmentStatus.UNFULFILLED);
+        verify(stockReturner).returnOnce(parcel);
+        verify(settlementService).markRefundDue(settlement, "Not collected within 5 days");
+        ArgumentCaptor<java.util.Map<String, Object>> metadata = ArgumentCaptor.forClass(java.util.Map.class);
+        verify(auditService).record(eq(AuditEventType.FULFILMENT_UNFULFILLED), anyString(),
+                eq(parcel.getId().toString()), metadata.capture());
+        assertThat(metadata.getValue()).containsEntry("notCollected", true);
+        ArgumentCaptor<ParcelUnfulfilled> event = ArgumentCaptor.forClass(ParcelUnfulfilled.class);
+        verify(eventPublisher).publishEvent(event.capture());
+        // ...and the buyer is told they did not pick it up, not that the
+        // seller ran out.
+        assertThat(event.getValue().notCollected()).isTrue();
+        assertThat(event.getValue().refundDueCents()).isEqualTo(3100);
     }
 
     @Test
@@ -183,8 +215,11 @@ class UnfulfillableParcelTest {
     }
 
     @Test
-    @DisplayName("A dispatched parcel cannot be declined — nothing is touched")
+    @DisplayName("A dispatched DELIVERY parcel cannot be declined — nothing is touched")
     void dispatchedCannotBeDeclined() {
+        // With a courier, "I cannot fulfil this" has stopped being true: a
+        // failed delivery is the buyer's dispute.
+        orderDeliveredBy(DeliveryMethod.DELIVERY);
         OrderFulfilment parcel = parcel(FulfilmentStatus.DISPATCHED);
 
         assertThatThrownBy(() -> service.markUnfulfillable(SELLER, parcel.getId(),

@@ -69,6 +69,7 @@ class FulfilmentServiceTest {
     private AuditService auditService;
     private com.innbucks.marketplaceservice.settlement.SettlementService settlementService;
     private SimpleMeterRegistry registry;
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private FulfilmentService service;
 
     @BeforeEach
@@ -80,12 +81,13 @@ class FulfilmentServiceTest {
         auditService = mock(AuditService.class);
         registry = new SimpleMeterRegistry();
         settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
+        eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
         service = new FulfilmentService(fulfilmentRepository, orderRepository, itemRepository,
                 eventRepository, settlementService, auditService, new MarketplaceMetrics(registry),
                 mock(com.innbucks.marketplaceservice.fulfilment.collect.CollectCodeAttempts.class),
                 mock(com.innbucks.marketplaceservice.notify.CollectCodeNotifier.class),
                 mock(ParcelStockReturner.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                eventPublisher);
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order()));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
@@ -319,6 +321,138 @@ class FulfilmentServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("illegal_fulfilment_state");
+    }
+
+    // ------------------------------------------------------------------
+    // The collection handover rule
+    // ------------------------------------------------------------------
+
+    private MarketOrder collectionOrder() {
+        MarketOrder collection = order();
+        collection.setDeliveryMethod(DeliveryMethod.COLLECTION);
+        collection.setDeliveryLine1(null);
+        collection.setDeliveryRecipientName(null);
+        collection.setDeliveryRecipientMsisdn(null);
+        collection.setDeliveryCity(null);
+        when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(collection));
+        return collection;
+    }
+
+    @Test
+    @DisplayName("A seller cannot close a COLLECTION as delivered on their own word")
+    void collectionCannotBeSelfClosed() {
+        // "The buyer collected" is the one claim a seller could make about a
+        // parcel still on their shelf. Only the buyer's code or the buyer's own
+        // confirmation closes a collection.
+        collectionOrder();
+        UUID id = UUID.randomUUID();
+        OrderFulfilment p = parcel(id, MERCHANT_A, FulfilmentStatus.DISPATCHED);
+
+        assertThatThrownBy(() -> service.markDelivered(SELLER_A, id))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("collect_code_required");
+
+        assertThat(p.getStatus()).isEqualTo(FulfilmentStatus.DISPATCHED);
+        assertThat(p.getDeliveredAt()).isNull();
+        verify(settlementService, never()).onParcelDelivered(any());
+        verify(eventPublisher, never()).publishEvent(any());
+        assertThat(outcome("self_close_refused")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("SUPER_ADMIN cannot close a COLLECTION as delivered either")
+    void collectionCannotBeClosedByAnOperatorEither() {
+        // An operator marking a counter handover they did not witness is the
+        // same unprovable claim.
+        collectionOrder();
+        UUID id = UUID.randomUUID();
+        OrderFulfilment p = parcel(id, MERCHANT_A, FulfilmentStatus.PREPARING);
+
+        assertThatThrownBy(() -> service.markDelivered(ADMIN, id))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("collect_code_required");
+        assertThat(p.getStatus()).isEqualTo(FulfilmentStatus.PREPARING);
+    }
+
+    @Test
+    @DisplayName("The buyer's own confirmation still closes a COLLECTION")
+    void buyerMayStillConfirmACollection() {
+        collectionOrder();
+        UUID id = UUID.randomUUID();
+        OrderFulfilment p = parcel(id, MERCHANT_A, FulfilmentStatus.DISPATCHED);
+
+        service.confirmReceived(BUYER, id);
+
+        assertThat(p.getStatus()).isEqualTo(FulfilmentStatus.DELIVERED);
+        assertThat(p.getDeliveredBy()).isEqualTo(DeliveryConfirmer.BUYER);
+    }
+
+    // ------------------------------------------------------------------
+    // Telling the buyer
+    // ------------------------------------------------------------------
+
+    private ParcelProgressed publishedProgress() {
+        ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher, times(1)).publishEvent(events.capture());
+        assertThat(events.getValue()).isInstanceOf(ParcelProgressed.class);
+        return (ParcelProgressed) events.getValue();
+    }
+
+    @Test
+    @DisplayName("Dispatching tells the buyer, naming the order and how it is coming")
+    void dispatchTellsTheBuyer() {
+        UUID id = UUID.randomUUID();
+        parcel(id, MERCHANT_A, FulfilmentStatus.PREPARING);
+
+        service.dispatch(SELLER_A, id, null);
+
+        ParcelProgressed event = publishedProgress();
+        assertThat(event.orderRef()).isEqualTo("MKT-4F9A1C22B7D3");
+        assertThat(event.buyerMsisdn()).isEqualTo("+263771234567");
+        assertThat(event.deliveryMethod()).isEqualTo(DeliveryMethod.DELIVERY);
+        assertThat(event.status()).isEqualTo(FulfilmentStatus.DISPATCHED);
+        assertThat(event.partOfOrder()).isFalse();
+    }
+
+    @Test
+    @DisplayName("A seller's own 'delivered' tells the buyer, so they know the dispute window is running")
+    void sellerCloseTellsTheBuyer() {
+        UUID id = UUID.randomUUID();
+        OrderFulfilment mine = parcel(id, MERCHANT_A, FulfilmentStatus.DISPATCHED);
+        OrderFulfilment theirs = parcel(UUID.randomUUID(), MERCHANT_B, FulfilmentStatus.PREPARING);
+        when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
+                .thenReturn(List.of(mine, theirs));
+
+        service.markDelivered(SELLER_A, id);
+
+        ParcelProgressed event = publishedProgress();
+        assertThat(event.status()).isEqualTo(FulfilmentStatus.DELIVERED);
+        // Two sellers: the copy says "part of your order", and only then.
+        assertThat(event.partOfOrder()).isTrue();
+    }
+
+    @Test
+    @DisplayName("A buyer's own confirmation tells nobody — they already know")
+    void buyerConfirmationSendsNothing() {
+        UUID id = UUID.randomUUID();
+        parcel(id, MERCHANT_A, FulfilmentStatus.DISPATCHED);
+
+        service.confirmReceived(BUYER, id);
+
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("A refused move tells nobody")
+    void refusedMoveSendsNothing() {
+        UUID id = UUID.randomUUID();
+        parcel(id, MERCHANT_A, FulfilmentStatus.DELIVERED);
+
+        assertThatThrownBy(() -> service.dispatch(SELLER_A, id, null))
+                .isInstanceOf(ApiException.class);
+        verify(eventPublisher, never()).publishEvent(any());
     }
 
     // ------------------------------------------------------------------

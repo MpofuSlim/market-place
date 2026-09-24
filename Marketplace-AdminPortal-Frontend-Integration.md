@@ -194,16 +194,23 @@ Params: `status` (`PREPARING` `DISPATCHED` `DELIVERED` `UNFULFILLED`), `page`, `
 | | |
 |---|---|
 | `POST /{id}/dispatch` | body `{ "note": "Swift Couriers, waybill 88213" }` (optional) |
-| `POST /{id}/delivered` | the seller's own close |
+| `POST /{id}/delivered` | the seller's own close — **DELIVERY orders only** |
 | `POST /{id}/unfulfillable` | `{ "reason": "…" }` — **required, buyer-visible** |
 
-**The state machine:** `PREPARING → DISPATCHED → DELIVERED`, with `PREPARING → DELIVERED` legal (goods handed over in person never pass through a dispatch), and `PREPARING → UNFULFILLED`. `DELIVERED` and `UNFULFILLED` are terminal.
+**The state machine:** `PREPARING → DISPATCHED → DELIVERED`, with `PREPARING → DELIVERED` legal (goods handed over in person never pass through a dispatch), and `PREPARING → UNFULFILLED`. On a **COLLECTION** order `DISPATCHED → UNFULFILLED` is also legal (the buyer never came). `DELIVERED` and `UNFULFILLED` are terminal.
+
+**The buyer gets an SMS** when a parcel is dispatched ("on its way" / "ready to collect — get your collection code in the app") and when the seller marks it delivered ("not received it — report it within 7 days"). The dispatch `note` is not included in the SMS; the buyer sees it in the app.
 
 An illegal move is `409 illegal_fulfilment_state` — **refused, never applied**. Hide or disable a control that isn't legal from the parcel's current status rather than letting the seller discover it as an error. A double-tap gets the same 409; treat it as "already done" and refresh.
 
 ### On a COLLECTION order, relabel
 
 `DISPATCHED` reads **"ready to collect"** and `DELIVERED` reads **"collected"**. You have `deliveryMethod` on the parcel. There is deliberately one state machine, not two vocabularies.
+
+**A collection can only be closed as collected with the buyer's code (`/collect`) or the buyer's own "received".** `POST /{id}/delivered` on a COLLECTION parcel is `409 collect_code_required` — for every caller, SUPER_ADMIN included. So on a COLLECTION parcel:
+
+- **Hide "Mark delivered".** Show **"Enter collection code"** instead.
+- Show **"Not collected"** on `DISPATCHED` (ready at the counter): it calls `/unfulfillable` with the seller's reason (e.g. *"Not collected within 5 days"*), returns the stock and refunds the buyer. It is the only way to end a collection the buyer never came for.
 
 ### Declining a parcel (`/unfulfillable`)
 
@@ -217,7 +224,8 @@ In one transaction it closes the parcel, **returns the stock to the catalogue**,
 
 - `reason` is **mandatory and shown verbatim to the buyer** — say so in the field's helper text.
 - `400 unfulfilled_reason_required` for a blank one or one that is nothing but markup.
-- **`409` on a DISPATCHED parcel is permanent, not retryable.** Once goods are with a courier, "I cannot fulfil this" has stopped being true — what follows is a delivery failure, and the buyer's dispute covers it. **Only show the button on `PREPARING`.**
+- **On a DELIVERY order, `409` on a DISPATCHED parcel is permanent, not retryable.** Once goods are with a courier, "I cannot fulfil this" has stopped being true — what follows is a delivery failure, and the buyer's dispute covers it. **Only show the button on `PREPARING`** for DELIVERY orders.
+- **On a COLLECTION order it is also available on `DISPATCHED`**, labelled *"Not collected"*. The buyer is told the collection was not picked up (not that the seller could not supply it).
 - The response's `settlementStatus` becomes `REFUND_DUE` — render it as *"Refunded to the buyer"*, not a pending payout. It stays unchanged when the money was already disputed or paid out; read it rather than assuming.
 
 ### `POST /{id}/collect` — redeem a collection code
@@ -238,7 +246,7 @@ Dashes, spaces and letter case are ignored, and confusable characters are folded
 | `409` | `collect_code_not_applicable` | this is a DELIVERY order |
 | `409` | `illegal_fulfilment_state` | already handed over |
 
-**Redeeming releases the seller's money immediately**, rather than after the 48-hour self-close grace window. That instant payout is the whole reason to ask for a code — worth surfacing on the screen as an incentive.
+**Redeeming releases the seller's money immediately**, and it is the only way the seller can close a collection themselves (`/delivered` is refused on collection orders — see above).
 
 > **No merchant surface ever shows the code itself.** `collectCodeIssued` tells you one exists; the plaintext is only ever in the buyer's app and the collector's SMS.
 
@@ -298,7 +306,7 @@ Params: `status`, `page`, `size`. `merchantId` **ignored** for a merchant.
 **How money clears — the two paths, worth explaining in the UI:**
 
 - **The buyer confirms receipt → released immediately.** Their word is the strongest evidence the platform has.
-- **The seller closes the parcel themselves → a 48-hour grace window** (`releasableAt`), then released automatically. A seller's own say-so buys them their money two days later, not never.
+- **The seller closes a DELIVERY parcel themselves → held for the buyer's whole dispute window** (`releasableAt`, 7 days by default), then released automatically. A seller's own say-so buys them their money a week later, not never — and never before the buyer's right to object has ended.
 - **A redeemed collection code → released immediately**, like the buyer's own confirmation.
 
 ### `GET /marketplace/settlements/summary`

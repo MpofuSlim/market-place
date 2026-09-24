@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -50,7 +51,8 @@ import static org.mockito.Mockito.when;
  */
 class SettlementServiceTest {
 
-    private static final long GRACE_HOURS = 48;
+    private static final long GRACE_HOURS = 168;
+    private static final long DISPUTE_WINDOW_DAYS = 7;
     private static final long STALE_AFTER_DAYS = 14;
     private static final UUID ORDER_ID = UUID.randomUUID();
     private static final UUID MERCHANT_A = UUID.randomUUID();
@@ -76,7 +78,8 @@ class SettlementServiceTest {
         registry = new SimpleMeterRegistry();
         service = new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService,
-                new MarketplaceMetrics(registry), GRACE_HOURS, STALE_AFTER_DAYS, 0.0);
+                new MarketplaceMetrics(registry), GRACE_HOURS, DISPUTE_WINDOW_DAYS,
+                STALE_AFTER_DAYS, 0.0);
         when(settlementRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
 
@@ -145,7 +148,8 @@ class SettlementServiceTest {
     void commissionComesOffTheTop() {
         service = new SettlementService(settlementRepository, fulfilmentRepository,
                 itemRepository, eventRepository, auditService,
-                new MarketplaceMetrics(registry), GRACE_HOURS, STALE_AFTER_DAYS, 5.0);
+                new MarketplaceMetrics(registry), GRACE_HOURS, DISPUTE_WINDOW_DAYS,
+                STALE_AFTER_DAYS, 5.0);
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(item(MERCHANT_A, 1000)));
         when(fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(ORDER_ID))
                 .thenReturn(List.of(parcel(MERCHANT_A, FulfilmentStatus.PREPARING, null)));
@@ -188,6 +192,30 @@ class SettlementServiceTest {
         assertThat(s.getStatus()).isEqualTo(SettlementStatus.RELEASABLE);
         assertThat(s.getReleasedAt()).isNotNull();
         assertThat(s.getReleasableAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("Refuses to start when a seller's own close could be paid out inside the dispute window")
+    void graceShorterThanTheDisputeWindowIsRefusedAtBoot() {
+        // The old 48h default against a 7-day dispute window: a seller-closed
+        // parcel became payable on day 2, and a buyer who reported it on day 3
+        // was told the money had already gone.
+        assertThatThrownBy(() -> new SettlementService(settlementRepository, fulfilmentRepository,
+                itemRepository, eventRepository, auditService, new MarketplaceMetrics(registry),
+                48, 7, STALE_AFTER_DAYS, 0.0))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("MARKETPLACE_SETTLEMENT_GRACE_HOURS to at least 168");
+    }
+
+    @Test
+    @DisplayName("A grace window equal to or longer than the dispute window is accepted")
+    void graceCoveringTheDisputeWindowIsAccepted() {
+        assertThatCode(() -> SettlementService.requireGraceCoversDisputeWindow(168, 7))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> SettlementService.requireGraceCoversDisputeWindow(240, 7))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> SettlementService.requireGraceCoversDisputeWindow(167, 7))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test

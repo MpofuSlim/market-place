@@ -134,13 +134,28 @@ as a pending payout.
 | `400` | (bean validation) | `reason` missing or > 255 chars | inline field error |
 | `403` | `FORBIDDEN` | caller sells for no organization (a customer, none chosen, or no `marketplace` product) | route to the organization picker |
 | `404` | `fulfilment_not_found` | unknown parcel, **or another seller's** | "This parcel is no longer available" |
-| `409` | `illegal_fulfilment_state` | parcel is already `DISPATCHED`, `DELIVERED` or `UNFULFILLED` | refresh the queue and show the real state |
+| `409` | `illegal_fulfilment_state` | parcel is already `DELIVERED` or `UNFULFILLED`, or is a `DISPATCHED` **DELIVERY** parcel | refresh the queue and show the real state |
 
-**`409` on a dispatched parcel is deliberate and permanent.** Once goods are
-with a courier, "I cannot fulfil this" has stopped being true — what happens
-next is a delivery failure, and the buyer's dispute is the path for it. Hide
-or disable the button for any parcel not in `PREPARING` rather than letting the
-seller discover this as an error.
+**`409` on a dispatched DELIVERY parcel is deliberate and permanent.** Once
+goods are with a courier, "I cannot fulfil this" has stopped being true — what
+happens next is a delivery failure, and the buyer's dispute is the path for it.
+Hide or disable the button for a DELIVERY parcel not in `PREPARING` rather than
+letting the seller discover this as an error.
+
+### Collections the buyer never came for ("Not collected")
+
+On a **COLLECTION** order the same endpoint is also allowed from `DISPATCHED`
+(ready at the counter). It is how a seller ends a collection the buyer never
+picked up — the goods never left the counter, so returning them and refunding
+the buyer is the truth. It matters more now that a seller **cannot** mark a
+collection delivered on their own word (`POST /{id}/delivered` →
+`409 collect_code_required`).
+
+- Label it **"Not collected"** on a DISPATCHED collection parcel, and ask for how
+  long they waited in `reason` (e.g. *"Not collected within 5 days"*).
+- Same effects: parcel `UNFULFILLED`, stock returned, money `REFUND_DUE`.
+- The buyer is told it was **not picked up**, not that the seller could not
+  supply it (see the SMS below).
 
 **`409` on an already-declined parcel is what a double-tap gets.** Nothing is
 re-applied: the stock is not returned a second time. Treat it as "already
@@ -193,6 +208,14 @@ Three things to get right on this screen:
 Sorry - a seller cannot supply part of your InnBucks Marketplace order
 MKT-4F2A9C1B77D0. Reason - out of stock. A refund of USD 31.00 is being
 arranged. Ref MKT-4F2A9C1B77D0
+```
+
+For a collection closed as not collected:
+
+```
+A collection from your InnBucks Marketplace order MKT-4F2A9C1B77D0 was not
+picked up, so the seller has cancelled it. Reason - not collected within 5
+days. A refund of USD 15.50 is being arranged. Ref MKT-4F2A9C1B77D0
 ```
 
 When the parcel's money could **not** be turned around (it was already disputed,
@@ -338,8 +361,10 @@ path, which is almost all of them.
 - [ ] **`fulfilmentStatus` is only `UNFULFILLED` when EVERY parcel was
       declined** — declined parcels are excluded from the roll-up, not ranked
       into it.
-- [ ] **Hide/disable "I can't supply this" outside `PREPARING`.** A dispatched
-      parcel is a permanent `409`, not a retryable one.
+- [ ] **Hide/disable "I can't supply this" outside `PREPARING` on a DELIVERY
+      parcel.** A dispatched delivery is a permanent `409`, not a retryable one.
+- [ ] **On a DISPATCHED COLLECTION parcel, show "Not collected"** — the same
+      endpoint, and the only way to end a no-show.
 - [ ] **A double-tap is a `409`, not a second restock.** Refresh, don't retry.
 - [ ] **`reason` is mandatory and buyer-visible.** Say so in the field's helper
       text.

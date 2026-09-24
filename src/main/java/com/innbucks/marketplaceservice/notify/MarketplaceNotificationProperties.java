@@ -16,6 +16,7 @@ public class MarketplaceNotificationProperties {
 
     private final RestockAlerts restockAlerts = new RestockAlerts();
     private final MerchantOrders merchantOrders = new MerchantOrders();
+    private final ParcelUpdates parcelUpdates = new ParcelUpdates();
 
     @Data
     public static class RestockAlerts {
@@ -44,6 +45,18 @@ public class MarketplaceNotificationProperties {
          * that endpoint: the lookup 404s, resolves nobody, and the notifier
          * meters {@code outcome=no_recipients} — exactly the behaviour this
          * flag used to produce, and no worse than a seller not being told.
+         */
+        private boolean enabled = true;
+    }
+
+    @Data
+    public static class ParcelUpdates {
+        /**
+         * Tell the buyer when a seller dispatches a parcel, sets it aside for
+         * collection, or closes it as delivered on their own word. ON by
+         * default and meant to stay on: the "delivered" message is what lets a
+         * buyer use the dispute window before the escrow pays the seller.
+         * Costs up to two SMS per parcel.
          */
         private boolean enabled = true;
     }

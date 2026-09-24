@@ -418,8 +418,25 @@ never change either casually.
     PREPARING) when there are no parcels.
   * `deliveredBy` keeps BUYER and MERCHANT apart: a buyer's confirmation is
     evidence a dispute can lean on in a way the seller's own say-so is not. The
-    seller can always close it themselves — a buyer who never opens the app
-    must not leave a parcel open forever.
+    seller can close a **DELIVERY** parcel themselves — a buyer who never opens
+    the app must not leave a courier delivery open forever — and the buyer is
+    SMSed when they do (see "A seller's word" below).
+  * **A seller's word never closes a COLLECTION.** `POST /{id}/delivered` on a
+    COLLECTION order is `409 collect_code_required`, for EVERY caller,
+    SUPER_ADMIN included. A collection happens at the seller's own counter, so
+    "the buyer collected" is the one claim a seller could make about goods still
+    on their shelf — and it is also the one case where the platform can do
+    better than take their word: the buyer's collection code (no seller surface
+    ever sees it) or the buyer's own "received". An operator marking a counter
+    handover they did not witness is the same unprovable claim, hence no admin
+    override. The exit for a buyer who never came is `DISPATCHED → UNFULFILLED`
+    ("not collected"), legal on COLLECTION orders only — see the V12 bullet
+    below. Without that exit this rule would strand a no-show forever: goods on
+    the shelf, money HELD, nobody able to end it. `FulfilmentStateMachine` is
+    method-aware (`isLegal(from, to, method)`) so the extra edge cannot leak onto
+    a courier delivery. Pinned by `FulfilmentServiceTest`,
+    `FulfilmentStateMachineTest`, `EscrowFlowIT.aCollectionCannotBeSelfClosed`
+    and `UnfulfilledParcelFlowIT.aCollectionNoShowClosesAsNotCollected`.
   * One vocabulary for both delivery methods: on a COLLECTION order DISPATCHED
     reads "ready to collect" and DELIVERED reads "collected". The app has the
     order's `deliveryMethod` and labels accordingly; two parallel vocabularies
@@ -484,10 +501,31 @@ never change either casually.
   * **Release follows the EVIDENCE.** The buyer's own receipt confirmation
     releases IMMEDIATELY (`released_at` stamped, no wait). A seller's
     self-close only starts the grace clock (`releasable_at = now + `
-    `marketplace.settlement.grace-hours`, default 48) — the
+    `marketplace.settlement.grace-hours`, default **168**) — the
     `SettlementReleaseSweeper` (ShedLock, per-row isolation, re-checks state
     AND clock inside each row's tx so a dispute landing mid-sweep wins)
     promotes it after. Delivery NEVER unfreezes a DISPUTED row.
+  * **The grace MUST cover the buyer's dispute window, and the service refuses
+    to boot otherwise** (`SettlementService.requireGraceCoversDisputeWindow`).
+    It was 48h against a 7-day window: a seller-closed parcel became payable on
+    day 2, and once PAID_OUT a dispute is refused
+    (`settlement_already_paid_out`), so a buyer reporting a parcel that never
+    came on day 3 found the money gone — the seller's word, unchallenged for two
+    days, was enough to be paid. Equal windows mean the money becomes payable
+    exactly when the buyer's right to object ends. Rows already HELD with a
+    48h `releasable_at` keep it (nothing rewrites them); only new self-closes
+    get the longer clock.
+  * **A seller's word is announced to the buyer.** Dispatch and a seller's own
+    "delivered" publish `ParcelProgressed` → `ParcelProgressNotificationListener`
+    (AFTER_COMMIT + `@Async`, never throws, SMS with WhatsApp fallback,
+    `marketplace.notifications.parcel-updates.enabled`, default ON). The
+    "delivered" copy names the dispute window in days: a window nobody knows is
+    running protects nobody. The buyer's own close and a redeemed code send
+    nothing — the person on the other end already knows. The dispatch note is
+    deliberately NOT relayed: it is seller free text, and an SMS carries the
+    platform's name (a note saying "pay the courier USD 5" would read as our
+    instruction). Metric `marketplace.notifications{type=parcel_dispatched|
+    parcel_delivered}`.
   * **gross/commission/net are all STORED and CHECK-enforced**
     (`net = gross - commission`); commission is
     `marketplace.settlement.commission-percent`, **0 by default** — charging
@@ -559,9 +597,9 @@ never change either casually.
     `GiftFlowIT`. Lost code = mint again, which replaces the live one.
   * **A redeemed code is the THIRD kind of delivery evidence**
     (`DeliveryConfirmer.RECIPIENT`, V11 widened the CHECK) and releases escrow
-    IMMEDIATELY, like a buyer's own confirmation — that instant payout is
-    precisely the seller's incentive to ask for a code instead of self-closing
-    into the 48h grace window.
+    IMMEDIATELY, like a buyer's own confirmation. It is also the ONLY way a
+    seller can close a collection themselves — see "A seller's word never
+    closes a COLLECTION" above.
   * **The wrong-code budget is counted in its OWN transaction**
     (`CollectCodeAttempts`, `REQUIRES_NEW` + bulk UPDATE). A counter written on
     the refusing transaction is rolled back by the very exception it counts, so
@@ -593,10 +631,16 @@ never change either casually.
   was to do nothing; and doing nothing left the settlement HELD where **no timer
   could reach it**, because `SettlementReleaseSweeper` matches a `releasable_at`
   that only a delivery sets. Money taken, goods never sent, nobody watching.
-  * **`FulfilmentStatus.UNFULFILLED` is terminal and reachable ONLY from
-    PREPARING.** Once a parcel is DISPATCHED the goods are with a courier and
-    "I cannot fulfil this" has stopped being true — that is a delivery failure,
-    which the buyer's dispute already covers with an operator looking at it.
+  * **`FulfilmentStatus.UNFULFILLED` is terminal and reachable from PREPARING —
+    and, on a COLLECTION order only, from DISPATCHED.** Once a DELIVERY parcel
+    is DISPATCHED the goods are with a courier and "I cannot fulfil this" has
+    stopped being true — that is a delivery failure, which the buyer's dispute
+    already covers with an operator looking at it. A DISPATCHED collection is
+    "ready at the counter": the goods never left, so a buyer who never came is
+    genuinely unfulfilled, and it is closed as "not collected" (journal detail
+    `Not collected: <reason>`, audit `notCollected: true`,
+    `ParcelUnfulfilled.notCollected` so the buyer's SMS says it was not picked
+    up rather than that the seller could not supply it).
     **Not `CANCELLED`**: `OrderStatus` spends that word on a buyer abandoning an
     unpaid order, and the two facts have opposite consequences.
   * **`rollUp` EXCLUDES UNFULFILLED rather than ranking it**, so
@@ -974,6 +1018,9 @@ copied from the middleware/ticketing discipline):**
   Metric `marketplace.notifications{type=order_paid,outcome=sent|fallback|
   failed|disabled}`.
 * **RESTOCK ALERTS** — see the V6 invariant above.
+* **PARCEL UPDATES (buyer)** — dispatched / ready to collect / seller-marked
+  delivered; see "A seller's word is announced to the buyer" in the escrow
+  section.
 * **MERCHANT NEW-PAID-ORDER — LIVE.** `notify/MerchantOrderNotifier` groups
   the order's lines by the snapshot `merchant_id` and notifies each merchant's
   admin users via `UserNotifyGateway` with THAT merchant's lines + subtotal.
