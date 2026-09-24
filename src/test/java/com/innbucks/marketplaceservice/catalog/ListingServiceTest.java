@@ -180,6 +180,11 @@ class ListingServiceTest {
         verify(auditService).record(eq(AuditEventType.LISTING_CREATED),
                 eq(MERCHANT.uuid()), eq(listing.getId().toString()), anyMap());
         assertEquals(1.0, registry.get("marketplace.listings.created").counter().count());
+        // The merchant becomes a seller by listing: the record is ensured once
+        // every check has passed, before the listing row is written.
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(sellerService, listingRepository);
+        order.verify(sellerService).ensureExists(MERCHANT_ID);
+        order.verify(listingRepository).save(any());
     }
 
     @Test
@@ -224,6 +229,7 @@ class ListingServiceTest {
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("title_invalid", ex.code());
         verify(listingRepository, never()).save(any());
+        verify(sellerService, never()).ensureExists(any());
     }
 
     @Test
@@ -1159,6 +1165,9 @@ class ListingServiceTest {
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("unknown_town", ex.code());
         verify(listingRepository, never()).save(any());
+        // Validation runs BEFORE the seller record is ensured, so a refused
+        // first create never registers (and audits) a seller it rolls back.
+        verify(sellerService, never()).ensureExists(any());
     }
 
     @Test

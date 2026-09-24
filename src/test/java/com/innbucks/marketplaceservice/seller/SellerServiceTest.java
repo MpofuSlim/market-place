@@ -115,13 +115,31 @@ class SellerServiceTest {
 
     @Test
     void ensureExistsCreatesAPendingRecordOnFirstSight() {
-        when(sellers.findById(MERCHANT)).thenReturn(Optional.empty());
+        // This call's insert-if-absent created the row; the read returns it as
+        // the database now holds it.
+        when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(1);
+        existing(SellerStatus.PENDING);
 
         MarketplaceSeller created = service.ensureExists(MERCHANT);
 
         assertThat(created.getStatus()).isEqualTo(SellerStatus.PENDING);
         assertThat(created.getMerchantId()).isEqualTo(MERCHANT);
         verify(audit).record(eq(AuditEventType.SELLER_REGISTERED), any(), eq(MERCHANT.toString()), anyMap());
+        // Never the find-then-save that raced: the insert IS the existence check.
+        verify(sellers, never()).save(any());
+    }
+
+    @Test
+    void ensureExistsThatLostTheRaceRegistersNobody() {
+        // 0 = a concurrent first write inserted the row (this call's insert
+        // waited for it, then did nothing). The winner audited the
+        // registration; this call must not audit a second one.
+        when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(0);
+        existing(SellerStatus.PENDING);
+
+        assertThat(service.ensureExists(MERCHANT).getStatus()).isEqualTo(SellerStatus.PENDING);
+        verify(audit, never()).record(any(), any(), any(), anyMap());
+        verify(sellers, never()).save(any());
     }
 
     @Test
@@ -282,6 +300,7 @@ class SellerServiceTest {
     @Test
     void ensureExistsAndLockCreatesAuditsAndLocksANewSeller() {
         when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(1);
+        existing(SellerStatus.PENDING);
 
         service.ensureExistsAndLock(MERCHANT);
 
@@ -299,6 +318,7 @@ class SellerServiceTest {
         // 0 = the row was already there, or a concurrent first write won the
         // insert; either way this call registered nobody and audits nothing.
         when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(0);
+        existing(SellerStatus.APPROVED);
 
         service.ensureExistsAndLock(MERCHANT);
 
