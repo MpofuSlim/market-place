@@ -60,6 +60,7 @@ public final class TestParcelViews {
             return out;
         });
         return new MerchantParcelViewAssembler(orders, items, settlementRepository,
-                mock(SettlementDisputeRepository.class), 10);
+                mock(SettlementDisputeRepository.class),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), 10);
     }
 }

@@ -28,4 +28,12 @@ public class TrackingProperties {
     private double maxLatitude = -15.5;
     private double minLongitude = 25.0;
     private double maxLongitude = 33.1;
+
+    /** Whether a position lies inside this market's bounding box: the one
+     *  check shared by a courier's ping and a collection point's map pin, so
+     *  both refuse the same phone-reporting-0,0 shapes. */
+    public boolean contains(double latitude, double longitude) {
+        return latitude >= minLatitude && latitude <= maxLatitude
+                && longitude >= minLongitude && longitude <= maxLongitude;
+    }
 }

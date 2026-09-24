@@ -80,7 +80,8 @@ class BuyerCancelParcelTest {
                 new MarketplaceMetrics(registry), mock(CollectCodeAttempts.class),
                 mock(CollectCodeNotifier.class), stockReturner, eventPublisher,
                 mock(MarketOrderDeliveryFeeRepository.class),
-                TestParcelViews.over(orderRepository, itemRepository, settlementService));
+                TestParcelViews.over(orderRepository, itemRepository, settlementService),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         order(DeliveryMethod.DELIVERY);
     }

@@ -1,10 +1,13 @@
 package com.innbucks.marketplaceservice.checkout.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointChoice;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import java.util.List;
 import java.util.UUID;
@@ -44,7 +47,22 @@ public record CheckoutQuoteRequest(
                 + "address gets 400 `delivery_address_required` rather than a quote missing a "
                 + "destination.",
                 example = "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45", nullable = true)
-        UUID deliveryAddressId) {
+        UUID deliveryAddressId,
+
+        @Schema(description = "COLLECTION only: which of each seller's collection points to "
+                + "collect from. A seller you do not name is collected from their DEFAULT point; "
+                + "a seller with no points is arranged directly with them. Ignored for DELIVERY.",
+                nullable = true)
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        @Valid
+        @Size(max = 50)
+        List<CollectionPointChoice> collectionPoints) {
+
+    /** The shape before collection points existed. */
+    public CheckoutQuoteRequest(Boolean fromCart, List<Item> items, DeliveryMethod deliveryMethod,
+                                UUID deliveryAddressId) {
+        this(fromCart, items, deliveryMethod, deliveryAddressId, null);
+    }
 
     @Schema(description = "One line to quote")
     public record Item(

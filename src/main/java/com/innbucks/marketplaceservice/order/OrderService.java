@@ -24,6 +24,7 @@ import com.innbucks.marketplaceservice.idempotency.IdempotencyService;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.dto.ConfirmPaymentRequest;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
+import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.order.dto.InternalOrderView;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
 import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
@@ -244,6 +245,12 @@ public class OrderService {
         if (!priced.issues().isEmpty()) {
             throw refusalFor(priced.issues()).withDetails(OrderRejectionDetails.of(priced.issues()));
         }
+        // Where each seller's goods are collected (COLLECTION only), by the
+        // same resolver the quote used - and before any stock is held, so a
+        // choice that is not the seller's refuses the order having reserved
+        // nothing.
+        Map<UUID, CollectionPoint> collectionPoints = checkoutService.resolveCollectionPoints(
+                deliveryMethod, priced, request.collectionPoints());
 
         long deliveryFee = priced.deliveryFeeCents();
         long totalCents;
@@ -301,6 +308,9 @@ public class OrderService {
                     .map(e -> new MarketOrderDeliveryFee(order.getId(), e.getKey(), e.getValue()))
                     .toList());
         }
+        // Each seller's collection point, COPIED now: a seller who later moves
+        // or removes the point must not move goods the buyer was told to fetch.
+        checkoutService.recordCollectionPoints(order.getId(), collectionPoints);
         transitions.journalCreation(order);
         log.info("order created id={} ref={} lines={} subtotalCents={} deliveryFeeCents={} "
                         + "totalCents={} delivery={}",

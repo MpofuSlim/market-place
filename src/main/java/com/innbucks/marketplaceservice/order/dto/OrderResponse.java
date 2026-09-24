@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.order.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint;
 import com.innbucks.marketplaceservice.checkout.dto.PaymentInstruction;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
@@ -88,7 +89,15 @@ public record OrderResponse(
                 + "order bought for oneself. Their number is returned in full here and nowhere "
                 + "else — this surface is the buyer reading back what they themselves typed.",
                 nullable = true)
-        Recipient recipient) {
+        Recipient recipient,
+
+        @Schema(description = "COLLECTION only: where each seller's goods are collected, one "
+                + "entry per seller in the order — present from the moment the order is placed, "
+                + "so the buyer sees where they will go before paying. The address is what was "
+                + "copied when the order was placed; `openingHours` are the point's CURRENT "
+                + "hours. A seller with no collection point is listed without one: say "
+                + "\"arrange collection with the seller\". Absent for DELIVERY.", nullable = true)
+        List<SellerCollectionPoint> collectionPoints) {
 
     @Schema(description = "The person this order was bought for")
     public record Recipient(

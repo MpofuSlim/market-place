@@ -58,6 +58,7 @@ class CatalogServiceTest {
     private CategoryRepository categoryRepository;
     private com.innbucks.marketplaceservice.seller.SellerService sellerService;
     private com.innbucks.marketplaceservice.review.ReviewService reviewService;
+    private com.innbucks.marketplaceservice.pickup.CollectionPointViews collectionPoints;
     private CatalogService catalogService;
 
     // Mocked Criteria API used to render captured Specifications.
@@ -74,13 +75,15 @@ class CatalogServiceTest {
         categoryRepository = mock(CategoryRepository.class);
         sellerService = mock(com.innbucks.marketplaceservice.seller.SellerService.class);
         reviewService = mock(com.innbucks.marketplaceservice.review.ReviewService.class);
+        collectionPoints = mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class);
         catalogService = new CatalogService(listingRepository, listingImageRepository,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
-                        mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe()),
+                        mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe(),
+                        collectionPoints),
                 sellerService, reviewService,
                 mock(com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService.class),
-                TestTowns.zimbabwe());
+                TestTowns.zimbabwe(), collectionPoints);
     }
 
     private static CatalogService.BrowseQuery query(String q, String category,
@@ -447,6 +450,105 @@ class CatalogServiceTest {
         verifyNoMoreInteractions(cb);
     }
 
+    private static CatalogService.BrowseQuery townFilters(String collectsIn, String availableIn) {
+        return new CatalogService.BrowseQuery(null, null, null, null, null, null, null, null,
+                ListingSort.NEWEST, 0, 20, null, collectsIn, availableIn);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void collectsInIsAnExistsOnTheSellersPointsCorrelatedOnTheMerchant() {
+        // Points belong to the SELLER, so the correlation is the listing's
+        // merchant, not the listing — and still an EXISTS, never a join.
+        Path<Object> merchantPath = mock(Path.class);
+        when(root.get("merchantId")).thenReturn(merchantPath);
+        jakarta.persistence.criteria.Subquery<Integer> points =
+                mock(jakarta.persistence.criteria.Subquery.class);
+        Root<com.innbucks.marketplaceservice.pickup.CollectionPoint> point = mock(Root.class);
+        Path<Object> pointMerchant = mock(Path.class);
+        Path<Object> pointTown = mock(Path.class);
+        when(query.subquery(Integer.class)).thenReturn(points);
+        when(points.from(com.innbucks.marketplaceservice.pickup.CollectionPoint.class))
+                .thenReturn(point);
+        when(points.select(any())).thenReturn(points);
+        when(point.get("merchantId")).thenReturn(pointMerchant);
+        when(point.get("townCode")).thenReturn(pointTown);
+
+        Specification<Listing> spec = browseAndCaptureSpec(townFilters(" BULAWAYO ", null));
+        spec.toPredicate(root, query, cb);
+
+        verify(cb).equal(pointMerchant, merchantPath);
+        verify(cb).equal(pointTown, "bulawayo");
+        verify(cb).exists(points);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void availableInIsOneOrOfDeliveredThereAndCollectableThere() {
+        // One OR of the two EXISTS: a listing that is both delivered to and
+        // collectable in the town appears once, and a seller who only offers
+        // collection there is not hidden from the shopper.
+        when(root.get(any(String.class))).thenReturn(mock(Path.class));
+        jakarta.persistence.criteria.Subquery<Integer> covers =
+                mock(jakarta.persistence.criteria.Subquery.class);
+        jakarta.persistence.criteria.Subquery<Integer> points =
+                mock(jakarta.persistence.criteria.Subquery.class);
+        when(query.subquery(Integer.class)).thenReturn(covers, points);
+        Root<ListingDeliveryTown> row = mock(Root.class);
+        Root<com.innbucks.marketplaceservice.pickup.CollectionPoint> point = mock(Root.class);
+        when(covers.from(ListingDeliveryTown.class)).thenReturn(row);
+        when(points.from(com.innbucks.marketplaceservice.pickup.CollectionPoint.class))
+                .thenReturn(point);
+        when(covers.select(any())).thenReturn(covers);
+        when(points.select(any())).thenReturn(points);
+        Path<Object> rowTown = mock(Path.class);
+        Path<Object> pointTown = mock(Path.class);
+        when(row.get(any(String.class))).thenReturn(mock(Path.class));
+        when(row.get("townCode")).thenReturn(rowTown);
+        when(point.get(any(String.class))).thenReturn(mock(Path.class));
+        when(point.get("townCode")).thenReturn(pointTown);
+        jakarta.persistence.criteria.Predicate delivered =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        jakarta.persistence.criteria.Predicate collected =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        when(cb.exists(covers)).thenReturn(delivered);
+        when(cb.exists(points)).thenReturn(collected);
+
+        Specification<Listing> spec = browseAndCaptureSpec(townFilters(null, "mutare"));
+        spec.toPredicate(root, query, cb);
+
+        verify(cb).equal(rowTown, "mutare");
+        verify(cb).equal(pointTown, "mutare");
+        verify(cb).or(delivered, collected);
+    }
+
+    @Test
+    void unknownCollectionTownsAre400NamingTheParameter() {
+        ApiException collects = assertThatApiException(
+                () -> catalogService.browse(townFilters("atlantis", null)));
+        assertThat(collects.code()).isEqualTo("unknown_town");
+        assertThat(collects.getMessage()).contains("collectsIn");
+
+        ApiException available = assertThatApiException(
+                () -> catalogService.browse(townFilters(null, "atlantis")));
+        assertThat(available.code()).isEqualTo("unknown_town");
+        assertThat(available.getMessage()).contains("availableIn");
+        verifyNoInteractions(listingRepository);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void blankCollectionTownsAreNoFilter() {
+        Path<Object> statusPath = mock(Path.class);
+        when(root.get("status")).thenReturn(statusPath);
+
+        Specification<Listing> spec = browseAndCaptureSpec(townFilters(" ", ""));
+        spec.toPredicate(root, query, cb);
+
+        verify(cb).equal(statusPath, ListingStatus.ACTIVE);
+        verifyNoMoreInteractions(cb);
+    }
+
     @SuppressWarnings("unchecked")
     private Pageable capturePageable(CatalogService.BrowseQuery request) {
         ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
@@ -494,6 +596,24 @@ class CatalogServiceTest {
     }
 
     @Test
+    void merchantProfileCarriesTheSellersCollectionPoints() {
+        UUID merchantId = UUID.randomUUID();
+        when(sellerService.findAllByMerchantIds(List.of(merchantId))).thenReturn(Map.of());
+        when(reviewService.merchantRating(merchantId))
+                .thenReturn(new MerchantRatingResponse(merchantId, null, 0));
+        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse point =
+                new com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse(
+                        UUID.randomUUID(), "Avondale shop", "harare", "Harare",
+                        "14 Samora Machel Ave", null, "Avondale", null, null, null, null, null,
+                        null, null, null, true, Instant.parse("2026-09-24T08:10:22Z"));
+        when(collectionPoints.forMerchant(merchantId)).thenReturn(List.of(point));
+
+        MerchantProfileResponse profile = catalogService.merchantProfile(merchantId);
+
+        assertThat(profile.collectionPoints()).containsExactly(point);
+    }
+
+    @Test
     void anUnknownMerchantIsAnEmptyProfileNotA404() {
         // A 404 would make the public catalogue an oracle for which merchant
         // ids exist, and a shopper on a stale link is better served by an
@@ -513,6 +633,7 @@ class CatalogServiceTest {
         assertThat(profile.since()).isNull();
         assertThat(profile.ratingAvg()).isNull();
         assertThat(profile.activeListingCount()).isZero();
+        assertThat(profile.collectionPoints()).isNotNull().isEmpty();
     }
 
     @Test

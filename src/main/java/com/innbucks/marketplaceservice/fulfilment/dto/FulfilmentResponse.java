@@ -99,5 +99,11 @@ public record FulfilmentResponse(
 
         @Schema(description = "This seller's delivery fee on the order, minor units. 0 for "
                 + "collection.", example = "800")
-        long deliveryFeeCents) {
+        long deliveryFeeCents,
+
+        @Schema(description = "COLLECTION only: where to collect this parcel, as copied when the "
+                + "order was placed (with the point's current opening hours). Absent when the "
+                + "seller had no collection point — collection is then arranged with them.",
+                nullable = true)
+        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse collectionPoint) {
 }

@@ -2,9 +2,11 @@ package com.innbucks.marketplaceservice.catalog.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.fulfilment.dto.SellerFulfilmentStats;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -70,6 +72,12 @@ public record MerchantProfileResponse(
                 + "orders (V9). Absent for a seller with no completed parcel yet — render \"new "
                 + "seller\", not zeroes. Individual figures inside stay null until they rest on "
                 + "enough parcels to mean something.", nullable = true)
-        SellerFulfilmentStats fulfilment
+        SellerFulfilmentStats fulfilment,
+
+        @Schema(description = "Where this seller's goods can be collected (V18), default first, "
+                + "with opening hours and whether each is open now in this market. Empty - never "
+                + "absent - for a seller who has set none up (collection is then arranged with "
+                + "them directly) and for an unknown merchant.")
+        List<CollectionPointResponse> collectionPoints
 ) {
 }

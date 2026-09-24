@@ -80,7 +80,8 @@ class UnfulfillableParcelTest {
                 new MarketplaceMetrics(registry), mock(CollectCodeAttempts.class),
                 mock(CollectCodeNotifier.class), stockReturner, eventPublisher,
                 mock(MarketOrderDeliveryFeeRepository.class),
-                TestParcelViews.over(orderRepository, itemRepository, settlementService));
+                TestParcelViews.over(orderRepository, itemRepository, settlementService),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
                 MarketOrderItem.builder().id(UUID.randomUUID()).orderId(ORDER_ID)

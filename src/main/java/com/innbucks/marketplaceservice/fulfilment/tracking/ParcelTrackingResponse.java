@@ -51,7 +51,13 @@ public record ParcelTrackingResponse(
         @Schema(description = "Who cancelled it (CANCELLED only): BUYER when you did, SELLER when "
                 + "they could not supply it or it was never collected", example = "SELLER",
                 nullable = true)
-        com.innbucks.marketplaceservice.fulfilment.UnfulfilledBy cancelledBy) {
+        com.innbucks.marketplaceservice.fulfilment.UnfulfilledBy cancelledBy,
+
+        @Schema(description = "COLLECTION only: where to collect it, as copied when the order was "
+                + "placed, with the point's current opening hours (`openNow` in local time). "
+                + "Absent when the seller had no collection point — arrange it with them.",
+                nullable = true)
+        com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse collectionPoint) {
 
     @Schema(description = "A stage the parcel reached, and when")
     public record Stage(

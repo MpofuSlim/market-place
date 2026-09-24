@@ -60,7 +60,9 @@ class CheckoutServiceTest {
         properties = new CheckoutProperties();
         service = new CheckoutService(properties,
                 new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD"),
-                mock(BasketViewAssembler.class), cartService, addressService, "USD");
+                mock(BasketViewAssembler.class), cartService, addressService,
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class),
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), "USD");
     }
 
     private static final UUID SELLER = UUID.fromString("7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54");

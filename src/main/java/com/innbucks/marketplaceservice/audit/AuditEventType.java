@@ -27,6 +27,13 @@ public enum AuditEventType {
      * place (V7's free-text stance, applied to money).
      */
     SELLER_PAYOUT_DESTINATION_CHANGED,
+    /** A seller (or an operator for them) added, changed, removed or re-defaulted
+     *  a collection point (V18). Metadata carries the point id, its town and
+     *  who acted — never the address or phone (V7's free-text stance). */
+    COLLECTION_POINT_CREATED,
+    COLLECTION_POINT_UPDATED,
+    COLLECTION_POINT_DELETED,
+    COLLECTION_POINT_DEFAULT_CHANGED,
     /** A merchant created a listing. */
     LISTING_CREATED,
     /** A merchant updated a listing's content (title/description/price/stock). */

@@ -1031,6 +1031,79 @@ never change either casually.
     `UserNotifyGatewayContractTest`, `BuyerNoticeTest`, and end to end by
     `SellerAlertsAndBuyerCancelIT` (shares `NotificationFlowIT`'s mocked
     channels, which now include `MerchantAdminResolver`).
+* **A seller says WHERE buyers collect (V18): collection points.** Before V18
+  a COLLECTION order meant "arrange it with the seller": no address, no hours,
+  and nothing on the order to say which counter. Now a seller keeps up to
+  **10** points (`seller_collection_point` + weekly `seller_collection_point_hours`),
+  managed at `/marketplace/sellers/me/collection-points` (MERCHANT_ADMIN, scoped
+  by SHAPE like the payout destination) with a SUPER_ADMIN override at
+  `/marketplace/admin/sellers/{merchantId}/collection-points`.
+  * **A point belongs to the SELLER, not the listing.** Every listing the
+    seller sells can be collected at any of their points; there is no per-listing
+    table to drift. So the browse `collectsIn` filter is an EXISTS correlated on
+    the listing's `merchantId`, where `deliversTo` correlates on the listing.
+  * **Exactly one default whenever a seller has any** (partial unique index
+    `uq_collection_point_default`): the first point becomes it, promotion demotes
+    FIRST then marks, deleting the default promotes the oldest survivor — the
+    address book's and the gallery's discipline. The index stops two defaults;
+    only the service can stop zero, so **every write for one seller first takes
+    that seller's `marketplace_seller` row lock**
+    (`MarketplaceSellerRepository.lockForUpdate`). Without it, two concurrent
+    first points both try to become the default and a double-tap is a 500
+    (this service maps no constraint violation to a 4xx). `is_default` is
+    read-only on the entity and changed only by the bulk statements.
+  * **Replace, never merge** — a point is redefined whole, hours included (the
+    payout-destination rule). Hard delete; orders keep their snapshot.
+  * **Hours are market-local wall-clock times** (`TIME`, never instants), at
+    most two periods a day, no overlap, opens before closes (400
+    `invalid_opening_hours`, naming the day). The server renders
+    `openingHoursSummary` ("Mon-Fri 08:00-17:00, Sat 08:00-13:00") and
+    `openNow` on `MarketZone`'s clock — the client prints, never computes. No
+    hours given = no summary and no `openNow`: saying nothing beats implying
+    "closed". A null element inside `openingHours` is a 400, not a 500 (Bean
+    Validation skips null list elements, so `OpeningHours.validate` checks).
+  * **The order SNAPSHOTS the point** (`market_order_collection_point`, one row
+    per `(order, merchant)`, written in the order's transaction): name, town,
+    address, landmark, phone, pin. `collection_point_id` is provenance only (no
+    FK) — the delivery-address and `title_snapshot` rule. A seller moving or
+    deleting a point never moves a collection already arranged. **Only the
+    HOURS are read live**, through the provenance id while the point still
+    exists: "is it open now" is about the counter today, not the day of the
+    order. A deleted point leaves the address and no hours.
+  * **The buyer's choice is optional and never gating.** `collectionPoints:
+    [{merchantId, collectionPointId}]` on the quote and the order; unchosen =
+    the seller's default; no points = no row, and collection is arranged
+    directly exactly as before V18. `CollectionPointResolver` is shared by quote
+    and order (the `CheckoutPricer` reason: the point a buyer was quoted is the
+    point the order records). A point that is not that seller's = 400
+    `unknown_collection_point`; one seller named twice = 400
+    `duplicate_collection_point_choice`; a choice for a seller no longer in the
+    basket is ignored. The new request field is
+    `@JsonInclude(NON_NULL)` so an old body fingerprints the same for
+    idempotency.
+  * **Where it is shown**: the quote and the buyer's order
+    (`collectionPoints`, per seller, COLLECTION only), each parcel
+    (`collectionPoint`), the seller's parcel card, the buyer's tracking view and
+    the collect-code response — all the snapshot, batch-read by
+    `CollectionPointViews` (one query per table per page). The public profile
+    carries the seller's live `collectionPoints` (empty list, never absent,
+    never a 404); every listing card carries `collectionTowns` (distinct, town
+    list order, one query per page).
+  * **Browse**: `collectsIn=<town>` and `availableIn=<town>` (delivered there OR
+    collectable there, one `OR` of two EXISTS, so a listing doing both appears
+    once — the filter a "near me" toggle wants). Both go through
+    `DeliveryTownCatalog.require`, so an unknown town is 400 `unknown_town`,
+    and both are in `BROWSE_PARAMS`. `city` stays the seller's free-text city.
+  * **Deliberately NOT done**: no SMS carries the point (seller free text stays
+    out of platform SMS — the dispatch-note rule), no per-listing points, no
+    geo search, no collection fee. Audit `COLLECTION_POINT_*` carries the
+    merchant, the town and `bySeller` — never the address typed.
+  * Pinned by `OpeningHoursTest`, `CollectionPointServiceTest`,
+    `CollectionPointResolverTest`, the collection cases in `CatalogServiceTest`,
+    and end to end by `CollectionPointFlowIT` (CRUD, default promotion, the cap,
+    owner-scoped 404s, the admin override, browse against real SQL, the
+    snapshot surviving an edit and a delete) plus the public-test case in
+    `PublicTestOrderRailIT`.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling

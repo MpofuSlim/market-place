@@ -11,6 +11,10 @@ import com.innbucks.marketplaceservice.review.dto.MerchantRatingResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
+import com.innbucks.marketplaceservice.pickup.CollectionPoint;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
 import lombok.RequiredArgsConstructor;
@@ -61,6 +65,7 @@ public class CatalogService {
     private final ReviewService reviewService;
     private final SellerFulfilmentStatsService statsService;
     private final DeliveryTownCatalog deliveryTowns;
+    private final CollectionPointViews collectionPoints;
 
     /**
      * Browse ACTIVE listings with optional filters, all combinable:
@@ -88,6 +93,16 @@ public class CatalogService {
      *       town is a 400 {@code unknown_town}, unlike the lenient filters
      *       above: an empty page would falsely say nobody delivers to the
      *       shopper.</li>
+     *   <li>{@code collectsIn} — a town code: only listings whose seller has a
+     *       collection point there (V18; an EXISTS on the seller's points,
+     *       correlated on the listing's merchant). Refused like
+     *       {@code deliversTo}, for the same reason.</li>
+     *   <li>{@code availableIn} — a town code: listings the shopper can get in
+     *       that town EITHER way, delivered there or collected there. One
+     *       {@code OR} of the two EXISTS, so a listing that does both appears
+     *       once. This is the filter a "near me" toggle wants: a seller who
+     *       only offers collection in the shopper's town is not "unavailable"
+     *       to them.</li>
      * </ul>
      *
      * <p>Ordered by {@link ListingSort} (default newest-first), always with a
@@ -149,17 +164,46 @@ public class CatalogService {
             // Refused, never lenient: an unknown town that matched nothing
             // would read as "nobody delivers to you", which is false.
             String town = deliveryTowns.require(request.deliversTo(), "deliversTo").getCode();
-            spec = spec.and((root, query, cb) -> {
-                Subquery<Integer> covers = query.subquery(Integer.class);
-                Root<ListingDeliveryTown> row = covers.from(ListingDeliveryTown.class);
-                covers.select(cb.literal(1)).where(
-                        cb.equal(row.get("listingId"), root.get("id")),
-                        cb.equal(row.get("townCode"), town));
-                return cb.exists(covers);
-            });
+            spec = spec.and((root, query, cb) -> cb.exists(deliversTo(root, query, cb, town)));
+        }
+        if (blankToNull(request.collectsIn()) != null) {
+            String town = deliveryTowns.require(request.collectsIn(), "collectsIn").getCode();
+            spec = spec.and((root, query, cb) -> cb.exists(collectsIn(root, query, cb, town)));
+        }
+        if (blankToNull(request.availableIn()) != null) {
+            String town = deliveryTowns.require(request.availableIn(), "availableIn").getCode();
+            spec = spec.and((root, query, cb) -> cb.or(
+                    cb.exists(deliversTo(root, query, cb, town)),
+                    cb.exists(collectsIn(root, query, cb, town))));
         }
         Page<Listing> result = listingRepository.findAll(spec, pageable);
         return ListingPageResponse.from(assembler.toResponsePage(result));
+    }
+
+    /** "This listing is delivered to {@code town}": correlated on the listing,
+     *  never a join (a join repeats a listing once per matching row and breaks
+     *  paging). */
+    private static Subquery<Integer> deliversTo(Root<Listing> root, CriteriaQuery<?> query,
+                                                CriteriaBuilder cb, String town) {
+        Subquery<Integer> covers = query.subquery(Integer.class);
+        Root<ListingDeliveryTown> row = covers.from(ListingDeliveryTown.class);
+        covers.select(cb.literal(1)).where(
+                cb.equal(row.get("listingId"), root.get("id")),
+                cb.equal(row.get("townCode"), town));
+        return covers;
+    }
+
+    /** "This listing's SELLER has a collection point in {@code town}":
+     *  correlated on the listing's merchant, because points belong to the
+     *  seller and apply to every listing they sell. */
+    private static Subquery<Integer> collectsIn(Root<Listing> root, CriteriaQuery<?> query,
+                                                CriteriaBuilder cb, String town) {
+        Subquery<Integer> points = query.subquery(Integer.class);
+        Root<CollectionPoint> point = points.from(CollectionPoint.class);
+        points.select(cb.literal(1)).where(
+                cb.equal(point.get("merchantId"), root.get("merchantId")),
+                cb.equal(point.get("townCode"), town));
+        return points;
     }
 
     /**
@@ -170,14 +214,23 @@ public class CatalogService {
     public record BrowseQuery(String q, String category, String condition, String city,
                               UUID merchantId, Long minPriceCents, Long maxPriceCents,
                               Boolean inStock, ListingSort sort, int page, int size,
-                              String deliversTo) {
+                              String deliversTo, String collectsIn, String availableIn) {
 
-        /** Everything but the town filter — the shape before it existed. */
+        /** Everything but the town filters — the shape before they existed. */
         public BrowseQuery(String q, String category, String condition, String city,
                            UUID merchantId, Long minPriceCents, Long maxPriceCents,
                            Boolean inStock, ListingSort sort, int page, int size) {
             this(q, category, condition, city, merchantId, minPriceCents, maxPriceCents,
                     inStock, sort, page, size, null);
+        }
+
+        /** With the V16 delivery-town filter, before the V18 collection ones. */
+        public BrowseQuery(String q, String category, String condition, String city,
+                           UUID merchantId, Long minPriceCents, Long maxPriceCents,
+                           Boolean inStock, ListingSort sort, int page, int size,
+                           String deliversTo) {
+            this(q, category, condition, city, merchantId, minPriceCents, maxPriceCents,
+                    inStock, sort, page, size, deliversTo, null, null);
         }
 
         /** The historical four-filter browse, newest-first. */
@@ -244,7 +297,10 @@ public class CatalogService {
                 listingRepository.countByMerchantIdAndStatus(merchantId, ListingStatus.ACTIVE),
                 // Same never-404 stance as the rest of the profile: an unknown
                 // merchant simply has no history, so the block is absent.
-                statsService.publicStats(merchantId));
+                statsService.publicStats(merchantId),
+                // And no points: an empty list, identical for "has none" and
+                // "does not exist".
+                collectionPoints.forMerchant(merchantId));
     }
 
     @Transactional(readOnly = true)

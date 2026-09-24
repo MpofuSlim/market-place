@@ -5,6 +5,8 @@ import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFeeResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.delivery.DeliveryTown;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionTown;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +44,7 @@ public class ListingViewAssembler {
     private final SellerService sellerService;
     private final ListingDeliveryTownRepository deliveryTownRepository;
     private final DeliveryTownCatalog deliveryTowns;
+    private final CollectionPointViews collectionPoints;
 
     /** Single-listing assembly: one image-metadata query + one category read +
      *  one seller read for the trust badge. */
@@ -56,7 +59,9 @@ public class ListingViewAssembler {
         MarketplaceSeller seller = sellers.get(listing.getMerchantId());
         return ListingResponse.from(listing, images, categoryName, seller,
                 sellerService.displayNames(merchantIds, sellers).get(listing.getMerchantId()),
-                coverageOf(deliveryTownRepository.findByListingId(listing.getId())));
+                coverageOf(deliveryTownRepository.findByListingId(listing.getId())),
+                collectionPoints.townsFor(merchantIds)
+                        .getOrDefault(listing.getMerchantId(), List.of()));
     }
 
     /**
@@ -137,6 +142,8 @@ public class ListingViewAssembler {
                 ? Map.of()
                 : deliveryTownRepository.findByListingIdIn(listingIds).stream()
                         .collect(Collectors.groupingBy(ListingDeliveryTown::getListingId));
+        // Sixth batch: each seller's collection towns (V18), one query per page.
+        Map<UUID, List<CollectionTown>> collectionTowns = collectionPoints.townsFor(merchantIds);
         Map<UUID, ListingResponse> byId = new LinkedHashMap<>();
         for (Listing listing : content) {
             byId.put(listing.getId(), ListingResponse.from(
@@ -145,7 +152,8 @@ public class ListingViewAssembler {
                     categoryNames.get(listing.getCategoryCode()),
                     sellersByMerchant.get(listing.getMerchantId()),
                     merchantNames.get(listing.getMerchantId()),
-                    coverageOf(coverageByListing.getOrDefault(listing.getId(), List.of()))));
+                    coverageOf(coverageByListing.getOrDefault(listing.getId(), List.of())),
+                    collectionTowns.getOrDefault(listing.getMerchantId(), List.of())));
         }
         return byId;
     }

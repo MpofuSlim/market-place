@@ -44,7 +44,8 @@ class MerchantParcelViewAssemblerTest {
         items = mock(MarketOrderItemRepository.class);
         settlements = mock(MerchantSettlementRepository.class);
         disputes = mock(SettlementDisputeRepository.class);
-        assembler = new MerchantParcelViewAssembler(orders, items, settlements, disputes, 10);
+        assembler = new MerchantParcelViewAssembler(orders, items, settlements, disputes,
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), 10);
         MarketOrder order = new MarketOrder();
         order.setId(ORDER);
         order.setOrderRef("MKT-4F9A1C22B7D3");

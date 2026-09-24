@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.checkout;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.cart.CartService;
+import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutOptionsResponse;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteRequest;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteResponse;
@@ -12,14 +13,22 @@ import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddressService;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.delivery.dto.AddressResponse;
+import com.innbucks.marketplaceservice.pickup.CollectionPoint;
+import com.innbucks.marketplaceservice.pickup.CollectionPointResolver;
+import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointChoice;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
+import com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -50,6 +59,8 @@ public class CheckoutService {
     private final BasketViewAssembler basketViews;
     private final CartService cartService;
     private final DeliveryAddressService addressService;
+    private final CollectionPointResolver collectionPoints;
+    private final CollectionPointViews collectionPointViews;
     private final String currency;
 
     public CheckoutService(CheckoutProperties properties,
@@ -57,12 +68,16 @@ public class CheckoutService {
                            BasketViewAssembler basketViews,
                            CartService cartService,
                            DeliveryAddressService addressService,
+                           CollectionPointResolver collectionPoints,
+                           CollectionPointViews collectionPointViews,
                            @Value("${innbucks.currency}") String currency) {
         this.properties = properties;
         this.pricer = pricer;
         this.basketViews = basketViews;
         this.cartService = cartService;
         this.addressService = addressService;
+        this.collectionPoints = collectionPoints;
+        this.collectionPointViews = collectionPointViews;
         this.currency = currency;
     }
 
@@ -113,7 +128,55 @@ public class CheckoutService {
                 paymentOptions(),
                 priced.deliveryFeesByMerchant().entrySet().stream()
                         .map(e -> new CheckoutQuoteResponse.SellerDeliveryFee(e.getKey(), e.getValue()))
-                        .toList());
+                        .toList(),
+                method == DeliveryMethod.COLLECTION
+                        ? collectionView(priced, resolveCollectionPoints(method, priced,
+                                request.collectionPoints()))
+                        : null);
+    }
+
+    /**
+     * Where each seller's goods are collected, for a COLLECTION basket — the
+     * ONE definition the quote and the order share, so the point a buyer was
+     * quoted is the point their order records. Empty for DELIVERY. Resolved
+     * BEFORE any stock is touched: a bad choice refuses the order cleanly.
+     *
+     * @throws ApiException 400 {@code unknown_collection_point} /
+     *         {@code duplicate_collection_point_choice}
+     */
+    public Map<UUID, CollectionPoint> resolveCollectionPoints(DeliveryMethod method,
+                                                              PricedBasket priced,
+                                                              List<CollectionPointChoice> choices) {
+        if (method != DeliveryMethod.COLLECTION) {
+            return Map.of();
+        }
+        return collectionPoints.resolve(sellersOf(priced), choices);
+    }
+
+    /** Copies each resolved point onto the order (V18 snapshot). No-op for none. */
+    public void recordCollectionPoints(UUID orderId, Map<UUID, CollectionPoint> resolved) {
+        collectionPoints.record(orderId, resolved);
+    }
+
+    /** Every seller in the basket, in basket order, with where they are collected. */
+    private List<SellerCollectionPoint> collectionView(PricedBasket priced,
+                                                       Map<UUID, CollectionPoint> resolved) {
+        List<CollectionPoint> chosen = List.copyOf(resolved.values());
+        Map<UUID, CollectionPointResponse> byId = new LinkedHashMap<>();
+        List<CollectionPointResponse> rendered = collectionPointViews.render(chosen);
+        for (int i = 0; i < chosen.size(); i++) {
+            byId.put(chosen.get(i).getMerchantId(), rendered.get(i));
+        }
+        return CollectionPointViews.perSeller(sellersOf(priced), byId);
+    }
+
+    private static List<UUID> sellersOf(PricedBasket priced) {
+        return priced.lines().stream()
+                .map(PricedLine::listing)
+                .filter(Objects::nonNull)
+                .map(Listing::getMerchantId)
+                .distinct()
+                .toList();
     }
 
     // ------------------------------------------------------------------
