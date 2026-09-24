@@ -787,6 +787,15 @@ never change either casually.
     stored as an address nobody can deliver to. V14 backfilled codes from
     city names; an address that matched none keeps a null town and a DELIVERY
     checkout on it is 422 `address_town_required` rather than a guess.
+    **The `unknown_town` message on the address path is CUSTOMER copy.** An app
+    that still sends free text shows it verbatim to whoever typed "Byo" or
+    "Harare CBD", and it once read "Choose the town from the list - GET
+    /marketplace/delivery-towns" on a shopper's screen. It is plain words
+    now, names no endpoint, and does not echo the typed text back.
+    `DeliveryTownCatalogTest.refusalsAreCustomerSafe` pins that. Matching stays
+    exact on purpose: guessing that "Byo" means Bulawayo risks the wrong town
+    and the wrong fee, and the town picker is the fix. Clients should branch
+    on `code`, not on the message.
   * **The fee is per SELLER, and it is the DEAREST of that seller's lines to
     the town, never the sum** — one seller ships one parcel. `CheckoutPricer`
     decides it (so cart, quote and order still cannot disagree), a line the

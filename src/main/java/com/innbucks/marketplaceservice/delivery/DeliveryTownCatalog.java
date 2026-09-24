@@ -62,7 +62,7 @@ public class DeliveryTownCatalog {
     public DeliveryTown require(String code, String field) {
         return find(code).orElseThrow(() -> ApiException.badRequest("unknown_town",
                 (field == null ? "town" : field) + " '" + code
-                        + "' is not a town we deliver to. GET /marketplace/delivery-towns lists them."));
+                        + "' is not one of our delivery towns - choose one from the list"));
     }
 
     /**
@@ -86,9 +86,15 @@ public class DeliveryTownCatalog {
                 }
             }
         }
-        throw ApiException.badRequest("unknown_town",
-                "Choose the town from the list - GET /marketplace/delivery-towns");
+        // Read by a CUSTOMER: an app that still sends free text shows this
+        // message as-is, so it is plain words and never names an endpoint.
+        // The typed text is not echoed back — the shopper just typed it.
+        throw ApiException.badRequest("unknown_town", ADDRESS_TOWN_MESSAGE);
     }
+
+    /** What a shopper sees when the town on an address is not one we know. */
+    static final String ADDRESS_TOWN_MESSAGE =
+            "Please choose your town from the list so we can show who delivers to you";
 
     private Map<String, DeliveryTown> towns() {
         Map<String, DeliveryTown> loaded = byCode;

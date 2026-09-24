@@ -341,7 +341,7 @@ public class ListingController {
     private static final String EXAMPLE_UNKNOWN_TOWN_400 = """
             {
               "code": "unknown_town",
-              "message": "deliveryTowns.townCode 'johannesburg' is not a town we deliver to. GET /marketplace/delivery-towns lists them."
+              "message": "deliveryTowns.townCode 'johannesburg' is not one of our delivery towns - choose one from the list"
             }""";
 
     private static final String EXAMPLE_DUPLICATE_TOWN_400 = """
