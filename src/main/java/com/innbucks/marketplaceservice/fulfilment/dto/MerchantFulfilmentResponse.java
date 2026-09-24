@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.DeliveryConfirmer;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
+import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelLocation;
+import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -116,5 +118,21 @@ public record MerchantFulfilmentResponse(
         String unfulfilledReason,
 
         @Schema(example = "2026-09-18T09:15:00Z", nullable = true)
-        Instant unfulfilledAt) {
+        Instant unfulfilledAt,
+
+        @Schema(description = "The parcel's tracking code - search it with "
+                + "GET /marketplace/fulfilments/tracking/{code}", example = "TRK-7F3K9Q2M4X")
+        String trackingCode,
+
+        @Schema(description = "RECEIVED / DISPATCHED / DELIVERED / CANCELLED - the tracker's "
+                + "reading of `status`", example = "DISPATCHED")
+        TrackingStatus trackingStatus,
+
+        @Schema(description = "Your delivery fee for this parcel, minor units - part of "
+                + "settlementNetCents. 0 for collection.", example = "800")
+        long deliveryFeeCents,
+
+        @Schema(description = "Where your courier last reported this parcel. Absent until they "
+                + "post a position.", nullable = true)
+        ParcelLocation lastLocation) {
 }

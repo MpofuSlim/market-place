@@ -127,9 +127,18 @@ exactly the half-provisioned failure the ticketing CLAUDE.md records for the ZW
 card rail. The default is deliberately the one rail every cell has.
 
 Optional, same file: `MARKETPLACE_DELIVERY_METHODS` (default
-`DELIVERY,COLLECTION`) and `MARKETPLACE_DELIVERY_FEE_CENTS` (default `0` — this
-service books no couriers and has no rate card, so a non-zero fee is a
-commercial decision a cell makes deliberately).
+`DELIVERY,COLLECTION`). There is no cell-wide delivery fee any more: since V14
+each seller sets a fee per town on their listings, and
+`MARKETPLACE_DELIVERY_FEE_CENTS` is ignored — remove it from the cell env.
+
+Courier tracking (V14), same file, all optional:
+`MARKETPLACE_TRACKING_MIN_PING_INTERVAL_SECONDS` (5),
+`MARKETPLACE_TRACKING_MAX_PING_AGE_SECONDS` (600), and the market's bounding
+box `MARKETPLACE_TRACKING_{MIN,MAX}_{LATITUDE,LONGITUDE}` — the defaults are
+Zimbabwe with a margin, so **a cell in any other market must set all four**
+or every courier position there is refused `location_out_of_bounds`. The new
+endpoints (`/marketplace/delivery-towns`, `/marketplace/deliveries/**`) ride
+the existing `/marketplace/**` route; no gateway change.
 
 
 ## 7. Sellers are ORGANIZATIONS (step 2 of the fleet organizations plan)

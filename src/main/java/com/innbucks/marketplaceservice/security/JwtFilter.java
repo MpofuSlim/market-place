@@ -55,8 +55,10 @@ public class JwtFilter extends OncePerRequestFilter {
     private final TokenVersionStore tokenVersionStore;
 
     static final String MERCHANT_ADMIN = "MERCHANT_ADMIN";
+    static final String COURIER = "COURIER";
     static final String MARKETPLACE_PRODUCT = "marketplace";
     private static final Set<String> RUNS_ORGANIZATION = Set.of("OWNER", "ADMIN");
+    private static final Set<String> MEMBER_OF_ORGANIZATION = Set.of("OWNER", "ADMIN", "STAFF");
 
     private static final List<String> EXCLUDED_PATHS = List.of(
             "/swagger-ui",
@@ -90,17 +92,19 @@ public class JwtFilter extends OncePerRequestFilter {
         String homeCountry = null;
         try {
             if (jwtUtil.isTokenValid(token) && !isRejected(token, request)) {
-                String seller = sellingOrganizationOf(
-                        jwtUtil.extractOrganizationId(token),
-                        jwtUtil.extractOrganizationRole(token),
-                        jwtUtil.extractProducts(token));
+                String organizationId = jwtUtil.extractOrganizationId(token);
+                String organizationRole = jwtUtil.extractOrganizationRole(token);
+                Set<String> products = jwtUtil.extractProducts(token);
+                String seller = sellingOrganizationOf(organizationId, organizationRole, products);
+                String courier = deliveringOrganizationOf(organizationId, organizationRole, products);
                 AuthenticatedUser user = new AuthenticatedUser(
                         jwtUtil.extractUserUuid(token),
-                        sellerRoles(jwtUtil.extractRoles(token), seller),
+                        courierRoles(sellerRoles(jwtUtil.extractRoles(token), seller), courier),
                         seller,
                         null,
                         jwtUtil.extractPhoneNumber(token),
-                        jwtUtil.extractCountry(token));
+                        jwtUtil.extractCountry(token),
+                        courier);
 
                 List<SimpleGrantedAuthority> authorities = new ArrayList<>();
                 for (String role : user.roles()) {
@@ -161,6 +165,37 @@ public class JwtFilter extends OncePerRequestFilter {
             return null;
         }
         return organizationId;
+    }
+
+    /**
+     * The organization whose parcels a caller may CARRY (V14), or null: any
+     * member — OWNER, ADMIN or STAFF — of an organization holding the
+     * {@code marketplace} product. Wider than {@link #sellingOrganizationOf} on
+     * purpose, because delivery drivers are usually STAFF; and it buys exactly
+     * one thing, the courier surface — posting positions for that
+     * organization's parcels in transit, and seeing which those are.
+     */
+    static String deliveringOrganizationOf(String organizationId, String organizationRole,
+                                           Set<String> products) {
+        if (organizationId == null || organizationRole == null || products == null) {
+            return null;
+        }
+        if (!MEMBER_OF_ORGANIZATION.contains(organizationRole)
+                || !products.contains(MARKETPLACE_PRODUCT)) {
+            return null;
+        }
+        return organizationId;
+    }
+
+    /** {@code COURIER} decided by {@link #deliveringOrganizationOf} alone —
+     *  user-service never mints it, so a token claiming it is not believed. */
+    static Set<String> courierRoles(Set<String> roles, String deliveringOrganization) {
+        Set<String> out = new LinkedHashSet<>(roles);
+        out.remove(COURIER);
+        if (deliveringOrganization != null) {
+            out.add(COURIER);
+        }
+        return out;
     }
 
     /**

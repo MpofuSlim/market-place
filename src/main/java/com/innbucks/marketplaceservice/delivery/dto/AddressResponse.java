@@ -45,11 +45,16 @@ public record AddressResponse(
         Instant createdAt,
 
         @Schema(example = "2026-09-12T08:10:22Z")
-        Instant updatedAt) {
+        Instant updatedAt,
+
+        @Schema(description = "The town code. Null on an old address whose city matched no town — "
+                + "edit it before using it for delivery.", example = "harare", nullable = true)
+        String townCode) {
 
     public static AddressResponse from(DeliveryAddress a) {
         return new AddressResponse(a.getId(), a.getLabel(), a.getRecipientName(),
                 a.getRecipientMsisdn(), a.getLine1(), a.getLine2(), a.getCity(), a.getArea(),
-                a.getLandmark(), a.isDefaultAddress(), a.getCreatedAt(), a.getUpdatedAt());
+                a.getLandmark(), a.isDefaultAddress(), a.getCreatedAt(), a.getUpdatedAt(),
+                a.getTownCode());
     }
 }

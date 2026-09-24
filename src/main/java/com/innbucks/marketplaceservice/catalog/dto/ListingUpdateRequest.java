@@ -2,11 +2,14 @@ package com.innbucks.marketplaceservice.catalog.dto;
 
 import com.innbucks.marketplaceservice.catalog.ItemCondition;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+
+import java.util.List;
 
 /**
  * Full-replace update payload (PUT). Same field rules as
@@ -61,6 +64,23 @@ public record ListingUpdateRequest(
         @NotNull
         @Min(0)
         @Max(1_000_000)
-        Integer stockQty
+        Integer stockQty,
+
+        @Schema(description = "Towns this listing can be DELIVERED to, each with its fee. "
+                + "**The one field this full replace leaves alone when omitted**: null keeps the "
+                + "current towns, [] makes the listing collection only, a list replaces them. "
+                + "It is a list a seller builds up town by town, and a client that predates it "
+                + "must not wipe it on every edit.",
+                nullable = true)
+        @Valid
+        @Size(max = 100)
+        List<DeliveryTownFee> deliveryTowns
 ) {
+
+    /** Pre-V14 shape: delivery towns unchanged. */
+    public ListingUpdateRequest(String title, String description, String categoryCode,
+                                ItemCondition condition, String city, String area, Long priceCents,
+                                Integer stockQty) {
+        this(title, description, categoryCode, condition, city, area, priceCents, stockQty, null);
+    }
 }

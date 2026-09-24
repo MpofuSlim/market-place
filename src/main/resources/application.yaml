@@ -120,15 +120,28 @@ marketplace:
     # How goods may reach the buyer here. A market with no courier arrangement
     # drops DELIVERY and checkout stops offering it.
     methods: ${MARKETPLACE_DELIVERY_METHODS:DELIVERY,COLLECTION}
-    # Flat delivery fee in MINOR units, added to a DELIVERY order's total;
-    # COLLECTION never pays it. Zero by default, which is the honest default:
-    # this service books no couriers and has no rate card, so any non-zero
-    # number is a commercial decision a cell makes deliberately. A per-merchant
-    # or per-zone rate is a real gap (a multi-seller order ships in several
-    # parcels and pays this ONCE) and is deferred rather than faked.
-    fee-cents: ${MARKETPLACE_DELIVERY_FEE_CENTS:0}
+    # There is no flat delivery fee any more (V14): each listing names the towns
+    # it delivers to and the fee for each, and a DELIVERY order pays each
+    # seller's fee to the buyer's town. MARKETPLACE_DELIVERY_FEE_CENTS is gone.
     # Abuse guard on the buyer's address book.
     max-addresses-per-buyer: ${MARKETPLACE_MAX_ADDRESSES_PER_BUYER:25}
+  tracking:
+    # Courier position reports (POST /marketplace/deliveries/{id}/location).
+    # Only the LATEST position per parcel is kept — never a route.
+    #
+    # A report newer than the stored one by less than this is ignored (200,
+    # accepted=false): a browser's watchPosition can fire several times a
+    # second, and the buyer's map polls far slower than that.
+    min-ping-interval-seconds: ${MARKETPLACE_TRACKING_MIN_PING_INTERVAL_SECONDS:5}
+    # A fix older than this when it arrives is not "where the parcel is now".
+    max-ping-age-seconds: ${MARKETPLACE_TRACKING_MAX_PING_AGE_SECONDS:600}
+    # The market's bounding box. A position outside it is refused 422 — almost
+    # always a phone with no GPS fix yet reporting 0,0. Defaults are Zimbabwe
+    # with a margin; a cell in another market MUST set its own.
+    min-latitude: ${MARKETPLACE_TRACKING_MIN_LATITUDE:-22.5}
+    max-latitude: ${MARKETPLACE_TRACKING_MAX_LATITUDE:-15.5}
+    min-longitude: ${MARKETPLACE_TRACKING_MIN_LONGITUDE:25.0}
+    max-longitude: ${MARKETPLACE_TRACKING_MAX_LONGITUDE:33.1}
   seller-stats:
     # Sample floor under the public trust figures (median dispatch time,
     # buyer-confirmed rate). Below it a figure is NULL, never a percentage —

@@ -89,6 +89,7 @@ public class OrderService {
 
     private final MarketOrderRepository orderRepository;
     private final MarketOrderItemRepository itemRepository;
+    private final MarketOrderDeliveryFeeRepository deliveryFeeRepository;
     private final ListingRepository listingRepository;
     private final OrderTransitionService transitions;
     private final IdempotencyService idempotencyService;
@@ -112,6 +113,7 @@ public class OrderService {
 
     public OrderService(MarketOrderRepository orderRepository,
                         MarketOrderItemRepository itemRepository,
+                        MarketOrderDeliveryFeeRepository deliveryFeeRepository,
                         ListingRepository listingRepository,
                         OrderTransitionService transitions,
                         IdempotencyService idempotencyService,
@@ -133,6 +135,7 @@ public class OrderService {
                         @Value("${innbucks.currency}") String currency) {
         this.orderRepository = orderRepository;
         this.itemRepository = itemRepository;
+        this.deliveryFeeRepository = deliveryFeeRepository;
         this.listingRepository = listingRepository;
         this.transitions = transitions;
         this.idempotencyService = idempotencyService;
@@ -233,12 +236,16 @@ public class OrderService {
         // resolver the cart and the quote use, so the three screens a shopper
         // sees in a row cannot disagree about what is buyable. Still ADVISORY:
         // reserveStock below is the authoritative guard.
-        PricedBasket priced = pricer.price(basket);
+        // Delivery coverage and each seller's fee to the buyer's town are part
+        // of the same resolution - a line nobody delivers there is refused
+        // here, before any stock is held.
+        PricedBasket priced = pricer.price(basket, deliveryMethod,
+                destination == null ? null : destination.getTownCode());
         if (!priced.issues().isEmpty()) {
             throw refusalFor(priced.issues()).withDetails(OrderRejectionDetails.of(priced.issues()));
         }
 
-        long deliveryFee = checkoutService.deliveryFeeFor(deliveryMethod);
+        long deliveryFee = priced.deliveryFeeCents();
         long totalCents;
         try {
             totalCents = Math.addExact(priced.subtotalCents(), deliveryFee);
@@ -287,6 +294,13 @@ public class OrderService {
                         .build())
                 .toList();
         itemRepository.saveAll(items);
+        // Each seller's fee, fixed now: the buyer pays what they were quoted
+        // even if the seller reprices a town before the order is paid.
+        if (!priced.deliveryFeesByMerchant().isEmpty()) {
+            deliveryFeeRepository.saveAll(priced.deliveryFeesByMerchant().entrySet().stream()
+                    .map(e -> new MarketOrderDeliveryFee(order.getId(), e.getKey(), e.getValue()))
+                    .toList());
+        }
         transitions.journalCreation(order);
         log.info("order created id={} ref={} lines={} subtotalCents={} deliveryFeeCents={} "
                         + "totalCents={} delivery={}",
@@ -379,6 +393,7 @@ public class OrderService {
         order.setDeliveryLine2(address.getLine2());
         order.setDeliveryCity(address.getCity());
         order.setDeliveryArea(address.getArea());
+        order.setDeliveryTownCode(address.getTownCode());
         order.setDeliveryLandmark(address.getLandmark());
     }
 
@@ -406,12 +421,21 @@ public class OrderService {
                 .findFirst()
                 .map(r -> ApiException.unprocessable("listing_unavailable",
                         "Listing " + r.listingId() + " is not available"))
-                .orElseGet(() -> rejections.stream()
+                .or(() -> rejections.stream()
+                        .filter(r -> OrderLineRejection.REASON_INSUFFICIENT_STOCK.equals(r.reason()))
                         .min(Comparator.comparing(OrderLineRejection::listingId))
                         .map(r -> ApiException.conflict("insufficient_stock",
-                                "Insufficient stock for listing " + r.listingId()))
-                        .orElseThrow(() -> new IllegalStateException(
-                                "refusalFor called with no rejections")));
+                                "Insufficient stock for listing " + r.listingId())))
+                // V14, last: a line nobody delivers to the buyer's town. Ranked
+                // after availability and stock so every pre-V14 refusal stays
+                // byte-identical; the details name every line either way.
+                .or(() -> rejections.stream()
+                        .filter(r -> OrderLineRejection.REASON_NOT_DELIVERED_TO_TOWN.equals(r.reason()))
+                        .findFirst()
+                        .map(r -> ApiException.unprocessable("not_delivered_to_town",
+                                r.message() + ". Choose collection or another address.")))
+                .orElseThrow(() -> new IllegalStateException(
+                        "refusalFor called with no rejections"));
     }
 
     /**

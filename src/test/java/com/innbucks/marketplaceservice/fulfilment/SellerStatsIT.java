@@ -86,14 +86,16 @@ class SellerStatsIT extends PostgresTestContainer {
                 ? paidAt.plus(5, ChronoUnit.DAYS) : null;
         jdbc.update("""
                 INSERT INTO order_fulfilment (id, order_id, merchant_id, status,
-                    dispatched_at, delivered_at, delivered_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    dispatched_at, delivered_at, delivered_by, created_at, updated_at,
+                    tracking_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 UUID.randomUUID(), orderId, merchantId, status,
                 dispatchedAt == null ? null : java.sql.Timestamp.from(dispatchedAt),
                 deliveredAt == null ? null : java.sql.Timestamp.from(deliveredAt),
                 deliveredBy,
-                java.sql.Timestamp.from(paidAt), java.sql.Timestamp.from(paidAt));
+                java.sql.Timestamp.from(paidAt), java.sql.Timestamp.from(paidAt),
+                com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes.mint());
     }
 
     @Test

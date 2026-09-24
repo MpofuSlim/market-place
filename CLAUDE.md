@@ -389,13 +389,10 @@ never change either casually.
 * **Money on an order is a SPLIT**: `total_cents = subtotal_cents +
   delivery_fee_cents`, CHECK-enforced. `total_cents` stays the SINGLE number
   payment-service collects, so its internal contract is unchanged and needed no
-  coordinated deploy. The delivery fee is a flat per-cell
-  `marketplace.delivery.fee-cents`, **0 by default** — this service books no
-  couriers and has no rate card, so any non-zero number is a deliberate
-  commercial decision. **Known gap, deliberately deferred:** a multi-seller
-  order ships in several parcels and pays that fee ONCE; a per-merchant or
-  per-zone rate card is real work, not something to fake with a number nobody
-  can justify.
+  coordinated deploy. Since V14 `delivery_fee_cents` is the SUM of each
+  seller's fee to the buyer's town — see "Delivery towns, per-seller fees and
+  parcel tracking (V14)" below. The old flat per-cell
+  `MARKETPLACE_DELIVERY_FEE_CENTS` is gone.
 * **Fulfilment is PER SELLER and a SEPARATE lifecycle from payment (V9)**:
   `order_fulfilment`, one row per `(order, merchant)`, opened in the SAME
   transaction as the PAID transition (idempotent via the unique index, because
@@ -529,9 +526,12 @@ never change either casually.
   * **gross/commission/net are all STORED and CHECK-enforced**
     (`net = gross - commission`); commission is
     `marketplace.settlement.commission-percent`, **0 by default** — charging
-    one is a config change, not a migration. The delivery fee is in NO
-    merchant settlement: it is per ORDER, sellers ship their own parcels, and
-    splitting one fee across N sellers invents an allocation nobody agreed to.
+    one is a config change, not a migration. **Since V14 the seller's
+    delivery fee IS in their settlement** (`gross = goods + delivery`, the
+    split kept in `delivery_fee_cents`): the fee is now per SELLER, fixed at
+    order time, so there is nothing to allocate — the seller who drove the
+    parcel is owed it, and it is held and released with the goods.
+    **Commission is charged on the goods only**, never on the delivery fee.
   * **Disputes are the buyer's half** (`POST /marketplace/orders/{id}/
     fulfilments/{fid}/dispute` — buyers think in orders, not settlements):
     owner-masked 404s, PAID orders only, bounded reason enum + sanitized
@@ -763,6 +763,101 @@ never change either casually.
   * **V13 backfills nothing** — no destination was ever collected, so every
     existing seller correctly has none.
 
+* **Delivery towns, per-seller fees and parcel tracking (V14).** A seller now
+  says WHERE they deliver and what it costs; a buyer can only choose DELIVERY
+  when every line reaches their town; and a parcel on the road can be tracked
+  by code and on a map.
+  * **Towns are a controlled, migration-seeded list** (`delivery_town`,
+    `GET /marketplace/delivery-towns`, public, 1h cache), filtered by
+    `innbucks.country` and cached for the life of the process by
+    `DeliveryTownCatalog` (nothing can write the table, so no invalidation).
+    Free text on both sides never matches ("Harare" vs "harare cbd"). Extend
+    with a NEW migration, like categories.
+  * **A listing's coverage is its own table** (`listing_delivery_town`: town +
+    fee). No rows = collection only; there is deliberately NO `deliverable`
+    column to drift out of step — `ListingResponse.deliverable` is derived.
+    On update, `deliveryTowns` is the ONE field a full replace leaves alone
+    when omitted (null keeps, `[]` clears, a list replaces) — clients built
+    before V14 would otherwise wipe every seller's towns on their next edit.
+    Unknown town → 400 `unknown_town`; a town twice → 400
+    `duplicate_delivery_town`; both refused before the listing is written.
+  * **Addresses name a town** (`delivery_address.town_code`): `townCode` wins,
+    else `city` is matched to a town NAME ignoring case (so an un-updated app
+    sending `"city":"Harare"` keeps working), else 400 `unknown_town` — never
+    stored as an address nobody can deliver to. V14 backfilled codes from
+    city names; an address that matched none keeps a null town and a DELIVERY
+    checkout on it is 422 `address_town_required` rather than a guess.
+  * **The fee is per SELLER, and it is the DEAREST of that seller's lines to
+    the town, never the sum** — one seller ships one parcel. `CheckoutPricer`
+    decides it (so cart, quote and order still cannot disagree), a line the
+    seller does not cover becomes `NOT_DELIVERED_TO_TOWN` in the same
+    rejection list, and the quote carries `deliveryFees` per seller. At order
+    creation each seller's fee is SNAPSHOTTED into
+    `market_order_delivery_fee`: a seller repricing a town before the buyer
+    pays does not change what the buyer owes. At PAID it is copied onto the
+    parcel and into the settlement (see the escrow bullet above).
+    `refusalFor` ranks `not_delivered_to_town` AFTER availability and stock,
+    so every pre-V14 refusal stays byte-identical.
+  * **Tracking code**: every parcel gets `TRK-` + 10 Crockford characters at
+    PAID (V14 backfilled existing ones from hex, which is inside the same
+    alphabet). `TrackingCodes.normalize` forgives case, spaces, dashes, the
+    prefix and I/L/O confusion, and refuses anything outside the alphabet
+    before it reaches the database. Portal lookup
+    `GET /marketplace/fulfilments/tracking/{code}` is seller-scoped (another
+    seller's code is the same 404 as a missing one — the box is not an
+    oracle); SUPER_ADMIN finds any. **No public tracking page, by owner's
+    decision** — portal and the buyer's own app only.
+  * **`TrackingStatus` (RECEIVED / DISPATCHED / DELIVERED / CANCELLED) is
+    PRESENTATION ONLY**, derived from `FulfilmentStatus` by `TrackingStatus.of`.
+    It is not stored and must never grow its own transitions: CANCELLED is
+    exactly UNFULFILLED (the seller could not supply, or a collection was
+    never picked up), whose refund path already exists.
+  * **`COURIER` is derived, never believed**: `JwtFilter` grants it to ANY
+    member (OWNER, ADMIN or STAFF) of an organization holding `marketplace`,
+    and strips a token-supplied one. Wider than seller authority on purpose —
+    drivers are STAFF — and it buys exactly the courier surface:
+    `GET /marketplace/deliveries` (DISPATCHED DELIVERY parcels, **no money on
+    them**) and `POST /marketplace/deliveries/{id}/location`. Dispatching and
+    closing stay seller actions. `AuthenticatedUser.deliversFor` carries the
+    scope.
+  * **Latest position ONLY, never a route.** `order_fulfilment.last_*` is
+    overwritten on every ping; a trail ending at a buyer's front door is
+    personal data nobody asked to keep, and not keeping it is why there is no
+    retention job. Written ONLY by a native bulk UPDATE (the columns are
+    `insertable=false, updatable=false` on the entity, so an entity save can
+    never clobber a position, and a ping can never trip `@Version`). The
+    UPDATE's own predicate (`status = 'DISPATCHED'` and newer than the stored
+    fix by `min-ping-interval-seconds`) is the throttle AND the out-of-order
+    guard — the update count is the answer. Everything that merely ignores a
+    ping is a **200 `accepted:false`**, never an error; only a request that can
+    never succeed is refused (404 / 409 `parcel_not_in_transit` / 422
+    `location_out_of_bounds` — the market's bounding box, which catches a
+    phone reporting 0,0). A fix older than `max-ping-age-seconds` is dropped;
+    a future timestamp is clamped to now.
+  * **The buyer sees the pin only while it means something**: a DELIVERY
+    parcel that is DISPATCHED. Delivered or cancelled, `liveLocation` is
+    absent — the last point is usually the buyer's own door.
+  * **Refunds tell the buyer twice, and the amounts are GROSS.** The seller's
+    decline sends "a refund is being arranged" (existing listener); the
+    operator's `POST /marketplace/settlements/{id}/refund` now publishes
+    `RefundSent` → `RefundSentNotificationListener` (AFTER_COMMIT + `@Async`,
+    SMS then WhatsApp, never throws, metric type `refund_sent`) naming the
+    amount and the operator's transfer reference. Both name the parcel's
+    GROSS — what the buyer paid for it, goods + delivery — not the seller's
+    net: commission is the platform's arrangement with the seller and must
+    never shrink a buyer's refund.
+  * Config `marketplace.tracking.*` (`MARKETPLACE_TRACKING_*`): throttle 5s,
+    max age 600s, and a bounding box that defaults to Zimbabwe with a margin
+    — **a cell in another market MUST set its own**. Metric
+    `marketplace.tracking.pings{outcome}`. No gateway change: everything is
+    under `/marketplace/**`, and nothing here is an internal surface.
+  * Pinned by `CheckoutPricerTest` (dearest-line fee, per-seller split,
+    uncovered lines, one coverage query), `ParcelTrackingServiceTest`,
+    `TrackingCodesTest`, `DeliveryTownCatalogTest`, the COURIER cases in
+    `JwtFilterSellerScopeTest`, the V14 cases in `OrderServiceTest` /
+    `FulfilmentServiceTest` / `SettlementServiceTest` /
+    `ListingServiceTest`, and end to end by `DeliveryTrackingFlowIT` plus the
+    refund case in `NotificationFlowIT`.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling

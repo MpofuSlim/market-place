@@ -23,6 +23,7 @@ import com.innbucks.marketplaceservice.catalog.dto.MerchantProfileResponse;
 import com.innbucks.marketplaceservice.review.dto.MerchantRatingResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerStatus;
+import com.innbucks.marketplaceservice.support.TestTowns;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Path;
@@ -75,7 +76,8 @@ class CatalogServiceTest {
         reviewService = mock(com.innbucks.marketplaceservice.review.ReviewService.class);
         catalogService = new CatalogService(listingRepository, listingImageRepository,
                 categoryRepository,
-                new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService),
+                new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
+                        mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe()),
                 sellerService, reviewService,
                 mock(com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService.class));
     }

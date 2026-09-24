@@ -5,12 +5,17 @@ import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
+import com.innbucks.marketplaceservice.support.TestTowns;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTown;
+import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,12 +38,14 @@ class CheckoutPricerTest {
     private static final UUID B = new UUID(0, 2);
 
     private ListingRepository listingRepository;
+    private ListingDeliveryTownRepository coverage;
     private CheckoutPricer pricer;
 
     @BeforeEach
     void setUp() {
         listingRepository = mock(ListingRepository.class);
-        pricer = new CheckoutPricer(listingRepository, "USD");
+        coverage = mock(ListingDeliveryTownRepository.class);
+        pricer = new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD");
     }
 
     private static Listing listing(UUID id, long priceCents, int stock, ListingStatus status,
@@ -200,5 +207,120 @@ class CheckoutPricerTest {
         pricer.price(List.of(new BasketLine(A, 1), new BasketLine(B, 1)));
 
         verify(listingRepository, times(1)).findAllById(any());
+    }
+
+    // ------------------------------------------------------------------
+    // Delivery coverage + per-seller fees (V14)
+    // ------------------------------------------------------------------
+
+    private static Listing sellableBy(UUID id, UUID merchantId, long priceCents) {
+        Instant now = Instant.now();
+        return Listing.builder()
+                .id(id).merchantId(merchantId).title("Solar Lantern 20W")
+                .priceCents(priceCents).currency("USD").stockQty(10)
+                .status(ListingStatus.ACTIVE).createdAt(now).updatedAt(now)
+                .build();
+    }
+
+    @Test
+    @DisplayName("A DELIVERY basket pays the seller's fee to the buyer's town")
+    void deliveryAddsTheTownFee() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellableBy(A, seller, 1550)));
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(A, "harare", 300),
+                new ListingDeliveryTown(A, "bulawayo", 1200)));
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 2)),
+                DeliveryMethod.DELIVERY, "bulawayo");
+
+        assertThat(priced.checkoutReady()).isTrue();
+        assertThat(priced.subtotalCents()).isEqualTo(3100);
+        assertThat(priced.deliveryFeeCents()).isEqualTo(1200);
+        assertThat(priced.deliveryFeesByMerchant()).containsExactly(Map.entry(seller, 1200L));
+    }
+
+    @Test
+    @DisplayName("One seller's lines are ONE parcel: the fee is the dearest line's, never the sum")
+    void oneSellerPaysOneFee() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, seller, 1550), sellableBy(B, seller, 450)));
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(A, "harare", 300),
+                new ListingDeliveryTown(B, "harare", 500)));
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1), new BasketLine(B, 1)),
+                DeliveryMethod.DELIVERY, "harare");
+
+        assertThat(priced.deliveryFeeCents()).isEqualTo(500);
+        assertThat(priced.deliveryFeesByMerchant()).containsExactly(Map.entry(seller, 500L));
+    }
+
+    @Test
+    @DisplayName("Two sellers ship two parcels, and each is paid their own fee")
+    void eachSellerPaysTheirOwnFee() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, first, 1550), sellableBy(B, second, 450)));
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(A, "harare", 300),
+                new ListingDeliveryTown(B, "harare", 0)));
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1), new BasketLine(B, 1)),
+                DeliveryMethod.DELIVERY, "harare");
+
+        // A free-delivery seller is still a parcel with a (zero) fee row.
+        assertThat(priced.deliveryFeeCents()).isEqualTo(300);
+        assertThat(priced.deliveryFeesByMerchant())
+                .containsOnly(Map.entry(first, 300L), Map.entry(second, 0L));
+    }
+
+    @Test
+    @DisplayName("A line that does not deliver to the town is an issue naming the town, and costs nothing")
+    void uncoveredLineIsAnIssue() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, seller, 1550), sellableBy(B, seller, 450)));
+        when(coverage.findByListingIdIn(any()))
+                .thenReturn(List.of(new ListingDeliveryTown(A, "harare", 300)));
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1), new BasketLine(B, 1)),
+                DeliveryMethod.DELIVERY, "victoria-falls");
+
+        assertThat(priced.checkoutReady()).isFalse();
+        assertThat(priced.issues()).hasSize(2).allSatisfy(issue -> {
+            assertThat(issue.reason()).isEqualTo(OrderLineRejection.REASON_NOT_DELIVERED_TO_TOWN);
+            assertThat(issue.message()).endsWith("is not delivered to Victoria Falls");
+        });
+        assertThat(priced.subtotalCents()).isZero();
+        assertThat(priced.deliveryFeeCents()).isZero();
+    }
+
+    @Test
+    @DisplayName("COLLECTION prices goods only and never reads coverage")
+    void collectionIgnoresCoverage() {
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(A, 1550, 10)));
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1)),
+                DeliveryMethod.COLLECTION, null);
+
+        assertThat(priced.checkoutReady()).isTrue();
+        assertThat(priced.deliveryFeeCents()).isZero();
+        verify(coverage, times(0)).findByListingIdIn(any());
+    }
+
+    @Test
+    @DisplayName("Coverage for the whole basket is ONE query")
+    void loadsCoverageInOneQuery() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, seller, 100), sellableBy(B, seller, 100)));
+
+        pricer.price(List.of(new BasketLine(A, 1), new BasketLine(B, 1)),
+                DeliveryMethod.DELIVERY, "harare");
+
+        verify(coverage, times(1)).findByListingIdIn(any());
     }
 }

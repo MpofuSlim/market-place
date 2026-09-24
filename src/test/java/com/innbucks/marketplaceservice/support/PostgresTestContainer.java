@@ -101,14 +101,15 @@ public abstract class PostgresTestContainer {
         // market_order, listing_image/listing_review/listing_favorite/
         // listing_report/cart_item -> listing) never bite; RESTART IDENTITY
         // resets the BIGSERIAL journals.
-        // The migration-seeded category table is deliberately NOT truncated —
-        // it is runtime-read-only reference data.
+        // The migration-seeded category and delivery_town tables are
+        // deliberately NOT truncated — runtime-read-only reference data.
         jdbc.execute("""
                 TRUNCATE TABLE settlement_dispute, merchant_settlement,
                                market_order_item, market_order_event, order_fulfilment,
-                               market_order, listing_image, listing_review, listing_favorite,
-                               listing_report, cart_item, listing, marketplace_seller,
-                               delivery_address,
+                               market_order_delivery_fee, market_order,
+                               listing_image, listing_review, listing_favorite,
+                               listing_report, listing_delivery_town, cart_item, listing,
+                               marketplace_seller, delivery_address,
                                idempotency_record, audit_events
                 RESTART IDENTITY""");
         // Back to the V1 genesis head so each test's audit chain is

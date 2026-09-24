@@ -35,7 +35,8 @@ class GiftFlowIT extends PostgresTestContainer {
               "description": "Roller meal, 10kg bag",
               "categoryCode": "groceries",
               "priceCents": 1550,
-              "stockQty": 10
+              "stockQty": 10,
+              "deliveryTowns": [{ "townCode": "harare", "feeCents": 0 }]
             }""";
 
     private static final byte[] PNG_BYTES =

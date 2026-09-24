@@ -113,14 +113,69 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             INSERT INTO order_fulfilment
-                (id, order_id, merchant_id, status, created_at, updated_at, version)
-            VALUES (:id, :orderId, :merchantId, 'PREPARING', :now, :now, 0)
+                (id, order_id, merchant_id, status, delivery_fee_cents, tracking_code,
+                 created_at, updated_at, version)
+            VALUES (:id, :orderId, :merchantId, 'PREPARING', :deliveryFeeCents, :trackingCode,
+                    :now, :now, 0)
             ON CONFLICT (order_id, merchant_id) DO NOTHING
             """, nativeQuery = true)
     int openIfAbsent(@Param("id") UUID id,
                      @Param("orderId") UUID orderId,
                      @Param("merchantId") UUID merchantId,
+                     @Param("deliveryFeeCents") long deliveryFeeCents,
+                     @Param("trackingCode") String trackingCode,
                      @Param("now") Instant now);
+
+    Optional<OrderFulfilment> findByTrackingCode(String trackingCode);
+
+    /** The courier's run: one organization's parcels in a status on one kind
+     *  of order, oldest first. */
+    @Query("""
+            SELECT f FROM OrderFulfilment f, MarketOrder o
+             WHERE o.id = f.orderId
+               AND f.merchantId = :merchantId
+               AND f.status = :status
+               AND o.deliveryMethod = :method
+             ORDER BY f.dispatchedAt ASC, f.createdAt ASC
+            """)
+    List<OrderFulfilment> findRun(@Param("merchantId") UUID merchantId,
+                                  @Param("status") FulfilmentStatus status,
+                                  @Param("method") com.innbucks.marketplaceservice.delivery.DeliveryMethod method,
+                                  Pageable pageable);
+
+    /**
+     * Records the courier's position — the LATEST only, overwriting the last.
+     *
+     * <p>A bulk UPDATE on purpose, bypassing the entity: pings arrive every few
+     * seconds, and writing them through the {@code @Version}ed entity would
+     * bump the version under a seller who loaded the parcel to mark it
+     * delivered, failing their click with an optimistic-lock error. The entity
+     * maps these columns read-only for the mirror-image reason: its saves must
+     * never write a stale position back over a fresh one.
+     *
+     * <p>Every condition that makes a ping meaningless is in the WHERE, so the
+     * update count IS the answer: still in transit, and newer than both the
+     * stored point and the throttle window. 0 = ignored, never an error.
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE order_fulfilment
+               SET last_latitude = :latitude,
+                   last_longitude = :longitude,
+                   last_accuracy_m = :accuracy,
+                   last_location_at = :recordedAt,
+                   last_location_by = :postedBy
+             WHERE id = :id
+               AND status = 'DISPATCHED'
+               AND (last_location_at IS NULL OR last_location_at <= :notAfter)
+            """, nativeQuery = true)
+    int recordLocation(@Param("id") UUID id,
+                       @Param("latitude") java.math.BigDecimal latitude,
+                       @Param("longitude") java.math.BigDecimal longitude,
+                       @Param("accuracy") Integer accuracy,
+                       @Param("recordedAt") Instant recordedAt,
+                       @Param("postedBy") String postedBy,
+                       @Param("notAfter") Instant notAfter);
 
     /**
      * Counts one wrong collection code against a parcel, atomically.

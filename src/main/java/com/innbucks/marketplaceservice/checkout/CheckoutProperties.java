@@ -53,19 +53,6 @@ public class CheckoutProperties {
          */
         private Set<DeliveryMethod> methods = EnumSet.allOf(DeliveryMethod.class);
 
-        /**
-         * Flat delivery fee in MINOR units, added to a DELIVERY order's total.
-         * COLLECTION never pays it.
-         *
-         * <p>Zero by default, which is the honest default: this service books
-         * no couriers and has no rate card, so any non-zero number is a
-         * commercial decision a cell makes deliberately. A per-merchant or
-         * per-zone rate is a real gap — a multi-seller order ships in several
-         * parcels and pays this fee ONCE — and is deferred rather than faked
-         * with a number nobody can justify.
-         */
-        private long feeCents = 0L;
-
         /** Abuse guard on the address book. A real shopper has a handful of
          *  destinations; a thousand is someone using it as free storage. */
         private int maxAddressesPerBuyer = 25;

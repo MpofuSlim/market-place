@@ -4,11 +4,13 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
+import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFee;
 import com.innbucks.marketplaceservice.catalog.dto.ListingCreateRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.support.TestTowns;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -70,6 +72,7 @@ class ListingServiceTest {
     private com.innbucks.marketplaceservice.seller.SellerService sellerService;
     private ListingImageRepository listingImageRepository;
     private CategoryRepository categoryRepository;
+    private ListingDeliveryTownRepository deliveryTownRepository;
     private AuditService auditService;
     private SimpleMeterRegistry registry;
     private ListingService service;
@@ -79,6 +82,7 @@ class ListingServiceTest {
         listingRepository = mock(ListingRepository.class);
         listingImageRepository = mock(ListingImageRepository.class);
         categoryRepository = mock(CategoryRepository.class);
+        deliveryTownRepository = mock(ListingDeliveryTownRepository.class);
         auditService = mock(AuditService.class);
         registry = new SimpleMeterRegistry();
         // Taxonomy accepts everything unless a test narrows it — the
@@ -92,9 +96,11 @@ class ListingServiceTest {
         service = new ListingService(listingRepository, listingImageRepository,
                 sellerService,
                 categoryRepository,
-                new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService),
+                new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
+                        deliveryTownRepository, TestTowns.zimbabwe()),
                 auditService, new MarketplaceMetrics(registry),
                 mock(org.springframework.context.ApplicationEventPublisher.class),
+                deliveryTownRepository, TestTowns.zimbabwe(),
                 "USD", MAX_PER_MERCHANT);
     }
 
@@ -1112,5 +1118,85 @@ class ListingServiceTest {
         assertEquals(HttpStatus.NOT_FOUND, ex.status());
         assertEquals("image_not_found", ex.code());
         verify(listingImageRepository, never()).markPrimary(any());
+    }
+
+    // ------------------------------------------------------------------
+    // Delivery towns (V14)
+    // ------------------------------------------------------------------
+
+    private static ListingCreateRequest deliverable(List<DeliveryTownFee> towns) {
+        return new ListingCreateRequest("Solar Lantern", null, null, null, null, null,
+                2599L, 120, null, towns);
+    }
+
+    @Test
+    void createSavesEachDeliveryTownWithItsFee() {
+        service.create(MERCHANT, deliverable(List.of(
+                new DeliveryTownFee("harare", 300L), new DeliveryTownFee(" Bulawayo ", 1200L))));
+
+        ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository).save(saved.capture());
+        ArgumentCaptor<List<ListingDeliveryTown>> rows = ArgumentCaptor.forClass(List.class);
+        verify(deliveryTownRepository).saveAll(rows.capture());
+        UUID id = saved.getValue().getId();
+        assertEquals(List.of(new ListingDeliveryTown(id, "harare", 300),
+                new ListingDeliveryTown(id, "bulawayo", 1200)), rows.getValue());
+    }
+
+    @Test
+    void createWithNoTownsIsCollectionOnlyAndWritesNoCoverage() {
+        service.create(MERCHANT, createReq("Solar Lantern", null, null));
+
+        verify(deliveryTownRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void createWithAnUnknownTownIsRefusedBeforeTheListingExists() {
+        ApiException ex = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                deliverable(List.of(new DeliveryTownFee("johannesburg", 500L)))));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("unknown_town", ex.code());
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    void aTownNamedTwiceIsRefusedRatherThanPickingAFee() {
+        ApiException ex = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                deliverable(List.of(new DeliveryTownFee("harare", 300L),
+                        new DeliveryTownFee("HARARE", 0L)))));
+
+        assertEquals("duplicate_delivery_town", ex.code());
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    void updateWithoutTownsLeavesCoverageAlone() {
+        UUID listingId = UUID.randomUUID();
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(owned(listingId)));
+
+        service.update(MERCHANT, listingId, updateReq("Lamp", null, null, 2399L, 5));
+
+        verify(deliveryTownRepository, never()).deleteByListingId(any());
+        verify(deliveryTownRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void updateWithTownsReplacesCoverageAndAnEmptyListClearsIt() {
+        UUID listingId = UUID.randomUUID();
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(owned(listingId)));
+
+        service.update(MERCHANT, listingId, new ListingUpdateRequest("Lamp", null, null, null,
+                null, null, 2399L, 5, List.of(new DeliveryTownFee("mutare", 800L))));
+        service.update(MERCHANT, listingId, new ListingUpdateRequest("Lamp", null, null, null,
+                null, null, 2399L, 5, List.of()));
+
+        InOrder order = inOrder(deliveryTownRepository);
+        order.verify(deliveryTownRepository).deleteByListingId(listingId);
+        order.verify(deliveryTownRepository).saveAll(
+                List.of(new ListingDeliveryTown(listingId, "mutare", 800)));
+        order.verify(deliveryTownRepository).deleteByListingId(listingId);
+        // The empty list wrote nothing back: the listing is collection-only now.
+        verify(deliveryTownRepository).saveAll(any());
     }
 }

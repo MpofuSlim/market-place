@@ -1,13 +1,18 @@
 package com.innbucks.marketplaceservice.catalog;
 
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
+import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFeeResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
+import com.innbucks.marketplaceservice.delivery.DeliveryTown;
+import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +40,8 @@ public class ListingViewAssembler {
     private final ListingImageRepository listingImageRepository;
     private final CategoryRepository categoryRepository;
     private final SellerService sellerService;
+    private final ListingDeliveryTownRepository deliveryTownRepository;
+    private final DeliveryTownCatalog deliveryTowns;
 
     /** Single-listing assembly: one image-metadata query + one category read +
      *  one seller read for the trust badge. */
@@ -48,7 +55,32 @@ public class ListingViewAssembler {
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(merchantIds);
         MarketplaceSeller seller = sellers.get(listing.getMerchantId());
         return ListingResponse.from(listing, images, categoryName, seller,
-                sellerService.displayNames(merchantIds, sellers).get(listing.getMerchantId()));
+                sellerService.displayNames(merchantIds, sellers).get(listing.getMerchantId()),
+                coverageOf(deliveryTownRepository.findByListingId(listing.getId())));
+    }
+
+    /**
+     * A listing's delivery coverage as the API shows it: display names from the
+     * (cached) town list and the list's own display order — never the order
+     * rows happened to be inserted in. A stored code the list no longer carries
+     * is dropped rather than shown nameless: nobody can pick it at checkout.
+     */
+    public List<DeliveryTownFeeResponse> coverageOf(List<ListingDeliveryTown> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Long> feeByTown = new HashMap<>();
+        for (ListingDeliveryTown row : rows) {
+            feeByTown.put(row.getTownCode(), row.getFeeCents());
+        }
+        List<DeliveryTownFeeResponse> coverage = new ArrayList<>(rows.size());
+        for (DeliveryTown town : deliveryTowns.all()) {
+            Long fee = feeByTown.get(town.getCode());
+            if (fee != null) {
+                coverage.add(new DeliveryTownFeeResponse(town.getCode(), town.getName(), fee));
+            }
+        }
+        return coverage;
     }
 
     /** Page assembly: exactly THREE extra queries for the whole page —
@@ -100,6 +132,11 @@ public class ListingViewAssembler {
                 ? Map.of()
                 : categoryRepository.findAllById(codes).stream()
                         .collect(Collectors.toMap(Category::getCode, Category::getName));
+        // Fifth batch: delivery coverage for the whole page in one query.
+        Map<UUID, List<ListingDeliveryTown>> coverageByListing = listingIds.isEmpty()
+                ? Map.of()
+                : deliveryTownRepository.findByListingIdIn(listingIds).stream()
+                        .collect(Collectors.groupingBy(ListingDeliveryTown::getListingId));
         Map<UUID, ListingResponse> byId = new LinkedHashMap<>();
         for (Listing listing : content) {
             byId.put(listing.getId(), ListingResponse.from(
@@ -107,7 +144,8 @@ public class ListingViewAssembler {
                     imagesByListing.getOrDefault(listing.getId(), List.of()),
                     categoryNames.get(listing.getCategoryCode()),
                     sellersByMerchant.get(listing.getMerchantId()),
-                    merchantNames.get(listing.getMerchantId())));
+                    merchantNames.get(listing.getMerchantId()),
+                    coverageOf(coverageByListing.getOrDefault(listing.getId(), List.of()))));
         }
         return byId;
     }

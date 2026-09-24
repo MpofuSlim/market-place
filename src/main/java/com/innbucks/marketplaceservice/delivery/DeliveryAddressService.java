@@ -37,6 +37,7 @@ public class DeliveryAddressService {
     private final DeliveryAddressRepository addressRepository;
     private final Msisdns msisdns;
     private final CheckoutProperties properties;
+    private final DeliveryTownCatalog towns;
 
     @Transactional(readOnly = true)
     public List<AddressResponse> listMine(AuthenticatedUser buyer) {
@@ -160,7 +161,11 @@ public class DeliveryAddressService {
         address.setRecipientMsisdn(msisdns.normalize(request.recipientMsisdn(), "recipientMsisdn"));
         address.setLine1(requireText(TextSanitizer.sanitize(request.line1()), "line1"));
         address.setLine2(blankToNull(TextSanitizer.sanitize(request.line2())));
-        address.setCity(requireText(TextSanitizer.sanitize(request.city()), "city"));
+        // The town is chosen from the list, never typed: coverage is a match.
+        DeliveryTown town = towns.resolveForAddress(request.townCode(),
+                TextSanitizer.sanitize(request.city()));
+        address.setTownCode(town.getCode());
+        address.setCity(town.getName());
         address.setArea(blankToNull(TextSanitizer.sanitize(request.area())));
         address.setLandmark(blankToNull(TextSanitizer.sanitize(request.landmark())));
         address.setUpdatedAt(now);

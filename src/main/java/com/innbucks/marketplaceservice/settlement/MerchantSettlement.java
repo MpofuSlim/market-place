@@ -55,8 +55,16 @@ public class MerchantSettlement {
     private SettlementStatus status;
 
     /** Sum of this merchant's line totals on the order, in minor units. */
+    /** Goods PLUS this seller's delivery fee (V14): the whole of what the
+     *  buyer paid for this parcel, and so what a refund of it returns. */
     @Column(name = "gross_cents", nullable = false)
     private long grossCents;
+
+    /** The delivery part of {@code grossCents} (V14) — the seller delivered,
+     *  so it is theirs, held and released with the goods. Commission is
+     *  charged on the goods only. */
+    @Column(name = "delivery_fee_cents", nullable = false, updatable = false)
+    private long deliveryFeeCents;
 
     @Column(name = "commission_cents", nullable = false)
     private long commissionCents;

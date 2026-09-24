@@ -27,15 +27,20 @@ public record SettlementResponse(
 
         SettlementStatus status,
 
-        @Schema(description = "This seller's line totals on the order, minor units", example = "4798")
+        @Schema(description = "What the buyer paid for this parcel: this seller's line totals "
+                + "PLUS their delivery fee, minor units", example = "5598")
         long grossCents,
 
         @Schema(description = "Platform commission withheld (0 until the platform charges one)",
                 example = "0")
         long commissionCents,
 
-        @Schema(description = "What the seller is owed: gross - commission", example = "4798")
+        @Schema(description = "What the seller is owed: gross - commission", example = "5598")
         long netCents,
+
+        @Schema(description = "The delivery fee inside grossCents (0 for collection). "
+                + "Commission is never charged on it.", example = "800")
+        long deliveryFeeCents,
 
         @Schema(example = "USD")
         String currency,
@@ -73,7 +78,7 @@ public record SettlementResponse(
     public static SettlementResponse from(MerchantSettlement s) {
         return new SettlementResponse(s.getId(), s.getOrderId(), s.getFulfilmentId(),
                 s.getMerchantId(), s.getStatus(), s.getGrossCents(), s.getCommissionCents(),
-                s.getNetCents(), s.getCurrency(), s.getReleasableAt(), s.getReleasedAt(),
+                s.getNetCents(), s.getDeliveryFeeCents(), s.getCurrency(), s.getReleasableAt(), s.getReleasedAt(),
                 s.getPaidOutAt(), s.getPayoutReference(), s.getRefundDueAt(), s.getRefundedAt(),
                 s.getRefundReference(), s.getCreatedAt());
     }

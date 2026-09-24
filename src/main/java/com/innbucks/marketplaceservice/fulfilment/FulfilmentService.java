@@ -27,6 +27,11 @@ import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.notify.CollectCodeNotifier;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
+import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelLocation;
+import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes;
+import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
+import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFee;
+import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -81,6 +86,7 @@ public class FulfilmentService {
     private final CollectCodeNotifier collectCodeNotifier;
     private final ParcelStockReturner stockReturner;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final MarketOrderDeliveryFeeRepository deliveryFees;
 
     /** The per-parcel online-guessing budget for a collection code. Field
      *  injection because {@code @RequiredArgsConstructor} covers final fields
@@ -109,14 +115,23 @@ public class FulfilmentService {
     public void openForOrder(MarketOrder order) {
         Instant now = Instant.now();
         int opened = 0;
+        // Each seller's delivery fee as fixed at ORDER time (V14) — the buyer
+        // pays what they were quoted, whatever the seller charges today.
+        Map<UUID, Long> feeByMerchant = deliveryFees.findByOrderId(order.getId()).stream()
+                .collect(Collectors.toMap(
+                        MarketOrderDeliveryFee::getMerchantId,
+                        MarketOrderDeliveryFee::getFeeCents));
         for (UUID merchantId : itemRepository.findByOrderId(order.getId()).stream()
                 .map(MarketOrderItem::getMerchantId)
                 .distinct()
                 .sorted()   // deterministic insert order: two concurrent
                             // confirms of the same order cannot deadlock
                 .toList()) {
+            // A replayed confirm hits the unique index and inserts nothing, so
+            // the tracking code minted for it is simply discarded.
             opened += fulfilmentRepository.openIfAbsent(UUID.randomUUID(), order.getId(),
-                    merchantId, now);
+                    merchantId, feeByMerchant.getOrDefault(merchantId, 0L),
+                    TrackingCodes.mint(), now);
         }
         if (opened > 0) {
             metrics.fulfilmentOutcome("opened", opened);
@@ -219,6 +234,26 @@ public class FulfilmentService {
                             merchantId, status, pageable);
         }
         return MerchantFulfilmentPageResponse.from(result.map(this::toMerchantView));
+    }
+
+    /**
+     * One parcel by its tracking code — the portal's search box. Scoped like
+     * the queue: a seller finds only their own organization's parcels, an
+     * operator any. Someone else's code, a malformed code and an unknown one
+     * are all the same 404, so the search is no way to learn which codes exist.
+     */
+    @Transactional(readOnly = true)
+    public MerchantFulfilmentResponse byTrackingCode(AuthenticatedUser caller, String rawCode) {
+        String code = TrackingCodes.normalize(rawCode);
+        if (code == null) {
+            throw notFound();
+        }
+        OrderFulfilment parcel = fulfilmentRepository.findByTrackingCode(code)
+                .orElseThrow(FulfilmentService::notFound);
+        if (!caller.isSuperAdmin() && !parcel.getMerchantId().equals(requireMerchantId(caller))) {
+            throw notFound();
+        }
+        return toMerchantView(parcel);
     }
 
     // ------------------------------------------------------------------
@@ -376,7 +411,10 @@ public class FulfilmentService {
      * open — which is the exact state this method exists to end. So the money
      * stays where it is and the decision stays with whoever owns it.
      *
-     * @return the net cents queued for refund, 0 when nothing moved
+     * @return the cents queued for refund, 0 when nothing moved. GROSS, not
+     *         net: the buyer is owed everything they paid for this parcel —
+     *         goods and delivery — and a commission the platform would have
+     *         taken on a sale that never happened is not theirs to lose.
      */
     private long turnTheMoneyAround(OrderFulfilment parcel, String reason) {
         MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
@@ -394,7 +432,7 @@ public class FulfilmentService {
             return 0;
         }
         settlementService.markRefundDue(settlement, reason);
-        return settlement.getNetCents();
+        return settlement.getGrossCents();
     }
 
     // ------------------------------------------------------------------
@@ -705,7 +743,11 @@ public class FulfilmentService {
                 parcel.getCollectCodeHash() != null && parcel.getCollectCodeRedeemedAt() == null,
                 parcel.getCollectCodeRedeemedAt(),
                 parcel.getUnfulfilledReason(),
-                parcel.getUnfulfilledAt());
+                parcel.getUnfulfilledAt(),
+                parcel.getTrackingCode(),
+                TrackingStatus.of(parcel.getStatus()),
+                parcel.getDeliveryFeeCents(),
+                ParcelLocation.of(parcel));
     }
 
     static OrderResponse.Line toLine(MarketOrderItem item) {

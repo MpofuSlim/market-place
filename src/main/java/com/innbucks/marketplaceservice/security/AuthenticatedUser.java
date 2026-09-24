@@ -23,6 +23,12 @@ import java.util.Set;
  * listing column. {@code phone}/{@code country} are set for CUSTOMER tokens
  * that carry them. All fields except {@code uuid} and {@code roles} may be
  * null (legacy tokens, staff tokens).
+ *
+ * <p>{@code deliversFor} (V14) is the organization whose parcels this caller
+ * may carry and report positions for — any member of a selling organization,
+ * STAFF included, where {@code merchantId} is OWNER/ADMIN only. It grants the
+ * courier surface ({@code /marketplace/deliveries}) and nothing else: every
+ * seller endpoint still checks {@code MERCHANT_ADMIN} and {@code merchantId}.
  */
 public record AuthenticatedUser(
         String uuid,
@@ -30,10 +36,18 @@ public record AuthenticatedUser(
         String merchantId,
         String shopId,
         String phone,
-        String country) {
+        String country,
+        String deliversFor) {
 
     public AuthenticatedUser {
         roles = roles == null ? Set.of() : Set.copyOf(roles);
+    }
+
+    /** A caller with no courier scope beyond their seller scope: someone who
+     *  runs the business may carry its parcels too. */
+    public AuthenticatedUser(String uuid, Set<String> roles, String merchantId, String shopId,
+                             String phone, String country) {
+        this(uuid, roles, merchantId, shopId, phone, country, merchantId);
     }
 
     public boolean hasRole(String role) {

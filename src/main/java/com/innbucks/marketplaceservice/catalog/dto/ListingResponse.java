@@ -95,7 +95,15 @@ public record ListingResponse(
 
         @Schema(description = "Trust information about the seller (V8). Always present; "
                 + "`verified` is false for a seller the platform has not vetted.")
-        SellerBadge seller
+        SellerBadge seller,
+
+        @Schema(description = "True when the listing can be delivered to at least one town; "
+                + "false means collection only.", example = "true")
+        boolean deliverable,
+
+        @Schema(description = "Towns this listing delivers to, with the fee for each, in the "
+                + "town list's display order. Empty for collection only.")
+        List<DeliveryTownFeeResponse> deliveryTowns
 ) {
 
     /**
@@ -118,6 +126,14 @@ public record ListingResponse(
      *  merchant, used only where no operator-set name exists. */
     public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
                                        MarketplaceSeller seller, String resolvedName) {
+        return from(listing, images, categoryName, seller, resolvedName, List.of());
+    }
+
+    /** {@code deliveryTowns} is the listing's coverage, already resolved to
+     *  display names and in display order. */
+    public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
+                                       MarketplaceSeller seller, String resolvedName,
+                                       List<DeliveryTownFeeResponse> deliveryTowns) {
         boolean hasPrimary = images.stream().anyMatch(ImageMeta::isPrimaryImage);
         List<String> urls = images.stream()
                 .map(meta -> "/marketplace/catalog/" + listing.getId() + "/images/" + meta.getId())
@@ -146,7 +162,9 @@ public record ListingResponse(
                 urls,
                 seller == null
                         ? SellerBadge.unknown(listing.getMerchantId(), resolvedName)
-                        : SellerBadge.from(seller, resolvedName));
+                        : SellerBadge.from(seller, resolvedName),
+                !deliveryTowns.isEmpty(),
+                List.copyOf(deliveryTowns));
     }
 
     /** One-decimal average from the denormalized V5 aggregates — zero extra

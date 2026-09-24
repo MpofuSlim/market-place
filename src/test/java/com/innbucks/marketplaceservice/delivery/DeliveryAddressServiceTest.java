@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.checkout.CheckoutProperties;
 import com.innbucks.marketplaceservice.delivery.dto.AddressRequest;
 import com.innbucks.marketplaceservice.delivery.dto.AddressResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.support.TestTowns;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,7 +46,8 @@ class DeliveryAddressServiceTest {
     void setUp() {
         repository = mock(DeliveryAddressRepository.class);
         properties = new CheckoutProperties();
-        service = new DeliveryAddressService(repository, new Msisdns("ZW"), properties);
+        service = new DeliveryAddressService(repository, new Msisdns("ZW"), properties,
+                TestTowns.zimbabwe());
         when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
 
@@ -300,5 +302,35 @@ class DeliveryAddressServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("address_not_found");
+    }
+
+    // ------------------------------------------------------------------
+    // Town (V14)
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("An address names a TOWN; the city is written as that town's name")
+    void storesTheTownAndItsName() {
+        when(repository.countByBuyerUuid(BUYER_UUID)).thenReturn(0L);
+
+        AddressResponse saved = service.create(BUYER, new AddressRequest("Home", "Tariro Moyo",
+                "0771234567", "14 Samora Machel Ave", null, "whatever the app typed", null,
+                null, null, "bulawayo"));
+
+        assertThat(saved.townCode()).isEqualTo("bulawayo");
+        assertThat(saved.city()).isEqualTo("Bulawayo");
+    }
+
+    @Test
+    @DisplayName("A city that matches no town is refused, not stored as an address nobody delivers to")
+    void refusesAnUnknownCity() {
+        when(repository.countByBuyerUuid(BUYER_UUID)).thenReturn(0L);
+
+        assertThatThrownBy(() -> service.create(BUYER, new AddressRequest("Home", "Tariro Moyo",
+                "0771234567", "14 Samora Machel Ave", null, "Harare CBD", null, null, null)))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("unknown_town");
+        verify(repository, never()).save(any());
     }
 }

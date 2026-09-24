@@ -3,6 +3,8 @@ package com.innbucks.marketplaceservice.checkout;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
 
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * A whole basket priced against the live catalogue: every line in REQUEST
@@ -16,7 +18,14 @@ import java.util.List;
  */
 public record PricedBasket(List<PricedLine> lines,
                            long subtotalCents,
-                           List<OrderLineRejection> issues) {
+                           List<OrderLineRejection> issues,
+                           long deliveryFeeCents,
+                           Map<UUID, Long> deliveryFeesByMerchant) {
+
+    /** A basket priced with no delivery (the cart, or a COLLECTION order). */
+    public PricedBasket(List<PricedLine> lines, long subtotalCents, List<OrderLineRejection> issues) {
+        this(lines, subtotalCents, issues, 0L, Map.of());
+    }
 
     /** True when an order built from this basket would be accepted. */
     public boolean checkoutReady() {

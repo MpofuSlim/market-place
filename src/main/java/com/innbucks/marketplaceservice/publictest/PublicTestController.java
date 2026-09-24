@@ -17,6 +17,8 @@ import com.innbucks.marketplaceservice.delivery.dto.AddressResponse;
 import com.innbucks.marketplaceservice.favorite.FavoriteService;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelTrackingResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelTrackingService;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.OrderService;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
@@ -43,6 +45,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -234,6 +237,7 @@ public class PublicTestController {
     private final FulfilmentService fulfilmentService;
     private final DisputeService disputeService;
     private final ReviewService reviewService;
+    private final ParcelTrackingService trackingService;
     private final PublicBuyerResolver buyerResolver;
     private final MarketplaceMetrics metrics;
 
@@ -636,6 +640,30 @@ public class PublicTestController {
         AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_collect_code");
         return ResponseEntity.ok(ApiResult.ok("Collection code ready - show it when you collect",
                 fulfilmentService.mintCollectCode(buyer,
+                        parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"),
+                        parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
+    }
+
+    @GetMapping("/buyers/{handle}/orders/{orderId}/fulfilments/{fulfilmentId}/tracking")
+    @Operation(summary = "[TEST] Track a parcel",
+            description = "The buyer's tracking screen for one parcel: RECEIVED / DISPATCHED / "
+                    + "DELIVERED / CANCELLED with the time each stage was reached, and the "
+                    + "courier's last reported position while a DELIVERY parcel is on the road. "
+                    + "Same body as the authenticated `GET /marketplace/orders/{id}/fulfilments/"
+                    + "{fulfilmentId}/tracking`. Poll it (every 15-30s is plenty) while the map "
+                    + "is open.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The parcel's tracking"),
+            @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404)))
+    })
+    public ResponseEntity<ApiResult<ParcelTrackingResponse>> tracking(
+            @PathVariable String handle, @PathVariable String orderId,
+            @PathVariable String fulfilmentId) {
+        AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_tracking");
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResult.ok(trackingService.buyerTracking(buyer,
                         parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"),
                         parseUuid(fulfilmentId, "invalid_fulfilment_id", "Fulfilment id must be a UUID"))));
     }

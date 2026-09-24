@@ -47,7 +47,8 @@ class CheckoutJourneyIT extends PostgresTestContainer {
               "description": "Portable solar lantern with 12h battery",
               "categoryCode": "electronics",
               "priceCents": 1550,
-              "stockQty": 10
+              "stockQty": 10,
+              "deliveryTowns": [{ "townCode": "harare", "feeCents": 0 }]
             }""";
 
     private static final String ADDRESS_BODY = """
@@ -148,8 +149,8 @@ class CheckoutJourneyIT extends PostgresTestContainer {
                                 .formatted(addressId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.subtotalCents").value(3100))
-                // The test cell configures no delivery fee, which is the
-                // honest default — this service has no rate card.
+                // The seller delivers to Harare for free (a fee of 0 is a
+                // real choice); DeliveryTrackingFlowIT covers a charged fee.
                 .andExpect(jsonPath("$.data.deliveryFeeCents").value(0))
                 .andExpect(jsonPath("$.data.totalCents").value(3100))
                 .andExpect(jsonPath("$.data.deliveryAddress.city").value("Harare"))

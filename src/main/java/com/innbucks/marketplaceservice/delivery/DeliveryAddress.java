@@ -69,6 +69,13 @@ public class DeliveryAddress {
     @Column(name = "area", length = 80)
     private String area;
 
+    /** The {@code delivery_town} this address is in (V14) — what delivery
+     *  coverage is checked against. {@code city} is kept, set to the town's
+     *  name. Null only on a pre-V14 address whose free-text city matched no
+     *  town: it must be edited before it can take a DELIVERY order. */
+    @Column(name = "town_code", length = 40)
+    private String townCode;
+
     /** "Opposite the clinic, blue gate." In the markets this cell serves, the
      *  landmark is what actually gets a courier to the door. */
     @Column(name = "landmark", length = 160)

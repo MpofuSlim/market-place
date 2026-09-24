@@ -35,9 +35,12 @@ public record OrderLineRejection(
                 or is priced in another currency. The remedy is the same for all three: drop the line.
                 * `INSUFFICIENT_STOCK` — fewer units remain than were asked for; `availableQty` \
                 says how many. Zero means sold out.
+                * `NOT_DELIVERED_TO_TOWN` — the order is for DELIVERY and this listing's seller does \
+                not deliver to the address's town. Remedy: choose COLLECTION, another address, or \
+                drop the line.
                 A client that does not recognise a reason should show the message and drop the line.""",
                 example = "INSUFFICIENT_STOCK",
-                allowableValues = {"LISTING_UNAVAILABLE", "INSUFFICIENT_STOCK"})
+                allowableValues = {"LISTING_UNAVAILABLE", "INSUFFICIENT_STOCK", "NOT_DELIVERED_TO_TOWN"})
         String reason,
 
         @Schema(description = "Human-readable explanation, safe to show a customer.",
@@ -66,11 +69,22 @@ public record OrderLineRejection(
      */
     public static final String REASON_UNAVAILABLE = "LISTING_UNAVAILABLE";
     public static final String REASON_INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK";
+    public static final String REASON_NOT_DELIVERED_TO_TOWN = "NOT_DELIVERED_TO_TOWN";
 
     /** Missing, not ACTIVE, or priced in another currency — one remedy: drop the line. */
     public static OrderLineRejection unavailable(UUID listingId, int requestedQty) {
         return new OrderLineRejection(listingId, REASON_UNAVAILABLE,
                 "Listing " + listingId + " is not available", requestedQty, null, null);
+    }
+
+    /** A DELIVERY order to a town this listing's seller does not deliver to.
+     *  Carries the price so the app can keep the line on screen while the
+     *  shopper picks collection or another address. */
+    public static OrderLineRejection notDeliveredToTown(UUID listingId, String title,
+                                                        int requestedQty, long unitPriceCents,
+                                                        String townName) {
+        return new OrderLineRejection(listingId, REASON_NOT_DELIVERED_TO_TOWN,
+                title + " is not delivered to " + townName, requestedQty, null, unitPriceCents);
     }
 
     public static OrderLineRejection insufficientStock(UUID listingId, String title, int requestedQty,

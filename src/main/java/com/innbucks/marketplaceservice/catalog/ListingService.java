@@ -4,12 +4,15 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
+import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFee;
 import com.innbucks.marketplaceservice.catalog.dto.ListingCreateRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
+import com.innbucks.marketplaceservice.delivery.DeliveryTown;
+import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.seller.SellerService;
@@ -25,6 +28,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -100,6 +104,8 @@ public class ListingService {
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
     private final ApplicationEventPublisher eventPublisher;
+    private final ListingDeliveryTownRepository deliveryTownRepository;
+    private final DeliveryTownCatalog deliveryTowns;
     private final String cellCurrency;
     private final int maxPerMerchant;
 
@@ -111,6 +117,8 @@ public class ListingService {
                           AuditService auditService,
                           MarketplaceMetrics metrics,
                           ApplicationEventPublisher eventPublisher,
+                          ListingDeliveryTownRepository deliveryTownRepository,
+                          DeliveryTownCatalog deliveryTowns,
                           @Value("${innbucks.currency}") String cellCurrency,
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
@@ -121,6 +129,8 @@ public class ListingService {
         this.auditService = auditService;
         this.metrics = metrics;
         this.eventPublisher = eventPublisher;
+        this.deliveryTownRepository = deliveryTownRepository;
+        this.deliveryTowns = deliveryTowns;
         this.cellCurrency = cellCurrency;
         this.maxPerMerchant = maxPerMerchant;
     }
@@ -151,6 +161,9 @@ public class ListingService {
         // and it never overwrites a decision already made.
         sellerService.ensureExists(merchantId);
         validateRanges(request.priceCents(), request.stockQty());
+        // Resolved BEFORE the insert, like the images: a bad town refuses the
+        // whole create rather than leaving a listing half-configured.
+        List<ListingDeliveryTown> coverage = resolveCoverage(request.deliveryTowns());
         List<MultipartFile> extras = additionalImages == null
                 ? List.of()
                 : additionalImages.stream().filter(Objects::nonNull).toList();
@@ -196,13 +209,15 @@ public class ListingService {
                 .build();
         listingRepository.save(listing);
         insertGallery(listing.getId(), validated, now);
+        saveCoverage(listing.getId(), coverage);
         auditService.record(AuditEventType.LISTING_CREATED, caller.uuid(), listing.getId().toString(),
                 Map.of("merchantId", merchantId.toString(),
                         "priceCents", listing.getPriceCents(),
                         "stockQty", listing.getStockQty(),
                         "status", listing.getStatus().name(),
                         "categoryCode", listing.getCategoryCode(),
-                        "imageCount", validated.size()));
+                        "imageCount", validated.size(),
+                        "deliveryTowns", coverage.size()));
         metrics.listingCreated();
         return assembler.toResponse(listing);
     }
@@ -211,6 +226,10 @@ public class ListingService {
     public ListingResponse update(AuthenticatedUser caller, UUID listingId, ListingUpdateRequest request) {
         validateRanges(request.priceCents(), request.stockQty());
         Listing listing = managedListing(caller, listingId);
+        // Null leaves the towns alone - the one field this full replace does
+        // not reset when omitted (see ListingUpdateRequest#deliveryTowns).
+        List<ListingDeliveryTown> coverage = request.deliveryTowns() == null
+                ? null : resolveCoverage(request.deliveryTowns());
         int previousStock = listing.getStockQty();
         listing.setTitle(requiredTitle(request.title()));
         listing.setDescription(sanitizedOrNull(request.description()));
@@ -222,6 +241,10 @@ public class ListingService {
         listing.setStockQty(request.stockQty());
         listing.setUpdatedAt(Instant.now());
         listingRepository.save(listing);
+        if (coverage != null) {
+            deliveryTownRepository.deleteByListingId(listing.getId());
+            saveCoverage(listing.getId(), coverage);
+        }
         // Restock-alert foundation: a merchant refilling an out-of-stock
         // listing publishes the in-process event; the AFTER_COMMIT listener
         // (favorite/RestockAlertListener) only fires if this tx commits.
@@ -231,8 +254,45 @@ public class ListingService {
         auditService.record(AuditEventType.LISTING_UPDATED, caller.uuid(), listing.getId().toString(),
                 Map.of("merchantId", listing.getMerchantId().toString(),
                         "priceCents", listing.getPriceCents(),
-                        "stockQty", listing.getStockQty()));
+                        "stockQty", listing.getStockQty(),
+                        "deliveryTownsChanged", coverage != null));
         return assembler.toResponse(listing);
+    }
+
+    /**
+     * The towns a listing delivers to, validated against the cell's town list.
+     * Refused, never trimmed: an unknown town is a 400 naming it, and a town
+     * named twice is a 400 rather than a silent pick between two fees.
+     * Null and empty both mean "collection only". The listing id is filled in
+     * by {@link #saveCoverage}.
+     */
+    private List<ListingDeliveryTown> resolveCoverage(List<DeliveryTownFee> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return List.of();
+        }
+        Map<String, ListingDeliveryTown> byTown = new LinkedHashMap<>();
+        for (DeliveryTownFee entry : requested) {
+            if (entry == null) {
+                continue;
+            }
+            DeliveryTown town = deliveryTowns.require(entry.townCode(), "deliveryTowns.townCode");
+            if (byTown.containsKey(town.getCode())) {
+                throw ApiException.badRequest("duplicate_delivery_town",
+                        "deliveryTowns names " + town.getName() + " more than once");
+            }
+            byTown.put(town.getCode(), new ListingDeliveryTown(null, town.getCode(),
+                    entry.feeCents() == null ? 0L : entry.feeCents()));
+        }
+        return List.copyOf(byTown.values());
+    }
+
+    private void saveCoverage(UUID listingId, List<ListingDeliveryTown> coverage) {
+        if (coverage.isEmpty()) {
+            return;
+        }
+        deliveryTownRepository.saveAll(coverage.stream()
+                .map(row -> new ListingDeliveryTown(listingId, row.getTownCode(), row.getFeeCents()))
+                .toList());
     }
 
     /**

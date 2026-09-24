@@ -5,6 +5,7 @@ import com.innbucks.marketplaceservice.fulfilment.DeliveryConfirmer;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -78,5 +79,18 @@ public record FulfilmentResponse(
         String unfulfilledReason,
 
         @Schema(example = "2026-09-18T09:15:00Z", nullable = true)
-        Instant unfulfilledAt) {
+        Instant unfulfilledAt,
+
+        @Schema(description = "Quote this to the seller or support; the live tracking screen is "
+                + "GET /marketplace/orders/{orderId}/fulfilments/{fulfilmentId}/tracking",
+                example = "TRK-7F3K9Q2M4X")
+        String trackingCode,
+
+        @Schema(description = "RECEIVED / DISPATCHED / DELIVERED / CANCELLED — the tracker's "
+                + "reading of `status`", example = "DISPATCHED")
+        TrackingStatus trackingStatus,
+
+        @Schema(description = "This seller's delivery fee on the order, minor units. 0 for "
+                + "collection.", example = "800")
+        long deliveryFeeCents) {
 }

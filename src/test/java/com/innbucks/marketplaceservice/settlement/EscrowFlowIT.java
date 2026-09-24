@@ -39,7 +39,8 @@ class EscrowFlowIT extends PostgresTestContainer {
               "description": "Portable solar lantern with 12h battery",
               "categoryCode": "electronics",
               "priceCents": 1550,
-              "stockQty": 10
+              "stockQty": 10,
+              "deliveryTowns": [{ "townCode": "harare", "feeCents": 0 }]
             }""";
 
     private static final String ADDRESS_BODY = """

@@ -91,8 +91,9 @@ public class CheckoutService {
         // sold-out line must not ALSO lose the address they just picked.
         DeliveryAddress address = resolveAddress(buyer, method, request.deliveryAddressId());
 
-        PricedBasket priced = pricer.price(basket);
-        long deliveryFee = deliveryFeeFor(method);
+        PricedBasket priced = pricer.price(basket, method,
+                address == null ? null : address.getTownCode());
+        long deliveryFee = priced.deliveryFeeCents();
         long total = Math.addExact(priced.subtotalCents(), deliveryFee);
         List<PricedLineResponse> lines = basketViews.toLines(priced, Map.of());
 
@@ -109,7 +110,10 @@ public class CheckoutService {
                 address == null ? null : AddressResponse.from(address),
                 priced.issues().isEmpty() ? null : priced.issues(),
                 priced.checkoutReady(),
-                paymentOptions());
+                paymentOptions(),
+                priced.deliveryFeesByMerchant().entrySet().stream()
+                        .map(e -> new CheckoutQuoteResponse.SellerDeliveryFee(e.getKey(), e.getValue()))
+                        .toList());
     }
 
     // ------------------------------------------------------------------
@@ -189,14 +193,17 @@ public class CheckoutService {
     @Transactional(readOnly = true)
     public DeliveryAddress resolveAddress(AuthenticatedUser buyer, DeliveryMethod method,
                                           UUID addressId) {
-        return method == DeliveryMethod.DELIVERY
-                ? addressService.requireForCheckout(buyer, addressId)
-                : null;
-    }
-
-    /** COLLECTION never pays a delivery fee — the buyer fetches the goods. */
-    public long deliveryFeeFor(DeliveryMethod method) {
-        return method == DeliveryMethod.DELIVERY ? properties.getDelivery().getFeeCents() : 0L;
+        if (method != DeliveryMethod.DELIVERY) {
+            return null;
+        }
+        DeliveryAddress address = addressService.requireForCheckout(buyer, addressId);
+        if (address.getTownCode() == null) {
+            // A pre-V14 address whose free-text city matched no town: there is
+            // no way to say who delivers there, so it is refused, not guessed.
+            throw ApiException.unprocessable("address_town_required",
+                    "Choose the town for this address before using it for delivery");
+        }
+        return address;
     }
 
     /** The rails this cell is provisioned for, in the order to offer them. */
@@ -220,7 +227,8 @@ public class CheckoutService {
     public CheckoutOptionsResponse options() {
         return new CheckoutOptionsResponse(
                 deliveryMethods(),
-                properties.getDelivery().getFeeCents(),
+                // Deprecated field: delivery is priced per seller per town now.
+                0L,
                 currency,
                 paymentOptions(),
                 PAYMENTS_ENDPOINT,
