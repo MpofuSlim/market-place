@@ -137,6 +137,31 @@ public class SellerService {
     }
 
     /**
+     * Makes sure the seller's trust record exists and takes its row lock for
+     * the rest of the caller's transaction — for writes that keep a per-seller
+     * invariant only this service can enforce (exactly one default collection
+     * point).
+     *
+     * <p>Unlike {@link #ensureExists} this is safe under concurrency for a
+     * seller with NO row yet: {@code ensureExists} is a find-then-save, so two
+     * simultaneous first writes both miss the row, both insert, and the loser
+     * 500s on the primary key before any lock could serialise them. Here the
+     * row is created by {@code INSERT … ON CONFLICT DO NOTHING}, so the loser
+     * waits for the winner, inserts nothing, and then queues on the lock.
+     * {@code SELLER_REGISTERED} is audited only by the call that actually
+     * created the row, so a double-tap records one registration, not two.
+     */
+    @Transactional
+    public void ensureExistsAndLock(UUID merchantId) {
+        if (sellers.insertIfAbsent(merchantId, Instant.now()) == 1) {
+            log.info("Seller record created merchantId={} status=PENDING", merchantId);
+            auditService.record(AuditEventType.SELLER_REGISTERED, null, merchantId.toString(),
+                    Map.of("status", SellerStatus.PENDING.name()));
+        }
+        sellers.lockForUpdate(merchantId);
+    }
+
+    /**
      * Whether this merchant may publish. A merchant with NO record yet is
      * allowed: the record is created on their first listing, and treating a
      * missing row as a refusal would block anyone whose row has not been

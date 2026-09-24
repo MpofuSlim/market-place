@@ -144,6 +144,64 @@ class CollectionPointFlowIT extends PostgresTestContainer {
     }
 
     @Test
+    @DisplayName("A brand-new seller double-tapping their FIRST point: both succeed, one default, "
+            + "one registration - never a 500 on the seller's primary key")
+    void concurrentFirstPointsForABrandNewSeller() throws Exception {
+        // No listing, no payout destination: this merchant has NO marketplace_seller
+        // row, which is exactly the case a find-then-save followed by the row lock
+        // could not serialise.
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM marketplace_seller WHERE merchant_id = ?::uuid",
+                Integer.class, merchantId.toString())).isZero();
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            List<java.util.concurrent.Future<Integer>> taps = new java.util.ArrayList<>();
+            for (String body : List.of(AVONDALE, BULAWAYO_DEPOT)) {
+                taps.add(pool.submit(() -> {
+                    start.await();
+                    return addPoint(merchantToken, body).andReturn().getResponse().getStatus();
+                }));
+            }
+            start.countDown();
+            for (java.util.concurrent.Future<Integer> tap : taps) {
+                assertThat(tap.get(30, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(201);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM seller_collection_point WHERE merchant_id = ?::uuid""",
+                Integer.class, merchantId.toString())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM seller_collection_point
+                 WHERE merchant_id = ?::uuid AND is_default""",
+                Integer.class, merchantId.toString())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM audit_events
+                 WHERE event_type = 'SELLER_REGISTERED' AND target_id = ?""",
+                Integer.class, merchantId.toString())).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("A refused first request leaves no seller record and no registration audit")
+    void aRefusedFirstRequestRegistersNobody() throws Exception {
+        addPoint(merchantToken, """
+                {"name":"X","townCode":"johannesburg","line1":"1 Main"}""")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("unknown_town"));
+
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM marketplace_seller WHERE merchant_id = ?::uuid",
+                Integer.class, merchantId.toString())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM audit_events WHERE event_type = 'SELLER_REGISTERED'",
+                Integer.class)).isZero();
+    }
+
+    @Test
     @DisplayName("Replacing a point redefines it whole, hours included")
     void updateReplacesWhole() throws Exception {
         String id = JsonPath.read(addPoint(merchantToken, AVONDALE)
@@ -360,7 +418,10 @@ class CollectionPointFlowIT extends PostgresTestContainer {
                 .andReturn().getResponse().getContentAsString(), "$.data.id");
         quote(collectionBody(listingId, foreign))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("unknown_collection_point"));
+                .andExpect(jsonPath("$.code").value("unknown_collection_point"))
+                // Names WHICH seller's choice to redo.
+                .andExpect(jsonPath("$.data.merchantId").value(merchantId.toString()))
+                .andExpect(jsonPath("$.data.collectionPointId").value(foreign));
 
         String body = collectionBody(listingId, depot);
         quote(body)

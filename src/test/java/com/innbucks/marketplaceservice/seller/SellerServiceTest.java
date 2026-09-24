@@ -274,4 +274,36 @@ class SellerServiceTest {
         assertThat(res.status()).isEqualTo(SellerStatus.APPROVED);
         assertThat(res.decidedBy()).isNull();
     }
+
+    // ------------------------------------------------------------------
+    // ensureExistsAndLock: the race-safe first write
+    // ------------------------------------------------------------------
+
+    @Test
+    void ensureExistsAndLockCreatesAuditsAndLocksANewSeller() {
+        when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(1);
+
+        service.ensureExistsAndLock(MERCHANT);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(sellers, audit);
+        order.verify(sellers).insertIfAbsent(eq(MERCHANT), any(Instant.class));
+        order.verify(audit).record(eq(AuditEventType.SELLER_REGISTERED), eq(null),
+                eq(MERCHANT.toString()), eq(Map.of("status", "PENDING")));
+        order.verify(sellers).lockForUpdate(MERCHANT);
+        // Never the find-then-save that races: the insert IS the existence check.
+        verify(sellers, never()).save(any());
+    }
+
+    @Test
+    void ensureExistsAndLockOnAnExistingSellerOnlyLocks() {
+        // 0 = the row was already there, or a concurrent first write won the
+        // insert; either way this call registered nobody and audits nothing.
+        when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(0);
+
+        service.ensureExistsAndLock(MERCHANT);
+
+        verify(sellers).lockForUpdate(MERCHANT);
+        verify(audit, never()).record(any(), any(), any(), anyMap());
+        verify(sellers, never()).save(any());
+    }
 }

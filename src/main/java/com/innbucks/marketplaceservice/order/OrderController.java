@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.order;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.api.ApiResult;
+import com.innbucks.marketplaceservice.checkout.CheckoutController;
 import com.innbucks.marketplaceservice.fulfilment.dto.CollectCodeResponse;
 import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelTrackingResponse;
 import com.innbucks.marketplaceservice.fulfilment.tracking.ParcelTrackingService;
@@ -108,6 +109,16 @@ public class OrderController {
                                               ],
                                               "deliveryMethod": "COLLECTION"
                                             }
+                                            """),
+                                    @ExampleObject(name = "Cart, collected from a chosen point", value = """
+                                            {
+                                              "fromCart": true,
+                                              "deliveryMethod": "COLLECTION",
+                                              "collectionPoints": [
+                                                { "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                                  "collectionPointId": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e" }
+                                              ]
+                                            }
                                             """)})))
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order created; stock reserved",
@@ -174,7 +185,8 @@ public class OrderController {
                                     }
                                     """))),
             @ApiResponse(responseCode = "400", description = "Missing Idempotency-Key, invalid msisdn, "
-                    + "or invalid lines",
+                    + "invalid lines, a collection-point choice that is not that seller's (data "
+                    + "names the seller), or one seller named twice in collectionPoints",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "Missing Idempotency-Key", value = """
                                     {"code":"idempotency_key_required","message":"Idempotency-Key header is required"}
@@ -190,7 +202,11 @@ public class OrderController {
                                     """),
                             @ExampleObject(name = "Duplicate line", value = """
                                     {"code":"duplicate_listing","message":"Listing 9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d appears more than once in the order"}
-                                    """)})),
+                                    """),
+                            @ExampleObject(name = "Stale collection point",
+                                    value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
+                            @ExampleObject(name = "Seller named twice",
+                                    value = CheckoutController.EXAMPLE_DUPLICATE_COLLECTION_POINT_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid JWT",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(value = """

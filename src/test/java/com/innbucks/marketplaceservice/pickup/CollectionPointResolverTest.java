@@ -98,11 +98,20 @@ class CollectionPointResolverTest {
     }
 
     @Test
-    @DisplayName("Choosing a point that does not exist is refused, never quietly replaced by the default")
+    @DisplayName("Choosing a point that does not exist is refused, never quietly replaced by the "
+            + "default - and the refusal names the seller, so a multi-seller basket knows which "
+            + "choice to redo")
     void unknownPointIsRefused() {
-        assertThatThrownBy(() -> resolver.resolve(List.of(SELLER_A),
-                List.of(new CollectionPointChoice(SELLER_A, UUID.randomUUID()))))
-                .satisfies(ex -> assertThat(code(ex)).isEqualTo("unknown_collection_point"));
+        UUID stale = UUID.randomUUID();
+        assertThatThrownBy(() -> resolver.resolve(List.of(SELLER_A, SELLER_B), List.of(
+                new CollectionPointChoice(SELLER_A, aSecond.getId()),
+                new CollectionPointChoice(SELLER_B, stale))))
+                .satisfies(ex -> {
+                    assertThat(code(ex)).isEqualTo("unknown_collection_point");
+                    assertThat(((ApiException) ex).details()).isEqualTo(Map.of(
+                            "merchantId", SELLER_B.toString(),
+                            "collectionPointId", stale.toString()));
+                });
     }
 
     @Test

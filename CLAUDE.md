@@ -1050,8 +1050,18 @@ never change either casually.
     that seller's `marketplace_seller` row lock**
     (`MarketplaceSellerRepository.lockForUpdate`). Without it, two concurrent
     first points both try to become the default and a double-tap is a 500
-    (this service maps no constraint violation to a 4xx). `is_default` is
-    read-only on the entity and changed only by the bulk statements.
+    (this service maps no constraint violation to a 4xx). **A lock needs a row
+    to lock**: for a seller with no record yet, `SellerService.ensureExists`
+    (find-then-save) let two first taps both insert the seller and the loser
+    500'd on its primary key before any lock applied. So `create` goes through
+    `SellerService.ensureExistsAndLock` — `INSERT … ON CONFLICT DO NOTHING`
+    (the loser waits, then inserts nothing), `SELLER_REGISTERED` audited only
+    by the call that actually inserted, then the lock — and it validates the
+    request BEFORE touching the seller record, so a refused first request
+    registers nobody. (`ensureExists`'s other callers, listing create and the
+    payout destination, keep the older race; nothing there claims a lock
+    serialises them.) `is_default` is read-only on the entity and changed only
+    by the bulk statements.
   * **Replace, never merge** — a point is redefined whole, hours included (the
     payout-destination rule). Hard delete; orders keep their snapshot.
   * **Hours are market-local wall-clock times** (`TIME`, never instants), at
@@ -1076,7 +1086,9 @@ never change either casually.
     directly exactly as before V18. `CollectionPointResolver` is shared by quote
     and order (the `CheckoutPricer` reason: the point a buyer was quoted is the
     point the order records). A point that is not that seller's = 400
-    `unknown_collection_point`; one seller named twice = 400
+    `unknown_collection_point`, whose `data` names the `merchantId` and the
+    stale `collectionPointId` (a multi-seller basket must know WHICH choice to
+    redo); one seller named twice = 400
     `duplicate_collection_point_choice`; a choice for a seller no longer in the
     basket is ignored. The new request field is
     `@JsonInclude(NON_NULL)` so an old body fingerprints the same for
@@ -1102,8 +1114,10 @@ never change either casually.
     `CollectionPointResolverTest`, the collection cases in `CatalogServiceTest`,
     and end to end by `CollectionPointFlowIT` (CRUD, default promotion, the cap,
     owner-scoped 404s, the admin override, browse against real SQL, the
-    snapshot surviving an edit and a delete) plus the public-test case in
-    `PublicTestOrderRailIT`.
+    snapshot surviving an edit and a delete, a brand-new seller's concurrent
+    double-tap, a refused first request registering nobody) plus the
+    public-test case in `PublicTestOrderRailIT`; `SellerServiceTest` pins
+    `ensureExistsAndLock`.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling
