@@ -385,7 +385,7 @@ class FulfilmentServiceTest {
         assertThat(p.getStatus()).isEqualTo(FulfilmentStatus.DISPATCHED);
         assertThat(p.getDeliveredAt()).isNull();
         verify(settlementService, never()).onParcelDelivered(any());
-        verify(eventPublisher, never()).publishEvent(any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
         assertThat(outcome("self_close_refused")).isEqualTo(1.0);
     }
 
@@ -470,7 +470,7 @@ class FulfilmentServiceTest {
 
         service.confirmReceived(BUYER, id);
 
-        verify(eventPublisher, never()).publishEvent(any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
     }
 
     @Test
@@ -481,7 +481,7 @@ class FulfilmentServiceTest {
 
         assertThatThrownBy(() -> service.dispatch(SELLER_A, id, null))
                 .isInstanceOf(ApiException.class);
-        verify(eventPublisher, never()).publishEvent(any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
     }
 
     // ------------------------------------------------------------------

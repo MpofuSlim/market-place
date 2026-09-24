@@ -334,7 +334,7 @@ class DisputeServiceTest {
                 .isEqualTo("dispute_not_open");
         verify(settlementService, never()).releaseByOperator(any());
         verify(settlementService, never()).recordRefund(any(), any());
-        verify(eventPublisher, never()).publishEvent(any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
     }
 
     @Test
