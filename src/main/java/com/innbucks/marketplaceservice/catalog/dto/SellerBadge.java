@@ -45,7 +45,7 @@ public record SellerBadge(
     }
 
     /**
-     * A merchant with no trust record here but a name in the loyalty registry:
+     * A seller with no trust record here but a name in the organization registry:
      * still not vetted — {@code verified} is the platform's own claim and is
      * never inferred from a merchant merely existing — but no longer anonymous
      * to the shopper.
@@ -59,7 +59,7 @@ public record SellerBadge(
     }
 
     /**
-     * {@code resolvedName} is the loyalty registry's trading name, used ONLY
+     * {@code resolvedName} is the organization registry's name, used ONLY
      * when no operator has set one here — a name somebody typed while vouching
      * for this seller is a deliberate choice and outranks the registry.
      */

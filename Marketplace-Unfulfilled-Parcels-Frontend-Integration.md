@@ -132,8 +132,7 @@ as a pending payout.
 |---|---|---|---|
 | `400` | `unfulfilled_reason_required` | `reason` blank, or nothing but markup | inline field error |
 | `400` | (bean validation) | `reason` missing or > 255 chars | inline field error |
-| `403` | `FORBIDDEN` | caller is a `CUSTOMER` | never reachable from the merchant app |
-| `403` | `merchant_scope_missing` | token carries no `merchantId` | re-login |
+| `403` | `FORBIDDEN` | caller sells for no organization (a customer, none chosen, or no `marketplace` product) | route to the organization picker |
 | `404` | `fulfilment_not_found` | unknown parcel, **or another seller's** | "This parcel is no longer available" |
 | `409` | `illegal_fulfilment_state` | parcel is already `DISPATCHED`, `DELIVERED` or `UNFULFILLED` | refresh the queue and show the real state |
 

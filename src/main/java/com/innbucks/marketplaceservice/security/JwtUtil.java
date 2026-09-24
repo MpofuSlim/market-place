@@ -138,15 +138,34 @@ public class JwtUtil {
         return Set.of();
     }
 
-    /** JWT {@code merchantId} claim (seller scoping — NEVER from a request
-     *  body), canonicalised; null when absent or not a UUID. */
-    public String extractMerchantId(String token) {
-        return extractUuidClaimAsString(token, "merchantId");
+    /**
+     * The organization this session acts for ({@code orgId}, user-service V39),
+     * canonicalised; null when absent or not a UUID — a session with no
+     * organization chosen, a phone-proof session, or a pre-V39 token.
+     */
+    public String extractOrganizationId(String token) {
+        return extractUuidClaimAsString(token, "orgId");
     }
 
-    /** JWT {@code shopId} claim, canonicalised; null when absent or not a UUID. */
-    public String extractShopId(String token) {
-        return extractUuidClaimAsString(token, "shopId");
+    /** The caller's role in that organization ({@code orgRole}: OWNER, ADMIN or STAFF); null when absent. */
+    public String extractOrganizationRole(String token) {
+        Object raw = getClaims(token).get("orgRole");
+        return raw == null ? null : raw.toString();
+    }
+
+    /** The organization's ACTIVE products ({@code products}, lowercase); empty when absent. */
+    public Set<String> extractProducts(String token) {
+        Object raw = getClaims(token).get("products");
+        if (raw instanceof Collection<?> c) {
+            Set<String> products = new LinkedHashSet<>();
+            for (Object product : c) {
+                if (product != null) {
+                    products.add(product.toString());
+                }
+            }
+            return products;
+        }
+        return Set.of();
     }
 
     public String extractPhoneNumber(String token) {

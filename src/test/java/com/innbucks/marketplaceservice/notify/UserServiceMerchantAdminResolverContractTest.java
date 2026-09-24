@@ -17,7 +17,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Contract test for {@link UserServiceMerchantAdminResolver} against
- * user-service's {@code GET /users/internal/merchants/{id}/admins}.
+ * user-service's {@code GET /users/internal/organizations/{id}/admins} — the
+ * OWNERs and ADMINs, with an active account, of the organization that sells
+ * (a seller's {@code merchantId} IS that organization's id).
  *
  * <p>Pins the wire shape of an endpoint in ANOTHER REPOSITORY
  * ({@code MpofuSlim/ticketing-system}), so a reshape there fails this build
@@ -36,7 +38,7 @@ class UserServiceMerchantAdminResolverContractTest {
 
     private static final String TOKEN = "the-shared-secret";
     private static final UUID MERCHANT = UUID.fromString("b3f1c9d2-4a77-4e21-9c60-11ab22cd33ef");
-    private static final String PATH = "/users/internal/merchants/" + MERCHANT + "/admins";
+    private static final String PATH = "/users/internal/organizations/" + MERCHANT + "/admins";
     private static final UUID ADMIN = UUID.fromString("7c2e8a4d-1f35-4b90-8de1-2a0c5b6f9e34");
 
     private static WireMockServer wireMock;
@@ -69,7 +71,7 @@ class UserServiceMerchantAdminResolverContractTest {
     @DisplayName("200: the admin's userUuid comes back, and the shared token rides the request")
     void resolvesTheAdmin() {
         wireMock.stubFor(get(urlEqualTo(PATH)).willReturn(okJson("""
-                {"code":"OK","message":"Merchant admins resolved",
+                {"code":"200 OK","message":"Organization admins",
                  "data":[{"userUuid":"%s","email":"chipo@merchant.test"}]}""".formatted(ADMIN))));
 
         assertThat(resolver().adminUserUuids(MERCHANT)).containsExactly(ADMIN);
@@ -86,7 +88,7 @@ class UserServiceMerchantAdminResolverContractTest {
     void resolvesEveryAdmin() {
         UUID second = UUID.randomUUID();
         wireMock.stubFor(get(urlEqualTo(PATH)).willReturn(okJson("""
-                {"code":"OK","data":[{"userUuid":"%s"},{"userUuid":"%s"}]}"""
+                {"code":"200 OK","data":[{"userUuid":"%s"},{"userUuid":"%s"}]}"""
                 .formatted(ADMIN, second))));
 
         assertThat(resolver().adminUserUuids(MERCHANT)).containsExactly(ADMIN, second);
@@ -95,11 +97,11 @@ class UserServiceMerchantAdminResolverContractTest {
     @Test
     @DisplayName("200 with an empty data array: nobody, not an error")
     void emptyDataIsNobody() {
-        // user-service's answer for an unknown merchant, no admin on file, no
-        // account yet, an inactive account, a non-MERCHANT_ADMIN account, AND
-        // a loyalty outage — it collapses all six deliberately.
+        // user-service's answer for an unknown organization AND for one whose
+        // OWNERs/ADMINs are all inactive — it collapses them deliberately, so
+        // the S2S surface is no existence oracle.
         wireMock.stubFor(get(urlEqualTo(PATH)).willReturn(okJson("""
-                {"code":"OK","message":"Merchant admins resolved","data":[]}""")));
+                {"code":"200 OK","message":"Organization admins","data":[]}""")));
 
         assertThat(resolver().adminUserUuids(MERCHANT)).isEmpty();
     }
@@ -108,7 +110,7 @@ class UserServiceMerchantAdminResolverContractTest {
     @DisplayName("A missing data key is nobody, never a crash")
     void absentDataIsNobody() {
         wireMock.stubFor(get(urlEqualTo(PATH)).willReturn(okJson("""
-                {"code":"OK","message":"Merchant admins resolved"}""")));
+                {"code":"200 OK","message":"Organization admins"}""")));
 
         assertThat(resolver().adminUserUuids(MERCHANT)).isEmpty();
     }
@@ -117,14 +119,14 @@ class UserServiceMerchantAdminResolverContractTest {
     @DisplayName("One unparseable id is skipped — it must not cost the others their message")
     void anUnparseableIdIsSkipped() {
         wireMock.stubFor(get(urlEqualTo(PATH)).willReturn(okJson("""
-                {"code":"OK","data":[{"userUuid":"not-a-uuid"},{"userUuid":"%s"},{"userUuid":""}]}"""
+                {"code":"200 OK","data":[{"userUuid":"not-a-uuid"},{"userUuid":"%s"},{"userUuid":""}]}"""
                 .formatted(ADMIN))));
 
         assertThat(resolver().adminUserUuids(MERCHANT)).containsExactly(ADMIN);
     }
 
     @Test
-    @DisplayName("404: nobody — a user-service too old to serve this endpoint reads as no admins")
+    @DisplayName("404: nobody — a user-service without the organization surface reads as no admins")
     void notFoundIsNobody() {
         // This is the deploy-order case: marketplace can ship before
         // user-service does, and must degrade to today's behaviour rather than
@@ -181,7 +183,7 @@ class UserServiceMerchantAdminResolverContractTest {
         assertThat(resolver("http://localhost:" + wireMock.port(), "   ")
                 .adminUserUuids(MERCHANT)).isEmpty();
 
-        wireMock.verify(0, getRequestedFor(urlPathMatching("/users/internal/merchants/.*")));
+        wireMock.verify(0, getRequestedFor(urlPathMatching("/users/internal/.*")));
     }
 
     @Test
@@ -189,11 +191,11 @@ class UserServiceMerchantAdminResolverContractTest {
     void addressesTheMerchantItWasAsked() {
         UUID other = UUID.randomUUID();
         UUID othersAdmin = UUID.randomUUID();
-        wireMock.stubFor(get(urlEqualTo("/users/internal/merchants/" + other + "/admins"))
+        wireMock.stubFor(get(urlEqualTo("/users/internal/organizations/" + other + "/admins"))
                 .willReturn(okJson("""
-                        {"code":"OK","data":[{"userUuid":"%s"}]}""".formatted(othersAdmin))));
+                        {"code":"200 OK","data":[{"userUuid":"%s"}]}""".formatted(othersAdmin))));
         wireMock.stubFor(get(urlEqualTo(PATH)).willReturn(okJson("""
-                {"code":"OK","data":[{"userUuid":"%s"}]}""".formatted(ADMIN))));
+                {"code":"200 OK","data":[{"userUuid":"%s"}]}""".formatted(ADMIN))));
 
         assertThat(resolver().adminUserUuids(MERCHANT)).containsExactly(ADMIN);
         assertThat(resolver().adminUserUuids(other)).containsExactly(othersAdmin);

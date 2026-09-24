@@ -10,8 +10,8 @@ import java.util.UUID;
  *
  * <p>Identity is user-service's domain and the marketplace stores no
  * user↔merchant link — {@code Listing.merchantId} and
- * {@code MarketOrderItem.merchantId} are loyalty merchant ids copied off a JWT
- * claim — so the only implementation is an S2S lookup:
+ * {@code MarketOrderItem.merchantId} are the selling ORGANIZATION's id, taken
+ * from the seller's JWT — so the only implementation is an S2S lookup:
  * {@link UserServiceMerchantAdminResolver}.
  *
  * <p>The interface survives the arrival of that implementation because it is

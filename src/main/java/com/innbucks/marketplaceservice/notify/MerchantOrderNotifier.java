@@ -24,7 +24,7 @@ import java.util.UUID;
  * .merchant-orders.enabled}), since {@link UserServiceMerchantAdminResolver}
  * gave {@link MerchantAdminResolver} a real implementation. A merchant whose
  * admins cannot be resolved — no account yet, an inactive one, or a
- * user-service/loyalty blip — is metered {@code outcome=no_recipients} and
+ * user-service blip — is metered {@code outcome=no_recipients} and
  * skipped, never retried and never fatal.
  *
  * <p>Called only from the never-throws notification listener, and defensively

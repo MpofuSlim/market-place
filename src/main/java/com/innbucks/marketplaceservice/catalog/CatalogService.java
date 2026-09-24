@@ -198,7 +198,7 @@ public class CatalogService {
     public MerchantProfileResponse merchantProfile(UUID merchantId) {
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(List.of(merchantId));
         MarketplaceSeller seller = sellers.get(merchantId);
-        // An operator-set name wins; the loyalty registry fills the gap, so a
+        // An operator-set name wins; the organization registry fills the gap, so a
         // seller nobody has approved yet is still named rather than a bare
         // UUID. Unreachable registry = no name, which is the prior behaviour.
         String name = sellerService.displayNames(List.of(merchantId), sellers).get(merchantId);

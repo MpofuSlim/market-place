@@ -47,7 +47,7 @@ V13 puts it on the seller record:
 
 ### `GET /marketplace/sellers/me/payout-destination`
 
-**No merchant id anywhere in the request** — the subject is always the caller's own `merchantId` claim. There is deliberately no way to name another seller on this surface.
+**No merchant id anywhere in the request** — the subject is always the organization the caller's session sells for. There is deliberately no way to name another seller on this surface.
 
 **Response `200` — none on file yet:**
 
@@ -129,8 +129,7 @@ Two things to build against:
 | `400` | `payout_field_required` | a field the chosen method needs is missing or blank — **the message names it** | inline error on that field |
 | `400` | `invalid_msisdn` | the number is not valid for this cell's country | inline error on `msisdn` |
 | `400` | (bean validation) | `method` or `accountName` missing, or a field over its length cap | inline field error |
-| `403` | `FORBIDDEN` | caller is not a `MERCHANT_ADMIN` | not reachable from the merchant app |
-| `403` | `merchant_scope_missing` | token carries no `merchantId` claim | re-login |
+| `403` | `FORBIDDEN` | caller sells for no organization (none chosen, not OWNER/ADMIN, or no `marketplace` product) | route to the organization picker |
 
 **Switching rails clears the other one's fields.** Going `BANK` → `MOBILE_MONEY` wipes `bankName`/`accountNumber`. Don't try to preserve them client-side — the database refuses a row carrying both.
 

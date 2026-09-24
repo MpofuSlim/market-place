@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -315,13 +316,60 @@ class SecuritySurfaceIT extends PostgresTestContainer {
 
     @Test
     void aMerchantTokenWithNoMerchantScopeCannotReadTheQueue() throws Exception {
-        // Merchant scope comes from the JWT, never from a request body — a
-        // token without one is refused rather than defaulted to "all".
+        // Seller scope comes from the session's ORGANIZATION, never from a
+        // request body — and the bare role no longer makes anyone a seller, so
+        // a token without an organization is refused at the door rather than
+        // defaulted to "all".
         mockMvc.perform(get("/marketplace/fulfilments")
                         .header("Authorization", "Bearer " + TestJwts.merchantAdminWithoutMerchant(
                                 UUID.randomUUID(), jwtSecret)))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("merchant_scope_missing"));
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void anAdminColleague_withNoStaffRole_readsTheirOrganizationsQueue() throws Exception {
+        // Added through user-service's /organizations as ADMIN: no platform
+        // role at all, and still a seller here — that is the point of keying
+        // on the organization.
+        String colleague = TestJwts.forUser(UUID.randomUUID()).role("CUSTOMER")
+                .organization(UUID.randomUUID(), "ADMIN", List.of("marketplace")).sign(jwtSecret);
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + colleague))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void staffOfASellingOrganization_isNotASeller() throws Exception {
+        String staff = TestJwts.forUser(UUID.randomUUID()).role("MERCHANT_ADMIN")
+                .organization(UUID.randomUUID(), "STAFF", List.of("marketplace")).sign(jwtSecret);
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + staff))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aLoyaltyOnlyBusiness_isNotASeller_evenItsOwner() throws Exception {
+        String loyaltyOwner = TestJwts.forUser(UUID.randomUUID()).role("MERCHANT_ADMIN")
+                .organization(UUID.randomUUID(), "OWNER", List.of("loyalty")).sign(jwtSecret);
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + loyaltyOwner))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aLegacyMerchantIdClaim_isIgnored() throws Exception {
+        // The claim user-service minted before organizations. Honouring it
+        // would let a stale token keep selling for a merchant nobody here can
+        // tie to a business any more.
+        String legacy = TestJwts.forUser(UUID.randomUUID()).role("MERCHANT_ADMIN")
+                .merchantId(UUID.randomUUID()).sign(jwtSecret);
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + legacy))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
 
     @Test
@@ -458,13 +506,14 @@ class SecuritySurfaceIT extends PostgresTestContainer {
 
     @Test
     void aMerchantTokenWithNoScopeCannotReachAPayoutDestination() throws Exception {
-        // Scoped by SHAPE: the subject is the caller's own claim, so a token
-        // without one has no destination to name rather than defaulting to any.
+        // Scoped by SHAPE: the subject is the caller's own organization, so a
+        // token without one has no destination to name — and, the role alone
+        // granting nothing, never reaches the handler at all.
         mockMvc.perform(get("/marketplace/sellers/me/payout-destination")
                         .header("Authorization", "Bearer " + TestJwts.merchantAdminWithoutMerchant(
                                 UUID.randomUUID(), jwtSecret)))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("merchant_scope_missing"));
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
     }
 
     @Test

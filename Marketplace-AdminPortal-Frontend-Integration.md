@@ -9,7 +9,7 @@ Two distinct users share this app and the guide is split accordingly:
 
 The buyer-facing surface is in the **Super App** guide.
 
-> **Build these as two different apps inside one shell.** A merchant's every read is silently scoped to their own `merchantId` claim; an operator's reads span the platform and usually *require* naming a merchant. Mixing the two produces screens that look right for one role and lie to the other.
+> **Build these as two different apps inside one shell.** A merchant's every read is silently scoped to the organization their session acts for; an operator's reads span the platform and usually *require* naming a merchant. Mixing the two produces screens that look right for one role and lie to the other.
 
 ---
 
@@ -25,12 +25,13 @@ The buyer-facing surface is in the **Super App** guide.
 
 Envelope `{ "code": "…", "message": "…", "data": … }`; errors carry a slug `code` — **branch on `code`, never on `message`**. Money is **minor units** (cents, integer). Timestamps are **UTC ISO-8601 with `Z`**.
 
-### Merchant scope comes from the token, never from a request
+### Merchant scope comes from the token's ORGANIZATION, never from a request
 
-A `MERCHANT_ADMIN`'s JWT carries a `merchantId` claim, and **every merchant-facing endpoint reads it from there**. Consequences you must design around:
+A seller is an **organization** (a business, from user-service). The marketplace treats the signed-in user as a seller when their token's `orgId` is an organization they are **OWNER or ADMIN** of **and** that organization holds the `marketplace` product. That organization's id **is** the `merchantId` every seller endpoint and field uses (the name was kept; the value is the organization id). The token no longer carries a `merchantId` claim. Consequences you must design around:
 
 - **A `merchantId` query parameter is IGNORED for a merchant** on the queues and money views. They cannot widen their own scope, and sending one does nothing — it is not an error, it just has no effect.
-- **A token with no `merchantId` claim is `403 merchant_scope_missing`.** That is not a bug to work around. It happens when the signed-in user administers **more than one merchant**, because a claim is singular and guessing one would silently attribute listings — and therefore commission — to an arbitrary merchant. Render "this account manages several merchants; sign in against one" and route to support.
+- **No selling organization in the session = `403 FORBIDDEN`** on every seller surface (not `merchant_scope_missing` any more). It happens when the user belongs to **several organizations and has not picked one** (the login response says `organizationSelectionRequired: true` — have them choose via user-service `POST /auth/organization-context`), when their organization lacks the `marketplace` product, or when they are only `STAFF` there. Route to the organization picker or the product request, not to "re-login".
+- **Colleagues work.** An `ADMIN` added to the organization is a seller with no platform role of their own.
 
 ---
 
@@ -91,7 +92,7 @@ Returns the standard page shape: `{ items: [ListingResponse], page, size, totalI
 | `city`, `area`, `description` | no | free text, sanitized server-side |
 | `merchantId` | **SUPER_ADMIN only** | create on behalf of a merchant |
 
-**On `merchantId`:** admin tokens carry no merchant claim, so a SUPER_ADMIN **must** send it — `400 merchant_id_required` otherwise. For a MERCHANT_ADMIN it is refused whenever it differs from their own claim (`422 merchant_scope_mismatch`).
+**On `merchantId`:** it is the seller **organization's** id. Admin tokens carry no seller scope, so a SUPER_ADMIN **must** send it — `400 merchant_id_required` otherwise; pick it from user-service `GET /admin/organizations?product=marketplace`. For a MERCHANT_ADMIN it is refused whenever it differs from their own organization (`422 merchant_scope_mismatch`).
 
 Created listings are **`DRAFT`**.
 
@@ -366,7 +367,7 @@ Base: `/marketplace/sellers/me/payout-destination` — **no merchant id anywhere
 |---|---|---|
 | `400` | `payout_field_required` | a field the method needs is missing — **the message names it** |
 | `400` | `invalid_msisdn` | not a valid number for this cell's country |
-| `403` | `merchant_scope_missing` | token carries no merchant claim |
+| `403` | `FORBIDDEN` | the session sells for no organization (see §1) |
 
 **Changing this notifies the seller's account**, because re-pointing a payout is what a compromised account is used for. Mention it on the form so the message is not alarming when it arrives.
 
@@ -591,7 +592,7 @@ Settlements still `HELD` past the threshold (default **14 days**), oldest first.
 - [ ] **Branch on `code`, never `message`.**
 - [ ] **Money is minor units.** `4998` = `USD 49.98`.
 - [ ] **Timestamps are UTC `Z`** — render in the viewer's locale, no arithmetic.
-- [ ] **`403 merchant_scope_missing` usually means a multi-merchant account**, not a broken token. Route to support with that wording.
+- [ ] **A seller `403 FORBIDDEN` usually means no organization is chosen** (several memberships) or the organization lacks `marketplace` — route to the organization picker, not to support.
 
 **Merchant**
 

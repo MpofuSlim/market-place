@@ -248,10 +248,10 @@ The 409s are safe to treat as *"someone got there first"* — re-fetch the queue
 
 ## 9. Related
 
-- **`merchantId` identity** — see §3.2 of the backend response: `GET /loyalty/merchants`
-  is authoritative. MERCHANT_ADMIN tokens now carry a `merchantId` claim
-  (ticketing PR #560), which is what makes merchant self-service listing work at
-  all.
+- **`merchantId` identity** — a seller's `merchantId` is its ORGANIZATION's id;
+  user-service `GET /admin/organizations` is the registry. Tokens no longer
+  carry a `merchantId` claim: the marketplace derives the seller from the
+  session's `orgId` + `orgRole` (OWNER/ADMIN) + `products` (∋ `marketplace`).
 - **Seller-applied / seller-approved notifications** (§1.4 of your list) are not
   built — there is no notifications resource yet. These decisions currently notify
   nobody.

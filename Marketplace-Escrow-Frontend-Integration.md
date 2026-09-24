@@ -159,9 +159,10 @@ view).
 
 ## 4. Seller (`MERCHANT_ADMIN`)
 
-Merchant scope comes from the JWT's `merchantId` claim — there is no way (and
-no need) to pass a merchant id. A token without the claim gets
-`403 merchant_scope_missing`.
+Merchant scope comes from the session's ORGANIZATION (`orgId`, when the user
+is its OWNER/ADMIN and it holds `marketplace`) — there is no way (and no need)
+to pass a merchant id. A session selling for no organization gets
+`403 FORBIDDEN`.
 
 ### 4.1 Escrow state on the fulfilment queue (additive)
 

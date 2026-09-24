@@ -131,3 +131,36 @@ Optional, same file: `MARKETPLACE_DELIVERY_METHODS` (default
 service books no couriers and has no rate card, so a non-zero fee is a
 commercial decision a cell makes deliberately).
 
+
+## 7. Sellers are ORGANIZATIONS (step 2 of the fleet organizations plan)
+
+Ships in lock-step with two other repos, and they deploy **together**:
+
+| Repo | Change |
+|---|---|
+| `ticketing-system` (user-service) | stops minting the `merchantId` claim for merchant admins; serves `GET /admin/organizations` |
+| `InnRewards` (loyalty, V51) | loyalty merchants owned by organization; `GET /loyalty/internal/merchants/names` removed |
+| this repo | seller = the session's `orgId` (OWNER/ADMIN + `marketplace` product) |
+
+**S2S calls this service now makes to user-service** (both behind the existing
+`/users/internal/**` permitAll + the gateway's `user-internal-deny`, so no
+gateway or SecurityConfig change):
+
+- `GET /users/internal/organizations/names?ids=` — seller names (was loyalty's
+  `/loyalty/internal/merchants/names`). `ApiResult` body, ≤ 200 ids per call.
+- `GET /users/internal/organizations/{id}/admins` — who to tell about a paid
+  order (was `/users/internal/merchants/{id}/admins`, which chained through
+  loyalty's `merchants.admin_email`).
+
+**Data: seller ids change meaning.** Every `merchant_id` column here
+(`listing`, `listing_review`, `marketplace_seller` (PK), `market_order_item`,
+`order_fulfilment`, `merchant_settlement`, `settlement_dispute`) holds a
+**loyalty merchant id** on a cell that sold before this change. After it, a
+seller's scope is an organization id, so those rows belong to nobody until
+they are remapped (loyalty merchant → the organization owning it, per
+InnRewards' `merchants.organization_id` once that is stamped) or the cell's
+marketplace data is reset. This service cannot do it itself — it never knew
+which business owned a loyalty merchant. Watch for two merchants mapping to
+ONE organization: `marketplace_seller` is keyed by `merchant_id`, so their
+rows must be merged, not both renamed. Production has no marketplace data,
+so this is a staging-only decision.
