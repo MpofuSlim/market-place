@@ -97,6 +97,50 @@ class UserNotifyGatewayContractTest {
     }
 
     @Test
+    @DisplayName("typed notice: type, severity, subject and deepLink ride the same ingress")
+    void typedNotice_carriesTheBellFields() {
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(202)));
+
+        boolean accepted = gateway.notify(USER, new UserNotice(
+                "Dispute opened on order MKT-4F9A1C22B7D3",
+                "The buyer of order MKT-4F9A1C22B7D3 opened a dispute - not received.",
+                "PARCEL_DISPUTED", UserNotice.WARNING, "PARCEL",
+                "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                "/marketplace/parcels?q=MKT-4F9A1C22B7D3"));
+
+        assertThat(accepted).isTrue();
+        // user-service's NotifyRequest field names, verbatim: a renamed key is
+        // silently dropped there and the bell entry degrades to GENERAL/INFO.
+        wireMock.verify(postRequestedFor(urlEqualTo(NOTIFY_PATH))
+                .withHeader("X-Internal-Token", equalTo(TOKEN))
+                .withRequestBody(matchingJsonPath("$.subject",
+                        equalTo("Dispute opened on order MKT-4F9A1C22B7D3")))
+                .withRequestBody(matchingJsonPath("$.type", equalTo("PARCEL_DISPUTED")))
+                .withRequestBody(matchingJsonPath("$.severity", equalTo("WARNING")))
+                .withRequestBody(matchingJsonPath("$.subjectKind", equalTo("PARCEL")))
+                .withRequestBody(matchingJsonPath("$.subjectId",
+                        equalTo("3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31")))
+                .withRequestBody(matchingJsonPath("$.deepLink",
+                        equalTo("/marketplace/parcels?q=MKT-4F9A1C22B7D3"))));
+    }
+
+    @Test
+    @DisplayName("plain notice: the optional keys are ABSENT, not null — the pre-bell body, byte for byte")
+    void plainNotice_sendsOnlySubjectAndMessage() {
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(202)));
+
+        assertThat(gateway.notify(USER, "Back in stock", "Solar Lantern is back")).isTrue();
+
+        wireMock.verify(postRequestedFor(urlEqualTo(NOTIFY_PATH))
+                .withRequestBody(matchingJsonPath("$.subject", equalTo("Back in stock")))
+                .withRequestBody(matchingJsonPath("$.type", absent()))
+                .withRequestBody(matchingJsonPath("$.severity", absent()))
+                .withRequestBody(matchingJsonPath("$.subjectKind", absent()))
+                .withRequestBody(matchingJsonPath("$.subjectId", absent()))
+                .withRequestBody(matchingJsonPath("$.deepLink", absent())));
+    }
+
+    @Test
     @DisplayName("user-service 5xx: swallowed (false), metered failed — NEVER thrown")
     void serverError_swallowedNotThrown() {
         wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(503)));

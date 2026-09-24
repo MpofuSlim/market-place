@@ -300,9 +300,22 @@ public class SettlementService {
     // it may only run inside the caller's transaction.
     @Transactional(propagation = Propagation.MANDATORY)
     public void markRefundDue(MerchantSettlement settlement, String sellerReason) {
-        String detail = sellerReason == null || sellerReason.isBlank()
+        refundDue(settlement, sellerReason == null || sellerReason.isBlank()
                 ? "Refund due - seller could not fulfil the parcel"
-                : "Refund due - seller could not fulfil the parcel: " + sellerReason;
+                : "Refund due - seller could not fulfil the parcel: " + sellerReason);
+    }
+
+    /**
+     * The buyer called the parcel off before it was sent (V16): the same
+     * HELD -> REFUND_DUE turn as a seller's decline, journalled as what it
+     * was. The buyer's own words stay on the parcel, not in the money trail.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void markRefundDueCancelledByBuyer(MerchantSettlement settlement) {
+        refundDue(settlement, "Refund due - the buyer cancelled before dispatch");
+    }
+
+    private void refundDue(MerchantSettlement settlement, String detail) {
         transition(settlement, SettlementStatus.REFUND_DUE, detail, s -> {
             s.setRefundDueAt(Instant.now());
             s.setReleasableAt(null);
@@ -431,8 +444,11 @@ public class SettlementService {
                 merchantId.toString(), metadata);
         log.info("payout run merchantId={} parcels={} totalNetCents={} ref={}",
                 merchantId, releasable.size(), total, payoutReference);
-        return new PayoutOutcome(releasable.size(), total,
-                releasable.getFirst().getCurrency());
+        String currency = releasable.getFirst().getCurrency();
+        // The seller is told, after commit, with the reference to look for.
+        eventPublisher.publishEvent(new PayoutRecorded(merchantId, payoutReference,
+                releasable.size(), total, currency));
+        return new PayoutOutcome(releasable.size(), total, currency);
     }
 
     /** What one payout run did. */

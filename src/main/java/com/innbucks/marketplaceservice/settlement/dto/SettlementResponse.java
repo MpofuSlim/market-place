@@ -92,8 +92,9 @@ public record SettlementResponse(
         Instant closedAt,
 
         @Schema(description = "Why the money went back to the buyer: your reason when you "
-                + "declined the parcel, or the operator's note when a dispute was decided for the "
-                + "buyer. Present on REFUND_DUE and REFUNDED rows.",
+                + "declined the parcel, the buyer's when they cancelled it (\"Cancelled by the "
+                + "buyer\" if they gave none), or the operator's note when a dispute was decided "
+                + "for the buyer. Present on REFUND_DUE and REFUNDED rows.",
                 example = "Out of stock - the last one was damaged in storage", nullable = true)
         String refundReason,
 

@@ -67,6 +67,15 @@ class NotificationFlowIT extends PostgresTestContainer {
         UserNotifyGateway userNotifyGatewayMock() {
             return Mockito.mock(UserNotifyGateway.class);
         }
+
+        /** Who runs a selling organization lives in user-service; here the
+         *  seller-alert ITs name the recipients. Unstubbed it answers an empty
+         *  list — exactly what the real resolver answers on a miss. */
+        @Bean
+        @Primary
+        MerchantAdminResolver merchantAdminResolverMock() {
+            return Mockito.mock(MerchantAdminResolver.class);
+        }
     }
 
     @Value("${jwt.secret}")

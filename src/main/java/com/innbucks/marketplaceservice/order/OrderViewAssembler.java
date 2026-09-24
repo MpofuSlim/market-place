@@ -139,6 +139,7 @@ public class OrderViewAssembler {
                     parcel.getCollectCodeRedeemedAt(),
                     parcel.getUnfulfilledReason(),
                     parcel.getUnfulfilledAt(),
+                    parcel.getUnfulfilledBy(),
                     parcel.getTrackingCode(),
                     TrackingStatus.of(parcel.getStatus()),
                     parcel.getDeliveryFeeCents()));

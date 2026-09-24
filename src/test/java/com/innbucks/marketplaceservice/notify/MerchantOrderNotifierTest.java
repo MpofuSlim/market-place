@@ -114,16 +114,22 @@ class MerchantOrderNotifierTest {
         UUID adminB = UUID.randomUUID();
         when(resolver.adminUserUuids(MERCHANT_A)).thenReturn(List.of(adminA1, adminA2));
         when(resolver.adminUserUuids(MERCHANT_B)).thenReturn(List.of(adminB));
-        when(gateway.notify(any(), anyString(), anyString())).thenReturn(true);
+        when(gateway.notify(any(), any(UserNotice.class))).thenReturn(true);
 
         notifier.notifyMerchants(event);
 
         String subject = "New paid order MKT-4F2A9C1B77D0";
         String messageA = "New paid order MKT-4F2A9C1B77D0. 2 x Solar Lantern, 1 x Torch - USD 61.98";
         String messageB = "New paid order MKT-4F2A9C1B77D0. 1 x Garden Hose - USD 25.99";
-        verify(gateway).notify(adminA1, subject, messageA);
-        verify(gateway).notify(adminA2, subject, messageA);
-        verify(gateway).notify(adminB, subject, messageB);
+        // Typed and linked: the bell entry opens this order in the seller's
+        // parcel queue rather than sitting there as a GENERAL line of text.
+        UserNotice noticeA = new UserNotice(subject, messageA, "ORDER_PAID", UserNotice.INFO,
+                "ORDER", event.orderId().toString(), "/marketplace/parcels?q=MKT-4F2A9C1B77D0");
+        UserNotice noticeB = new UserNotice(subject, messageB, "ORDER_PAID", UserNotice.INFO,
+                "ORDER", event.orderId().toString(), "/marketplace/parcels?q=MKT-4F2A9C1B77D0");
+        verify(gateway).notify(adminA1, noticeA);
+        verify(gateway).notify(adminA2, noticeA);
+        verify(gateway).notify(adminB, noticeB);
         assertThat(outcome("sent")).isEqualTo(3.0);
     }
 
@@ -152,8 +158,8 @@ class MerchantOrderNotifierTest {
         UUID admin1 = UUID.randomUUID();
         UUID admin2 = UUID.randomUUID();
         when(resolver.adminUserUuids(MERCHANT_A)).thenReturn(List.of(admin1, admin2));
-        when(gateway.notify(eq(admin1), anyString(), anyString())).thenReturn(false);
-        when(gateway.notify(eq(admin2), anyString(), anyString())).thenReturn(true);
+        when(gateway.notify(eq(admin1), any(UserNotice.class))).thenReturn(false);
+        when(gateway.notify(eq(admin2), any(UserNotice.class))).thenReturn(true);
 
         notifier.notifyMerchants(event);
 

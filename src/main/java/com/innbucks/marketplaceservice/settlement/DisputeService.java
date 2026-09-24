@@ -143,6 +143,9 @@ public class DisputeService {
         metadata.put("netCents", settlement.getNetCents());
         auditService.record(AuditEventType.SETTLEMENT_DISPUTED, buyer.uuid(),
                 dispute.getId().toString(), metadata);
+        // The seller hears about it after commit: their money just froze.
+        eventPublisher.publishEvent(new DisputeOpened(parcel.getMerchantId(),
+                order.getOrderRef(), parcel.getId(), reason));
         log.info("dispute opened id={} orderRef={} parcel={} reason={}",
                 dispute.getId(), order.getOrderRef(), parcel.getId(), reason);
         return DisputeResponse.from(dispute, settlement);

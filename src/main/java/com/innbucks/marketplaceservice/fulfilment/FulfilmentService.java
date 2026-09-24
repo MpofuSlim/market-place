@@ -335,6 +335,7 @@ public class FulfilmentService {
                 (notCollected ? "Not collected: " : "Seller cannot fulfil: ") + reason, caller, p -> {
                     p.setUnfulfilledAt(Instant.now());
                     p.setUnfulfilledReason(reason);
+                    p.setUnfulfilledBy(UnfulfilledBy.SELLER);
                 });
         stockReturner.returnOnce(parcel);
         fulfilmentRepository.save(parcel);
@@ -356,6 +357,85 @@ public class FulfilmentService {
                 order.getBuyerMsisdn(), reason, refundCents, order.getCurrency(), notCollected,
                 parcel.getId()));
         return toMerchantView(parcel);
+    }
+
+    /**
+     * The BUYER calls off a paid parcel the seller has not sent yet (V16).
+     *
+     * <p>The same three things happen as when a seller declines — the parcel
+     * ends, its units go back on the shelf, the money turns around onto the
+     * refund queue — in one transaction, and the parcel records that it was
+     * the buyer ({@link UnfulfilledBy#BUYER}) so no screen blames the seller.
+     *
+     * <p><b>PREPARING only.</b> Once a parcel is DISPATCHED the goods are with a
+     * courier or set aside at the counter, and changing one's mind is a
+     * conversation with the seller, not a button.
+     *
+     * <p><b>Only while the money is still HELD, checked BEFORE anything
+     * moves.</b> A seller's decline may close a parcel whose money is already
+     * elsewhere, because refusing it would leave the parcel open. A buyer's
+     * cancel has no such need, and letting it through would promise a refund
+     * the ledger then does not queue: a DISPUTED parcel belongs to the
+     * operator looking at it (409 {@code parcel_disputed}); anything else is
+     * past the point a cancel means anything (409 {@code parcel_not_cancellable}).
+     *
+     * <p>The seller is alerted after commit; the buyer is not — they did it
+     * themselves, on the screen in front of them. They hear again when the
+     * operator actually sends the refund.
+     */
+    @Transactional
+    public OrderFulfilment cancelByBuyer(AuthenticatedUser buyer, UUID fulfilmentId,
+                                         String rawReason) {
+        OrderFulfilment parcel = fulfilmentRepository.findById(fulfilmentId)
+                .orElseThrow(FulfilmentService::notFound);
+        MarketOrder order = requireOrder(parcel);
+        // Owner-masked, as in confirmReceived: someone else's parcel and a
+        // nonexistent one are the same 404.
+        if (!order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
+            throw notFound();
+        }
+        if (parcel.getStatus() != FulfilmentStatus.PREPARING) {
+            throw ApiException.conflict("parcel_not_cancellable", parcel.getStatus()
+                    == FulfilmentStatus.DISPATCHED
+                    ? "The seller has already sent this parcel - contact them, or open a dispute "
+                            + "if it does not arrive"
+                    : "This parcel is " + parcel.getStatus() + " and can no longer be cancelled");
+        }
+        MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
+        if (settlement != null && settlement.getStatus() == SettlementStatus.DISPUTED) {
+            throw ApiException.conflict("parcel_disputed",
+                    "This parcel is under dispute - our support team will settle it");
+        }
+        if (settlement == null || settlement.getStatus() != SettlementStatus.HELD) {
+            // No row is a pre-V10 parcel: nothing recorded to turn around, so
+            // cancelling would promise a refund the ledger cannot queue.
+            throw ApiException.conflict("parcel_not_cancellable",
+                    "This parcel can no longer be cancelled - contact support");
+        }
+        String reason = blankToNull(TextSanitizer.sanitize(rawReason));
+        transition(parcel, order.getDeliveryMethod(), FulfilmentStatus.UNFULFILLED,
+                reason == null ? "Cancelled by buyer" : "Cancelled by buyer: " + reason, buyer,
+                p -> {
+                    p.setUnfulfilledAt(Instant.now());
+                    p.setUnfulfilledReason(reason);
+                    p.setUnfulfilledBy(UnfulfilledBy.BUYER);
+                });
+        stockReturner.returnOnce(parcel);
+        fulfilmentRepository.save(parcel);
+        settlementService.markRefundDueCancelledByBuyer(settlement);
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("orderId", parcel.getOrderId().toString());
+        metadata.put("orderRef", order.getOrderRef());
+        metadata.put("merchantId", parcel.getMerchantId().toString());
+        metadata.put("refundDueCents", settlement.getGrossCents());
+        metadata.put("cancelledByBuyer", true);
+        auditService.record(AuditEventType.FULFILMENT_UNFULFILLED, buyer.uuid(),
+                parcel.getId().toString(), metadata);
+        metrics.fulfilmentOutcome("cancelled_by_buyer", 1);
+        eventPublisher.publishEvent(new ParcelCancelledByBuyer(parcel.getMerchantId(),
+                order.getOrderRef(), parcel.getId(), reason));
+        return parcel;
     }
 
     /**

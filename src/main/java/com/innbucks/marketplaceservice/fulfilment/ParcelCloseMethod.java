@@ -9,8 +9,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
  * stored: a second column would be a second truth to disagree with.
  */
 @Schema(description = "How the parcel was closed. BUYER_CONFIRMED and COLLECTION_CODE release "
-        + "your money at once; SELLER_MARKED waits out the dispute window; NOT_COLLECTED and "
-        + "CANNOT_SUPPLY send the money back to the buyer")
+        + "your money at once; SELLER_MARKED waits out the dispute window; NOT_COLLECTED, "
+        + "CANNOT_SUPPLY and BUYER_CANCELLED send the money back to the buyer")
 public enum ParcelCloseMethod {
     /** The buyer tapped "received" ({@code deliveredBy: BUYER}). */
     BUYER_CONFIRMED,
@@ -21,7 +21,9 @@ public enum ParcelCloseMethod {
     /** A collection that was ready at the counter and never picked up. */
     NOT_COLLECTED,
     /** The seller declined it before it left. */
-    CANNOT_SUPPLY;
+    CANNOT_SUPPLY,
+    /** The buyer called it off before it left (V16). */
+    BUYER_CANCELLED;
 
     /** Null while the parcel is still open. */
     public static ParcelCloseMethod of(OrderFulfilment parcel, DeliveryMethod method) {
@@ -29,6 +31,9 @@ public enum ParcelCloseMethod {
             return null;
         }
         if (parcel.getStatus() == FulfilmentStatus.UNFULFILLED) {
+            if (parcel.getUnfulfilledBy() == UnfulfilledBy.BUYER) {
+                return BUYER_CANCELLED;
+            }
             // Only a COLLECTION can be declined after it was set aside
             // (FulfilmentStateMachine), and that is exactly "never collected".
             return method == DeliveryMethod.COLLECTION && parcel.getDispatchedAt() != null

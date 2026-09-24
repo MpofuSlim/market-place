@@ -250,4 +250,54 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
                           @Param("kind") String kind,
                           @Param("outcome") String outcome,
                           @Param("at") Instant at);
+
+    /** One collection set aside at the counter for too long, as the sweep needs it. */
+    interface OverdueCollection {
+        UUID getFulfilmentId();
+        UUID getMerchantId();
+        String getOrderRef();
+        Instant getDispatchedAt();
+    }
+
+    /**
+     * Collections ready at the seller's counter since before {@code cutoff}
+     * and not yet alerted on (V16), oldest first. The COLLECTION filter lives
+     * on the order, so this joins it — a courier delivery that has been on the
+     * road a week is a different problem, and its seller is not the one who
+     * can end it.
+     */
+    @Query(value = """
+            SELECT f.id            AS fulfilmentId,
+                   f.merchant_id   AS merchantId,
+                   o.order_ref     AS orderRef,
+                   f.dispatched_at AS dispatchedAt
+              FROM order_fulfilment f
+              JOIN market_order o ON o.id = f.order_id
+             WHERE f.status = 'DISPATCHED'
+               AND f.collection_overdue_alerted_at IS NULL
+               AND f.dispatched_at < :cutoff
+               AND o.delivery_method = 'COLLECTION'
+             ORDER BY f.dispatched_at, f.id
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<OverdueCollection> findOverdueCollections(@Param("cutoff") Instant cutoff,
+                                                   @Param("limit") int limit);
+
+    /**
+     * Claims one overdue collection for alerting — the at-most-once half of
+     * the sweep. The predicate repeats the sweep's conditions, so a parcel
+     * collected (or already claimed by another replica) between the read and
+     * this write returns 0 and is skipped. Bulk UPDATE for the V15 reason: it
+     * must never bump the parcel's version under a seller about to act on it.
+     */
+    @Transactional
+    @Modifying
+    @Query(value = """
+            UPDATE order_fulfilment
+               SET collection_overdue_alerted_at = :now
+             WHERE id = :id
+               AND status = 'DISPATCHED'
+               AND collection_overdue_alerted_at IS NULL
+            """, nativeQuery = true)
+    int claimOverdueCollectionAlert(@Param("id") UUID id, @Param("now") Instant now);
 }

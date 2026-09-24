@@ -10,6 +10,9 @@ import com.innbucks.marketplaceservice.review.ReviewService;
 import com.innbucks.marketplaceservice.review.dto.MerchantRatingResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
+import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Subquery;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -57,6 +60,7 @@ public class CatalogService {
     private final SellerService sellerService;
     private final ReviewService reviewService;
     private final SellerFulfilmentStatsService statsService;
+    private final DeliveryTownCatalog deliveryTowns;
 
     /**
      * Browse ACTIVE listings with optional filters, all combinable:
@@ -79,6 +83,11 @@ public class CatalogService {
      *   <li>{@code inStock} — {@code true} keeps only listings with stock. An
      *       ACTIVE listing can sit at {@code stockQty = 0}, so without this a
      *       shopper is shown goods that cannot be bought.</li>
+     *   <li>{@code deliversTo} — a town code: only listings whose seller
+     *       delivers there (an EXISTS on the listing's coverage). An unknown
+     *       town is a 400 {@code unknown_town}, unlike the lenient filters
+     *       above: an empty page would falsely say nobody delivers to the
+     *       shopper.</li>
      * </ul>
      *
      * <p>Ordered by {@link ListingSort} (default newest-first), always with a
@@ -136,6 +145,19 @@ public class CatalogService {
         if (Boolean.TRUE.equals(request.inStock())) {
             spec = spec.and((root, query, cb) -> cb.greaterThan(root.get("stockQty"), 0));
         }
+        if (blankToNull(request.deliversTo()) != null) {
+            // Refused, never lenient: an unknown town that matched nothing
+            // would read as "nobody delivers to you", which is false.
+            String town = deliveryTowns.require(request.deliversTo(), "deliversTo").getCode();
+            spec = spec.and((root, query, cb) -> {
+                Subquery<Integer> covers = query.subquery(Integer.class);
+                Root<ListingDeliveryTown> row = covers.from(ListingDeliveryTown.class);
+                covers.select(cb.literal(1)).where(
+                        cb.equal(row.get("listingId"), root.get("id")),
+                        cb.equal(row.get("townCode"), town));
+                return cb.exists(covers);
+            });
+        }
         Page<Listing> result = listingRepository.findAll(spec, pageable);
         return ListingPageResponse.from(assembler.toResponsePage(result));
     }
@@ -147,7 +169,16 @@ public class CatalogService {
      */
     public record BrowseQuery(String q, String category, String condition, String city,
                               UUID merchantId, Long minPriceCents, Long maxPriceCents,
-                              Boolean inStock, ListingSort sort, int page, int size) {
+                              Boolean inStock, ListingSort sort, int page, int size,
+                              String deliversTo) {
+
+        /** Everything but the town filter — the shape before it existed. */
+        public BrowseQuery(String q, String category, String condition, String city,
+                           UUID merchantId, Long minPriceCents, Long maxPriceCents,
+                           Boolean inStock, ListingSort sort, int page, int size) {
+            this(q, category, condition, city, merchantId, minPriceCents, maxPriceCents,
+                    inStock, sort, page, size, null);
+        }
 
         /** The historical four-filter browse, newest-first. */
         public static BrowseQuery of(String q, String category, String condition, String city,

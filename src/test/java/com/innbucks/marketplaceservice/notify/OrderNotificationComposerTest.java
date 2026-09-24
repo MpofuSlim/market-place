@@ -236,6 +236,28 @@ class OrderNotificationComposerTest {
     }
 
     @Test
+    @DisplayName("seller alerts: exact wording, and a buyer's reason is punctuated once")
+    void sellerAlertWording() {
+        assertThat(OrderNotificationComposer.disputeOpenedMessage(REF, "not received"))
+                .isEqualTo("The buyer has disputed their parcel from order " + REF
+                        + " - not received. The money for it is on hold until our team decides. "
+                        + "Ref " + REF);
+        assertThat(OrderNotificationComposer.collectionOverdueMessage(REF, 7))
+                .isEqualTo("Order " + REF + " has been ready to collect for 7 days. Contact the "
+                        + "buyer, or close it as not collected so they are refunded. Ref " + REF);
+        assertThat(OrderNotificationComposer.payoutSentSubject(61998, "USD"))
+                .isEqualTo("Payout sent - USD 619.98");
+        assertThat(OrderNotificationComposer.payoutSentMessage(1550, "USD", 1, "IB-PAY-2210"))
+                .isEqualTo("We have paid you USD 15.50 for 1 parcel. Payout reference IB-PAY-2210.");
+        assertThat(OrderNotificationComposer.cancelledByBuyerMessage(REF, "Wrong size."))
+                .isEqualTo("The buyer cancelled order " + REF + " before you sent it - do not send "
+                        + "it. Reason - Wrong size. The items are back in your stock and the buyer "
+                        + "will be refunded. Ref " + REF);
+        assertThat(OrderNotificationComposer.cancelledByBuyerMessage(REF, "  "))
+                .doesNotContain("Reason");
+    }
+
+    @Test
     @DisplayName("every template survives the GSM sanitizer UNCHANGED (fleet composer discipline)")
     void everyTemplateRoundTripsTheGsmSanitizer() {
         Listing listing = new Listing();
@@ -279,7 +301,22 @@ class OrderNotificationComposerTest {
                 // The operator's transfer reference is their own text (sanitized
                 // by the SMS client on the way out); the copy around it is pinned.
                 OrderNotificationComposer.refundSentMessage(REF, 1550, "USD", "IB-778812"),
-                OrderNotificationComposer.refundSentMessage(REF, 1550, "USD", null));
+                OrderNotificationComposer.refundSentMessage(REF, 1550, "USD", null),
+                // Seller alerts (the portal bell) — user-service may deliver
+                // any of them by SMS, so the same discipline holds.
+                OrderNotificationComposer.disputeOpenedSubject(REF),
+                OrderNotificationComposer.disputeOpenedMessage(REF, "not received"),
+                OrderNotificationComposer.disputeOpenedMessage(REF, null),
+                OrderNotificationComposer.collectionOverdueSubject(REF),
+                OrderNotificationComposer.collectionOverdueMessage(REF, 7),
+                OrderNotificationComposer.payoutSentSubject(61998, "USD"),
+                OrderNotificationComposer.payoutSentMessage(61998, "USD", 3, "IB-PAY-2209"),
+                OrderNotificationComposer.payoutSentMessage(1550, "USD", 1, "IB-PAY-2210"),
+                OrderNotificationComposer.buyerNotReachedSubject(REF),
+                OrderNotificationComposer.buyerNotReachedMessage(REF, "that it is on its way"),
+                OrderNotificationComposer.cancelledByBuyerSubject(REF),
+                OrderNotificationComposer.cancelledByBuyerMessage(REF, "Ordered the wrong size"),
+                OrderNotificationComposer.cancelledByBuyerMessage(REF, null));
         for (String template : templates) {
             assertThat(SmsTextSanitizer.toGsmSafe(template))
                     .as("template must be GSM-safe as composed: %s", template)
