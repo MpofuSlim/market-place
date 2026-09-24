@@ -745,8 +745,10 @@ public class OrderController {
                     + "you when the order names none) as a convenience; `sentTo` says whether "
                     + "that actually happened.\n\n"
                     + "A redeemed code is the strongest evidence of handover the platform holds, "
-                    + "so it releases the seller's money immediately instead of after the "
-                    + "seller-closed grace window.")
+                    + "so it releases the seller's money immediately. It is also the only way a "
+                    + "seller can close a collection as collected: they cannot mark it delivered "
+                    + "on their own word, so without a code (or your own \"received\") the parcel "
+                    + "stays open and your money stays held.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "A live code for this parcel",
                     content = @Content(mediaType = "application/json",

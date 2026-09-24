@@ -60,7 +60,8 @@ public class ParcelUnfulfilledNotificationListener {
             return;
         }
         String message = OrderNotificationComposer.parcelUnfulfilledMessage(
-                event.orderRef(), event.sellerReason(), event.refundDueCents(), event.currency());
+                event.orderRef(), event.sellerReason(), event.refundDueCents(), event.currency(),
+                event.notCollected());
         if (sms.isConfigured()) {
             try {
                 sms.sendSms(event.buyerMsisdn(), message, event.orderRef());

@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -35,7 +36,7 @@ class FulfilmentStateMachineTest {
     }
 
     @Test
-    @DisplayName("Only a PREPARING parcel can be declined — a dispatched one is a dispute")
+    @DisplayName("For every method, a PREPARING parcel can be declined and a DELIVERED one cannot")
     void unfulfillableOnlyFromPreparing() {
         assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.PREPARING,
                 FulfilmentStatus.UNFULFILLED)).isTrue();
@@ -47,6 +48,38 @@ class FulfilmentStateMachineTest {
                 FulfilmentStatus.UNFULFILLED)).isFalse();
         assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.DELIVERED,
                 FulfilmentStatus.UNFULFILLED)).isFalse();
+    }
+
+    @Test
+    @DisplayName("A COLLECTION ready at the counter can be closed as not collected")
+    void collectionNoShowCanBeClosed() {
+        // DISPATCHED on a collection means "set aside at the counter": the goods
+        // never left, so a buyer who never came is a parcel genuinely not
+        // fulfilled. It is the only exit a no-show has, because a seller cannot
+        // close a collection as delivered on their own word.
+        assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.DISPATCHED,
+                FulfilmentStatus.UNFULFILLED, DeliveryMethod.COLLECTION)).isTrue();
+        // With a courier, the goods have left: still a dispute, never a decline.
+        assertThat(FulfilmentStateMachine.isLegal(FulfilmentStatus.DISPATCHED,
+                FulfilmentStatus.UNFULFILLED, DeliveryMethod.DELIVERY)).isFalse();
+    }
+
+    @Test
+    @DisplayName("The delivery method widens exactly ONE edge, and DELIVERY widens none")
+    void deliveryMethodWidensExactlyOneEdge() {
+        for (FulfilmentStatus from : FulfilmentStatus.values()) {
+            for (FulfilmentStatus to : FulfilmentStatus.values()) {
+                boolean common = FulfilmentStateMachine.isLegal(from, to);
+                assertThat(FulfilmentStateMachine.isLegal(from, to, DeliveryMethod.DELIVERY))
+                        .as("DELIVERY %s -> %s", from, to)
+                        .isEqualTo(common);
+                boolean collectionOnly = from == FulfilmentStatus.DISPATCHED
+                        && to == FulfilmentStatus.UNFULFILLED;
+                assertThat(FulfilmentStateMachine.isLegal(from, to, DeliveryMethod.COLLECTION))
+                        .as("COLLECTION %s -> %s", from, to)
+                        .isEqualTo(common || collectionOnly);
+            }
+        }
     }
 
     @Test

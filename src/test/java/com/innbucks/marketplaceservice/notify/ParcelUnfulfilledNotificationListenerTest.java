@@ -38,7 +38,7 @@ class ParcelUnfulfilledNotificationListenerTest {
     private ParcelUnfulfilledNotificationListener listener;
 
     private final ParcelUnfulfilled event = new ParcelUnfulfilled(UUID.randomUUID(), REF,
-            "+263771234567", "out of stock", 1550, "USD");
+            "+263771234567", "out of stock", 1550, "USD", false);
 
     @BeforeEach
     void setUp() {
@@ -120,9 +120,25 @@ class ParcelUnfulfilledNotificationListenerTest {
         when(sms.isConfigured()).thenReturn(true);
 
         listener.onParcelUnfulfilled(new ParcelUnfulfilled(event.orderId(), REF,
-                event.buyerMsisdn(), "out of stock", 0, "USD"));
+                event.buyerMsisdn(), "out of stock", 0, "USD", false));
 
         verify(sms).sendSms(eq("+263771234567"),
                 contains("Our support team will be in touch."), eq(REF));
+    }
+
+    @Test
+    @DisplayName("A collection the buyer never came for is told as not picked up, not as out of stock")
+    void aNoShowIsToldAsSuch() {
+        when(sms.isConfigured()).thenReturn(true);
+
+        listener.onParcelUnfulfilled(new ParcelUnfulfilled(event.orderId(), REF,
+                event.buyerMsisdn(), "not collected within 5 days", 1550, "USD", true));
+
+        verify(sms).sendSms(eq("+263771234567"),
+                eq("A collection from your InnBucks Marketplace order MKT-4F2A9C1B77D0 was not "
+                        + "picked up, so the seller has cancelled it. Reason - not collected "
+                        + "within 5 days. A refund of USD 15.50 is being arranged. Ref "
+                        + "MKT-4F2A9C1B77D0"),
+                eq(REF));
     }
 }

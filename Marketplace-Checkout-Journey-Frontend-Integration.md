@@ -503,8 +503,12 @@ A multi-seller order is confirmed one seller at a time, because that's how the
 goods actually arrive.
 
 `409 illegal_fulfilment_state` if the parcel is already closed. That's normal:
-**the seller can also close it themselves** (you'll see `deliveredBy: "MERCHANT"`
-rather than `"BUYER"`), so hide the button when `status` is already `DELIVERED`.
+**the seller can also close a DELIVERY parcel themselves** (you'll see
+`deliveredBy: "MERCHANT"` rather than `"BUYER"`), so hide the button when `status`
+is already `DELIVERED`. When they do, the buyer gets an SMS saying so, with the
+number of days left to report it if it never arrived. A seller cannot close a
+COLLECTION parcel themselves — only the buyer's collection code or the buyer's
+own "received" does that.
 
 ### 8.3 Seller side (`MERCHANT_ADMIN`)
 
@@ -512,7 +516,7 @@ rather than `"BUYER"`), so hide the button when `status` is already `DELIVERED`.
 |---|---|
 | `GET /marketplace/fulfilments?status=PREPARING&page=&size=` | The queue — **oldest first**, so the longest-waiting order never starves |
 | `POST /marketplace/fulfilments/{id}/dispatch` with `{ "note": "Swift Couriers, waybill 88213" }` | Sent, or ready at the counter |
-| `POST /marketplace/fulfilments/{id}/delivered` | Handed over |
+| `POST /marketplace/fulfilments/{id}/delivered` | Handed over — **DELIVERY orders only**; a COLLECTION parcel is `409 collect_code_required` |
 
 Each row carries the **destination** and only **that seller's** lines and
 subtotal — never the order total. `merchantId` is ignored for a `MERCHANT_ADMIN`

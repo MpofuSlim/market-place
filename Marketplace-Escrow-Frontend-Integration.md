@@ -20,7 +20,7 @@ tracks the money through:
 ```
                     buyer confirms receipt ──────────────┐
                                                          v
- order PAID ──> HELD ── seller self-closes + 48h ──> RELEASABLE ──> PAID_OUT
+ order PAID ──> HELD ── seller self-closes + 7d ───> RELEASABLE ──> PAID_OUT
                  │                                       │
                  └──────────── buyer disputes ───────────┘
                                      v
@@ -32,7 +32,7 @@ tracks the money through:
   (or a seller-closed delivery is waiting out its grace window).
 - **RELEASABLE** — cleared for the seller's next payout run. The buyer's own
   receipt confirmation clears it **immediately**; a seller closing the parcel
-  themselves starts a **grace window** (default 48h) first.
+  themselves starts a **grace window** first, as long as the buyer's dispute window (default 7 days) — the money can never be paid out while the buyer can still object. A seller can only self-close a DELIVERY order; a collection closes by the buyer's code or the buyer's own "received".
 - **DISPUTED** — a buyer dispute froze it; an operator will resolve.
 - **PAID_OUT** — the operator paid the seller, with a payout reference.
 - **REFUNDED** — the operator refunded the buyer, with a refund reference.

@@ -230,8 +230,11 @@ public class FulfilmentController {
     @PostMapping("/{id}/dispatch")
     @Operation(summary = "Mark a parcel dispatched",
             description = "Sent (DELIVERY) or ready at the counter (COLLECTION). The optional "
-                    + "`note` is the ONLY thing the buyer will see about how their goods are "
-                    + "coming, so put the courier and waybill in it.\n\n"
+                    + "`note` is the ONLY thing the buyer will see in the app about how their "
+                    + "goods are coming, so put the courier and waybill in it.\n\n"
+                    + "The buyer is sent an SMS: \"on its way\" for a delivery, or \"ready to "
+                    + "collect - get your collection code in the app\" for a collection. The "
+                    + "note is not included in the SMS.\n\n"
                     + "Another seller's parcel is the same 404 as a nonexistent one.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Dispatched",
@@ -251,12 +254,20 @@ public class FulfilmentController {
     }
 
     @PostMapping("/{id}/delivered")
-    @Operation(summary = "Mark a parcel delivered",
-            description = "The seller's own close, available from either PREPARING (handed over in "
-                    + "person, nothing was ever dispatched) or DISPATCHED. It exists because a "
-                    + "buyer who never opens the app must not leave a parcel open forever — but "
-                    + "the record keeps `deliveredBy: MERCHANT`, which is weaker evidence than a "
-                    + "buyer's own confirmation.")
+    @Operation(summary = "Mark a DELIVERY parcel delivered",
+            description = "The seller's own close for a courier delivery, available from either "
+                    + "PREPARING (handed over in person, nothing was ever dispatched) or "
+                    + "DISPATCHED. It exists because a buyer who never opens the app must not "
+                    + "leave a parcel open forever — but the record keeps `deliveredBy: MERCHANT`, "
+                    + "which is weaker evidence than a buyer's own confirmation. So:\n\n"
+                    + "- the buyer is sent an SMS saying you marked it delivered, and that they "
+                    + "can report it within the dispute window if it never arrived;\n"
+                    + "- your money is held for that whole window (7 days by default) before it "
+                    + "can be paid out. The buyer tapping \"received\" releases it at once.\n\n"
+                    + "**Refused on a COLLECTION order** (`collect_code_required`), for every "
+                    + "caller: a collection closes as delivered only with the buyer's collection "
+                    + "code (`POST /{id}/collect`) or the buyer's own \"received\". If the buyer "
+                    + "never came, use `POST /{id}/unfulfillable` to close it as not collected.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Delivered",
                     content = @Content(examples = @ExampleObject(value = """
@@ -273,8 +284,16 @@ public class FulfilmentController {
                             }"""))),
             @ApiResponse(responseCode = "404", description = "No such parcel for this seller",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404))),
-            @ApiResponse(responseCode = "409", description = "The parcel is already delivered",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_ILLEGAL_409)))
+            @ApiResponse(responseCode = "409", description = "A COLLECTION parcel (use the "
+                    + "buyer's code), or the parcel is already closed",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Collection parcel", value = """
+                                    {
+                                      "code": "collect_code_required",
+                                      "message": "A collection is handed over with the buyer's collection code - ask them to show it and use Collect. If they never came, close the parcel as not collected instead"
+                                    }"""),
+                            @ExampleObject(name = "Already closed", value = EXAMPLE_ILLEGAL_409)
+                    }))
     })
     public ResponseEntity<ApiResult<MerchantFulfilmentResponse>> markDelivered(
             @PathVariable UUID id) {
@@ -288,10 +307,15 @@ public class FulfilmentController {
                     + "happened — and puts things right in one step: the units go back on your "
                     + "shelf, the buyer's money is queued for refund, and the buyer is told why "
                     + "in your words.\n\n"
-                    + "Available from PREPARING only. Once a parcel is DISPATCHED the goods are "
-                    + "with a courier and this is no longer the truth; a delivery that then "
-                    + "fails is the buyer's dispute to raise, because by then the two of you can "
-                    + "disagree about what happened.\n\n"
+                    + "Available from PREPARING on every order. On a DELIVERY order it is refused "
+                    + "once the parcel is DISPATCHED: the goods are with a courier and this is no "
+                    + "longer the truth; a delivery that then fails is the buyer's dispute to "
+                    + "raise, because by then the two of you can disagree about what happened.\n\n"
+                    + "**On a COLLECTION order it is also allowed from DISPATCHED** (ready at the "
+                    + "counter) — this is how you close a collection the buyer never came for. "
+                    + "The goods go back on your shelf, the buyer's money is queued for refund, "
+                    + "and the buyer is told it was not picked up. Put how long you waited in "
+                    + "`reason`.\n\n"
                     + "Use it rather than leaving the parcel open. An open parcel holds the "
                     + "buyer's money indefinitely and reflects on your fulfilment stats exactly "
                     + "as badly as it sounds.")
@@ -317,8 +341,8 @@ public class FulfilmentController {
                             {"code":"unfulfilled_reason_required","message":"Tell the buyer why - reason is required"}"""))),
             @ApiResponse(responseCode = "404", description = "No such parcel for this seller",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404))),
-            @ApiResponse(responseCode = "409", description = "Already dispatched, delivered or "
-                    + "declined — only a PREPARING parcel can be declined",
+            @ApiResponse(responseCode = "409", description = "Already delivered or declined, or a "
+                    + "DELIVERY parcel that has been dispatched",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_ILLEGAL_409)))
     })
     public ResponseEntity<ApiResult<MerchantFulfilmentResponse>> unfulfillable(
@@ -339,9 +363,12 @@ public class FulfilmentController {
                     + "characters people confuse (I/L for 1, O for 0) are all handled.\n\n"
                     + "This closes the parcel as `deliveredBy: RECIPIENT`, which is the strongest "
                     + "evidence of handover the platform records — so **your money is released "
-                    + "immediately** instead of waiting out the grace window a self-close starts. "
-                    + "That is the reason to ask for the code rather than closing the parcel "
-                    + "yourself.\n\n"
+                    + "immediately**.\n\n"
+                    + "**It is the only way you can close a collection as delivered.** `POST "
+                    + "/{id}/delivered` refuses collection parcels (`collect_code_required`); the "
+                    + "buyer tapping \"received\" in their app is the other way. If the buyer "
+                    + "never comes, close the parcel as not collected with `POST "
+                    + "/{id}/unfulfillable`.\n\n"
                     + "Only the buyer can create a code, and you never see one — you verify a "
                     + "code, you do not read one. Wrong codes are counted against the parcel and "
                     + "the tenth locks it; the buyer then mints a fresh one.")

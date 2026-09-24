@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.notify;
 
 import com.innbucks.marketplaceservice.catalog.Listing;
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.OrderPaid;
 import com.innbucks.marketplaceservice.seller.PayoutMethod;
@@ -184,6 +185,44 @@ class OrderNotificationComposerTest {
     }
 
     @Test
+    @DisplayName("parcel dispatched: 'on its way' for a delivery, 'ready to collect' pointing at the code for a collection")
+    void parcelDispatchedMessage_exactWording() {
+        assertThat(OrderNotificationComposer.parcelDispatchedMessage(REF, DeliveryMethod.DELIVERY, false))
+                .isEqualTo("Your InnBucks Marketplace order MKT-4F2A9C1B77D0 is on its way. "
+                        + "Ref MKT-4F2A9C1B77D0");
+        assertThat(OrderNotificationComposer.parcelDispatchedMessage(REF, DeliveryMethod.COLLECTION, false))
+                .isEqualTo("Your InnBucks Marketplace order MKT-4F2A9C1B77D0 is ready to collect. "
+                        + "Get your collection code in the app and show it at the counter. "
+                        + "Ref MKT-4F2A9C1B77D0");
+        assertThat(OrderNotificationComposer.parcelDispatchedMessage(REF, DeliveryMethod.DELIVERY, true))
+                .startsWith("Part of your InnBucks Marketplace order MKT-4F2A9C1B77D0 is on its way.");
+    }
+
+    @Test
+    @DisplayName("seller-marked delivered: names the dispute window and what to do")
+    void parcelDeliveredBySellerMessage_exactWording() {
+        assertThat(OrderNotificationComposer.parcelDeliveredBySellerMessage(REF, false, 7))
+                .isEqualTo("The seller has marked your InnBucks Marketplace order MKT-4F2A9C1B77D0 "
+                        + "as delivered. Not received it - report it in the app within 7 days. "
+                        + "Ref MKT-4F2A9C1B77D0");
+        assertThat(OrderNotificationComposer.parcelDeliveredBySellerMessage(REF, true, 1))
+                .isEqualTo("The seller has marked part of your InnBucks Marketplace order "
+                        + "MKT-4F2A9C1B77D0 as delivered. Not received it - report it in the app "
+                        + "within 1 day. Ref MKT-4F2A9C1B77D0");
+    }
+
+    @Test
+    @DisplayName("not collected: worded as what happened, not as the seller's failure")
+    void parcelUnfulfilledMessage_notCollected() {
+        assertThat(OrderNotificationComposer.parcelUnfulfilledMessage(REF,
+                "not collected within 5 days", 1550, "USD", true))
+                .isEqualTo("A collection from your InnBucks Marketplace order MKT-4F2A9C1B77D0 was "
+                        + "not picked up, so the seller has cancelled it. Reason - not collected "
+                        + "within 5 days. A refund of USD 15.50 is being arranged. "
+                        + "Ref MKT-4F2A9C1B77D0");
+    }
+
+    @Test
     @DisplayName("every template survives the GSM sanitizer UNCHANGED (fleet composer discipline)")
     void everyTemplateRoundTripsTheGsmSanitizer() {
         Listing listing = new Listing();
@@ -212,6 +251,12 @@ class OrderNotificationComposerTest {
                 // pinned here is the fixed copy on either side of it.
                 OrderNotificationComposer.parcelUnfulfilledMessage(REF, "out of stock", 1550, "USD"),
                 OrderNotificationComposer.parcelUnfulfilledMessage(REF, null, 0, "USD"),
+                OrderNotificationComposer.parcelUnfulfilledMessage(REF, "not collected", 1550,
+                        "USD", true),
+                OrderNotificationComposer.parcelDispatchedMessage(REF, DeliveryMethod.DELIVERY, false),
+                OrderNotificationComposer.parcelDispatchedMessage(REF, DeliveryMethod.COLLECTION, true),
+                OrderNotificationComposer.parcelDeliveredBySellerMessage(REF, false, 7),
+                OrderNotificationComposer.parcelDeliveredBySellerMessage(REF, true, 1),
                 OrderNotificationComposer.payoutDestinationSubject(),
                 // Both branches and both rails: this one carries no caller
                 // text at all, so every character of it is pinned here.

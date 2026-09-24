@@ -48,6 +48,15 @@ class UnfulfilledParcelFlowIT extends PostgresTestContainer {
               "stockQty": 10
             }""";
 
+    private static final String ADDRESS_BODY = """
+            {
+              "label": "Home",
+              "recipientName": "Tariro Moyo",
+              "recipientMsisdn": "0771234567",
+              "line1": "14 Samora Machel Ave",
+              "city": "Harare"
+            }""";
+
     private static final byte[] PNG_BYTES =
             {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 8, 7};
 
@@ -198,10 +207,10 @@ class UnfulfilledParcelFlowIT extends PostgresTestContainer {
     }
 
     @Test
-    @DisplayName("A dispatched parcel cannot be declined — by then it is a delivery failure")
+    @DisplayName("A dispatched DELIVERY parcel cannot be declined — by then it is a delivery failure")
     void aDispatchedParcelCannotBeDeclined() throws Exception {
         String listingId = publishListing();
-        Map<String, String> order = placePaidOrder(listingId, "unfulfilled-dispatched-1", 1);
+        Map<String, String> order = placePaidDeliveryOrder(listingId, "unfulfilled-dispatched-1");
         mockMvc.perform(post("/marketplace/fulfilments/{id}/dispatch", order.get("fulfilmentId"))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());
@@ -218,6 +227,35 @@ class UnfulfilledParcelFlowIT extends PostgresTestContainer {
         mockMvc.perform(get("/marketplace/settlements")
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(jsonPath("$.data.items[0].status").value("HELD"));
+    }
+
+    @Test
+    @DisplayName("A COLLECTION the buyer never came for closes as not collected: stock back, refund due")
+    void aCollectionNoShowClosesAsNotCollected() throws Exception {
+        // The seller cannot close a collection as delivered on their own word
+        // any more, so a buyer who never came needs an exit — and since the
+        // goods never left the counter, handing them back and refunding the
+        // buyer is simply the truth.
+        String listingId = publishListing();
+        Map<String, String> order = placePaidOrder(listingId, "unfulfilled-no-show-1", 1);
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/dispatch", order.get("fulfilmentId"))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk());
+        assertThat(stockOf(listingId)).isEqualTo(9);
+
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/unfulfillable", order.get("fulfilmentId"))
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Not collected within 5 days\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("UNFULFILLED"))
+                .andExpect(jsonPath("$.data.settlementStatus").value("REFUND_DUE"));
+
+        assertThat(stockOf(listingId)).isEqualTo(10);
+        // The order's own history says which kind of close it was.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM market_order_event "
+                        + "WHERE order_id = ?::uuid AND detail LIKE 'Not collected:%'",
+                Long.class, order.get("orderId"))).isEqualTo(1L);
     }
 
     @Test
@@ -376,6 +414,42 @@ class UnfulfilledParcelFlowIT extends PostgresTestContainer {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"paymentRef\":\"INB-PAY-%s\",\"amountCents\":%d}"
                                 .formatted(idempotencyKey, 1550L * quantity)))
+                .andExpect(status().isOk());
+
+        String paid = mockMvc.perform(get("/marketplace/orders/{id}", orderId)
+                        .header("Authorization", "Bearer " + customerToken))
+                .andReturn().getResponse().getContentAsString();
+        String fulfilmentId = JsonPath.read(paid, "$.data.fulfilments[0].id");
+        return Map.of("orderId", orderId, "orderRef", orderRef, "fulfilmentId", fulfilmentId);
+    }
+
+    /** A paid courier DELIVERY order for one unit (the test cell's delivery
+     *  fee is zero, so the paid amount is unchanged). */
+    private Map<String, String> placePaidDeliveryOrder(String listingId, String idempotencyKey)
+            throws Exception {
+        String address = mockMvc.perform(post("/marketplace/addresses")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(ADDRESS_BODY))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String created = mockMvc.perform(post("/marketplace/orders")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .header("Idempotency-Key", idempotencyKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(("{\"items\":[{\"listingId\":\"%s\",\"quantity\":1}],"
+                                + "\"deliveryMethod\":\"DELIVERY\",\"deliveryAddressId\":\"%s\"}")
+                                .formatted(listingId, JsonPath.<String>read(address, "$.data.id"))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+        String orderRef = JsonPath.read(created, "$.data.orderRef");
+
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentRef\":\"INB-PAY-%s\",\"amountCents\":1550}"
+                                .formatted(idempotencyKey)))
                 .andExpect(status().isOk());
 
         String paid = mockMvc.perform(get("/marketplace/orders/{id}", orderId)

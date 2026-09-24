@@ -23,7 +23,8 @@ V11 adds two things that only work together:
 2. **A COLLECTION parcel can carry a handover code** — the buyer mints it, the
    person collecting presents it, the seller verifies it. That closes the
    parcel as `deliveredBy: RECIPIENT`, which **releases the seller's money
-   immediately** instead of after the 48-hour self-close grace window.
+   immediately**. For a collection it is also the only way the SELLER can
+   close the parcel: "Mark delivered" is refused on collection orders.
 
 ```
   buyer orders for Gogo ──> pays ──> Gogo gets an SMS
@@ -190,8 +191,9 @@ pre-validate the shape client-side — send what was entered.
 **200** returns the seller's parcel view: `status: "DELIVERED"`,
 `deliveredBy: "RECIPIENT"`, `collectCodeRedeemedAt` set, and
 `settlementStatus: "RELEASABLE"` — **the money is released on the spot.** Lead
-with that in the UI: it is the reason to ask for a code rather than using
-"Mark delivered", which starts a 48-hour grace window instead.
+with that in the UI. "Mark delivered" is not available on a collection
+(`409 collect_code_required`): the code, or the buyer's own "received", is how a
+collection closes.
 
 **Errors:**
 

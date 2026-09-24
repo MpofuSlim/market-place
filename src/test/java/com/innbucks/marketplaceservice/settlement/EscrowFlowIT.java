@@ -42,6 +42,15 @@ class EscrowFlowIT extends PostgresTestContainer {
               "stockQty": 10
             }""";
 
+    private static final String ADDRESS_BODY = """
+            {
+              "label": "Home",
+              "recipientName": "Tariro Moyo",
+              "recipientMsisdn": "0771234567",
+              "line1": "14 Samora Machel Ave",
+              "city": "Harare"
+            }""";
+
     private static final byte[] PNG_BYTES =
             {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 8, 7};
 
@@ -165,9 +174,10 @@ class EscrowFlowIT extends PostgresTestContainer {
     }
 
     @Test
-    @DisplayName("A seller's self-close waits out the grace window; the sweeper releases it after")
+    @DisplayName("A seller's self-close waits out the whole dispute window; the sweeper releases it after")
     void sellerSelfCloseWaitsForTheSweeper() throws Exception {
-        Map<String, String> order = placePaidOrder("escrow-grace-1");
+        // A courier DELIVERY: the only kind a seller may close on their own word.
+        Map<String, String> order = placePaidOrder("escrow-grace-1", true);
         dispatch(order.get("fulfilmentId"));
 
         // The SELLER closes the parcel themselves — weaker evidence, so the
@@ -175,10 +185,18 @@ class EscrowFlowIT extends PostgresTestContainer {
         mockMvc.perform(post("/marketplace/fulfilments/{id}/delivered", order.get("fulfilmentId"))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());
-        mockMvc.perform(get("/marketplace/settlements")
+        String held = mockMvc.perform(get("/marketplace/settlements")
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(jsonPath("$.data.items[0].status").value("HELD"))
-                .andExpect(jsonPath("$.data.items[0].releasableAt").isNotEmpty());
+                .andExpect(jsonPath("$.data.items[0].releasableAt").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        // The grace covers the buyer's whole 7-day dispute window: the money
+        // cannot become payable while the buyer can still object. (It was 48h,
+        // which let a seller's word be paid out on day 3 of 7.)
+        java.time.Instant releasableAt = java.time.OffsetDateTime.parse(
+                JsonPath.<String>read(held, "$.data.items[0].releasableAt")).toInstant();
+        assertThat(releasableAt).isAfter(java.time.Instant.now().plus(java.time.Duration.ofDays(7))
+                .minus(java.time.Duration.ofMinutes(5)));
 
         // The sweeper runs — the clock has not lapsed, nothing moves.
         sweeper.sweep();
@@ -194,6 +212,42 @@ class EscrowFlowIT extends PostgresTestContainer {
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(jsonPath("$.data.items[0].status").value("RELEASABLE"))
                 .andExpect(jsonPath("$.data.items[0].releasedAt").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("A seller cannot close a COLLECTION on their own word: 409, parcel open, money untouched")
+    void aCollectionCannotBeSelfClosed() throws Exception {
+        Map<String, String> order = placePaidOrder("escrow-collection-self-close-1");
+        dispatch(order.get("fulfilmentId"));
+
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/delivered", order.get("fulfilmentId"))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("collect_code_required"));
+        // An operator is refused too: a counter handover nobody verified is the
+        // same unprovable claim whoever types it.
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/delivered", order.get("fulfilmentId"))
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("collect_code_required"));
+
+        mockMvc.perform(get("/marketplace/fulfilments")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(jsonPath("$.data.items[0].status").value("DISPATCHED"))
+                .andExpect(jsonPath("$.data.items[0].settlementStatus").value("HELD"));
+        mockMvc.perform(get("/marketplace/settlements")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(jsonPath("$.data.items[0].status").value("HELD"))
+                .andExpect(jsonPath("$.data.items[0].releasableAt").doesNotExist());
+
+        // The buyer's own "received" still closes it — and releases at once.
+        mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/received",
+                                order.get("orderId"), order.get("fulfilmentId"))
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/marketplace/settlements")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(jsonPath("$.data.items[0].status").value("RELEASABLE"));
     }
 
     @Test
@@ -344,13 +398,32 @@ class EscrowFlowIT extends PostgresTestContainer {
     /** Publish a listing, order one unit (COLLECTION), confirm payment over
      *  the S2S surface. Returns orderId / orderRef / fulfilmentId. */
     private Map<String, String> placePaidOrder(String idempotencyKey) throws Exception {
+        return placePaidOrder(idempotencyKey, false);
+    }
+
+    /** {@link #placePaidOrder(String)}, as a courier DELIVERY to a saved
+     *  address when {@code delivery} (the cell's delivery fee is zero, so the
+     *  paid amount is unchanged). */
+    private Map<String, String> placePaidOrder(String idempotencyKey, boolean delivery)
+            throws Exception {
         String listingId = publishListing();
+        String body = "{\"items\":[{\"listingId\":\"%s\",\"quantity\":1}]}".formatted(listingId);
+        if (delivery) {
+            String address = mockMvc.perform(post("/marketplace/addresses")
+                            .header("Authorization", "Bearer " + customerToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(ADDRESS_BODY))
+                    .andExpect(status().isCreated())
+                    .andReturn().getResponse().getContentAsString();
+            body = ("{\"items\":[{\"listingId\":\"%s\",\"quantity\":1}],"
+                    + "\"deliveryMethod\":\"DELIVERY\",\"deliveryAddressId\":\"%s\"}")
+                    .formatted(listingId, JsonPath.<String>read(address, "$.data.id"));
+        }
         String created = mockMvc.perform(post("/marketplace/orders")
                         .header("Authorization", "Bearer " + customerToken)
                         .header("Idempotency-Key", idempotencyKey)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"items\":[{\"listingId\":\"%s\",\"quantity\":1}]}"
-                                .formatted(listingId)))
+                        .content(body))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String orderId = JsonPath.read(created, "$.data.id");
