@@ -106,7 +106,7 @@ public class ParcelTrackingService {
                     itemsByOrder.getOrDefault(order.getId(), List.of()).stream()
                             .filter(item -> parcel.getMerchantId().equals(item.getMerchantId()))
                             .map(item -> new CourierParcelResponse.Item(item.getTitleSnapshot(),
-                                    item.getQuantity()))
+                                    item.getQuantity(), item.getVariantLabel()))
                             .toList(),
                     parcel.getLastLocationAt()));
         }

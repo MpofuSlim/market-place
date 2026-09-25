@@ -30,7 +30,7 @@ public record CheckoutQuoteResponse(
         @Schema(description = "The basket, priced live, in the order it was given")
         List<PricedLineResponse> items,
 
-        @Schema(description = "Distinct listings", example = "2")
+        @Schema(description = "Distinct lines - one listing in two sizes is two lines", example = "2")
         int lineCount,
 
         @Schema(description = "Total units", example = "3")

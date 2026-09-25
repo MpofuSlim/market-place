@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.support.PostgresTestContainer;
 import com.innbucks.marketplaceservice.support.TestJwts;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,6 +42,20 @@ class ReviewFlowIT extends PostgresTestContainer {
               "categoryCode": "electronics",
               "priceCents": 1550,
               "stockQty": 10
+            }""";
+
+    /** V19: a listing sold by size, the XL at a price of its own. */
+    private static final String OPTIONS_LISTING_BODY = """
+            {
+              "title": "Cotton Crew Tee",
+              "description": "100% cotton, pre-shrunk",
+              "categoryCode": "other",
+              "priceCents": 1999,
+              "options": ["Size"],
+              "variants": [
+                { "values": ["M"], "stockQty": 4 },
+                { "values": ["XL"], "priceCents": 2299, "stockQty": 6 }
+              ]
             }""";
 
     private static final byte[] PNG_BYTES =
@@ -205,15 +220,61 @@ class ReviewFlowIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.code").value("review_requires_purchase"));
     }
 
+    @Test
+    @DisplayName("A buyer who bought ONE OPTION of a listing may review the listing itself: the "
+            + "verified-purchase gate keys on the parent listing an option line records")
+    void buyingAnOptionQualifiesAReviewOfTheParentListing() throws Exception {
+        String listingId = createActiveListing(OPTIONS_LISTING_BODY);
+        String extraLarge = jdbc.queryForObject("""
+                SELECT id::text FROM listing_variant
+                 WHERE listing_id = ?::uuid AND option1_value = 'XL'""", String.class, listingId);
+        String orderId = payOrder("{\"listingId\":\"%s\",\"quantity\":1,\"variantId\":\"%s\"}"
+                .formatted(listingId, extraLarge), buyerToken);
+
+        // The paid line is the OPTION, at its own price - and it names the
+        // parent listing, which is what the gate queries.
+        assertThat(jdbc.queryForObject(
+                "SELECT listing_id::text FROM market_order_item WHERE order_id = ?::uuid",
+                String.class, orderId)).isEqualTo(listingId);
+        assertThat(jdbc.queryForObject(
+                "SELECT variant_label FROM market_order_item WHERE order_id = ?::uuid",
+                String.class, orderId)).isEqualTo("XL");
+        assertThat(jdbc.queryForObject(
+                "SELECT unit_price_cents FROM market_order_item WHERE order_id = ?::uuid",
+                Long.class, orderId)).isEqualTo(2299L);
+
+        mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":4,\"comment\":\"Fits well\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.rating").value(4))
+                .andExpect(jsonPath("$.data.orderId").value(orderId));
+
+        // The review lands on the parent's aggregates - there is one product
+        // page, not one per size.
+        Listing reviewed = listingRepository.findById(UUID.fromString(listingId)).orElseThrow();
+        assertThat(reviewed.getRatingSum()).isEqualTo(4);
+        assertThat(reviewed.getRatingCount()).isEqualTo(1);
+        mockMvc.perform(get("/marketplace/catalog/{id}/reviews", listingId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalItems").value(1))
+                .andExpect(jsonPath("$.data.items[0].rating").value(4));
+    }
+
     // ------------------------------------------------------------------
     // Plumbing (the OrderFlowIT shapes)
     // ------------------------------------------------------------------
 
     private String createActiveListing() throws Exception {
+        return createActiveListing(LISTING_BODY);
+    }
+
+    private String createActiveListing(String body) throws Exception {
         String created = mockMvc.perform(post("/marketplace/listings")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(LISTING_BODY))
+                        .content(body))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String listingId = JsonPath.read(created, "$.data.id");
@@ -232,9 +293,15 @@ class ReviewFlowIT extends PostgresTestContainer {
     /** Buyer orders one unit and the payments service confirms it PAID over
      *  the internal S2S surface — minting review eligibility. */
     private void payOrderFor(String listingId, String customerToken) throws Exception {
+        payOrder("{\"listingId\":\"%s\",\"quantity\":1}".formatted(listingId), customerToken);
+    }
+
+    /** {@link #payOrderFor} for any one line ({@code itemJson}, e.g. naming an
+     *  option); returns the paid order's id. */
+    private String payOrder(String itemJson, String customerToken) throws Exception {
         String orderBody = """
-                {"buyerMsisdn":"+263771234567","items":[{"listingId":"%s","quantity":1}]}"""
-                .formatted(listingId);
+                {"buyerMsisdn":"+263771234567","items":[%s]}"""
+                .formatted(itemJson);
         String createdOrder = mockMvc.perform(post("/marketplace/orders")
                         .header("Authorization", "Bearer " + customerToken)
                         .header("Idempotency-Key", "review-it-" + UUID.randomUUID())
@@ -251,5 +318,6 @@ class ReviewFlowIT extends PostgresTestContainer {
                                 .formatted(UUID.randomUUID(), totalCents)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PAID"));
+        return JsonPath.read(createdOrder, "$.data.id");
     }
 }

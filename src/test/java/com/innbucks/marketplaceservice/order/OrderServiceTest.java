@@ -20,7 +20,10 @@ import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
+import com.innbucks.marketplaceservice.catalog.ListingRestocked;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
+import com.innbucks.marketplaceservice.catalog.StockRow;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
 import com.innbucks.marketplaceservice.idempotency.ClaimResult;
 import com.innbucks.marketplaceservice.idempotency.IdempotencyService;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
@@ -36,6 +39,7 @@ import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
 import com.innbucks.marketplaceservice.catalog.ListingDeliveryTown;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -62,6 +66,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -101,6 +106,8 @@ class OrderServiceTest {
     private MarketOrderItemRepository itemRepository;
     private MarketOrderDeliveryFeeRepository deliveryFeeRepository;
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private ListingDeliveryTownRepository coverage;
     private OrderTransitionService transitions;
     private IdempotencyService idempotencyService;
@@ -134,8 +141,9 @@ class OrderServiceTest {
         fulfilmentService = mock(FulfilmentService.class);
         addressService = mock(DeliveryAddressService.class);
         checkoutProperties = new CheckoutProperties();
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
         CheckoutPricer pricer = new CheckoutPricer(listingRepository, coverage,
-                TestTowns.zimbabwe(), "USD");
+                TestTowns.zimbabwe(), "USD", variantRepository);
         CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
                 mock(BasketViewAssembler.class), cartService, addressService,
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class),
@@ -147,11 +155,14 @@ class OrderServiceTest {
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
                 mock(com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.class),
                 new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
+        eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        // The REAL stock mover over the mocked repositories, so these tests
+        // still pin the exact statements an order issues.
         service = new OrderService(orderRepository, itemRepository, deliveryFeeRepository,
-                listingRepository,
+                new com.innbucks.marketplaceservice.catalog.ListingStock(listingRepository,
+                        variantRepository, eventPublisher, new MarketplaceMetrics(registry)),
                 transitions, idempotencyService, auditService,
                 new MarketplaceMetrics(registry), objectMapper,
-                mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(PlatformTransactionManager.class),
                 checkoutService, pricer, cartService, fulfilmentService, settlementService, views,
                 new Msisdns("ZW"),
@@ -1385,6 +1396,626 @@ class OrderServiceTest {
                     new ConfirmPaymentRequest("INB-PAY-1", order.getTotalCents() * 100)));
 
             verify(fulfilmentService, never()).openForOrder(any());
+        }
+    }
+
+    // ==================================================================
+    // Product options (V19): a line is (listing, option)
+    // ==================================================================
+
+    @Nested
+    class ProductOptions {
+
+        // The canonical Swagger data, so each case reads like the published
+        // examples: a tee sold in sizes, one of them dearer, beside a plain
+        // listing that has no options at all.
+        private final UUID tee = UUID.fromString("e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41");
+        private final UUID medium = UUID.fromString("0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352");
+        private final UUID large = UUID.fromString("1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463");
+        private final UUID extraLarge = UUID.fromString("2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574");
+        private final UUID speaker = UUID.fromString("b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93");
+        /** An option id nothing resolves: deleted by the seller, or never real. */
+        private final UUID gone = UUID.fromString("9f1d4b7e-0c2a-4e6f-8b3d-5a7c9e1f2d40");
+
+        private Listing optionListing(UUID id, long priceCents, String title) {
+            Listing listing = listing(id, priceCents, title);
+            listing.setHasVariants(true);
+            listing.setOption1Name("Size");
+            listing.setOption2Name("Colour");
+            listing.setStockQty(10);
+            return listing;
+        }
+
+        private Listing teeListing() {
+            return optionListing(tee, 1999, "Cotton Crew Tee");
+        }
+
+        private ListingVariant option(UUID listingId, UUID id, String size, Long priceCents,
+                                      int stockQty) {
+            Instant now = Instant.now();
+            ListingVariant option = ListingVariant.builder()
+                    .id(id).listingId(listingId).priceCents(priceCents).stockQty(stockQty)
+                    .createdAt(now).updatedAt(now).version(0L).build();
+            option.setValues(size, "Black");
+            return option;
+        }
+
+        /** M (inherits USD 19.99, 4 left), L (sold out) and XL (USD 22.99, 6 left). */
+        private List<ListingVariant> teeOptions() {
+            return List.of(option(tee, medium, "M", null, 4), option(tee, large, "L", null, 0),
+                    option(tee, extraLarge, "XL", 2299L, 6));
+        }
+
+        private void onSale(List<Listing> listings, List<ListingVariant> options) {
+            when(listingRepository.findAllById(any())).thenReturn(listings);
+            when(variantRepository.findAllById(any())).thenReturn(options);
+        }
+
+        /** The listing row as {@code lockForStock} reads it under the lock. */
+        private StockRow lockedRow(String status, boolean hasVariants, int stockQty) {
+            return new StockRow() {
+                @Override
+                public String getStatus() {
+                    return status;
+                }
+
+                @Override
+                public Boolean getHasVariants() {
+                    return hasVariants;
+                }
+
+                @Override
+                public Integer getStockQty() {
+                    return stockQty;
+                }
+            };
+        }
+
+        /** Every option reserve on {@code listingId} succeeds under its lock. */
+        private void reservable(UUID listingId) {
+            when(listingRepository.lockForStock(listingId))
+                    .thenReturn(lockedRow("ACTIVE", true, 10));
+            when(variantRepository.reserve(any(UUID.class), eq(listingId), anyInt())).thenReturn(1);
+            when(listingRepository.recomputeStockTotal(listingId)).thenReturn(1);
+        }
+
+        private CreateOrderRequest.Item line(UUID listingId, int quantity, UUID variantId) {
+            return new CreateOrderRequest.Item(listingId, quantity, variantId);
+        }
+
+        private List<MarketOrderItem> savedItems() {
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<MarketOrderItem>> captor = ArgumentCaptor.forClass(List.class);
+            verify(itemRepository).saveAll(captor.capture());
+            return captor.getValue();
+        }
+
+        private DeliveryAddress harareAddress() {
+            Instant now = Instant.now();
+            return DeliveryAddress.builder()
+                    .id(UUID.randomUUID()).buyerUuid(BUYER_UUID).label("Home")
+                    .recipientName("Tariro Moyo").recipientMsisdn("+263771234567")
+                    .line1("14 Samora Machel Ave").city("Harare").townCode("harare")
+                    .defaultAddress(true).createdAt(now).updatedAt(now).version(0L).build();
+        }
+
+        // --------------------------------------------------------------
+        // Lines and snapshots
+        // --------------------------------------------------------------
+
+        @Test
+        @DisplayName("Two sizes of one listing are two lines, each snapshotting its option and "
+                + "the OPTION's price")
+        void twoSizesOfOneListingAreTwoLinesAtTheirOwnPrices() throws Exception {
+            Listing listing = teeListing();
+            onSale(List.of(listing), teeOptions());
+            reservable(tee);
+
+            OrderResponse response = service.createOrder(BUYER, req("0771234567",
+                    line(tee, 2, medium), line(tee, 1, extraLarge)), RAW_KEY);
+
+            // The buyer's view: the title stays bare and the label rides beside
+            // it, so the app prints both verbatim and joins nothing.
+            assertEquals(List.of(
+                    new OrderResponse.Line(tee, "Cotton Crew Tee", 1999, 2, 3998,
+                            medium, "M - Black"),
+                    new OrderResponse.Line(tee, "Cotton Crew Tee", 2299, 1, 2299,
+                            extraLarge, "XL - Black")), response.items());
+            // 2 x 19.99 + 1 x 22.99: the dearer option is charged at its own
+            // price, not the listing's from-price.
+            assertEquals(6297L, response.subtotalCents());
+            assertEquals(6297L, response.totalCents());
+
+            List<MarketOrderItem> items = savedItems();
+            assertEquals(2, items.size());
+            MarketOrderItem m = items.get(0);
+            assertEquals(medium, m.getVariantId());
+            assertEquals("M - Black", m.getVariantLabel());
+            assertEquals(1999L, m.getUnitPriceCents());
+            assertEquals(3998L, m.getLineTotalCents());
+            MarketOrderItem xl = items.get(1);
+            assertEquals(extraLarge, xl.getVariantId());
+            assertEquals("XL - Black", xl.getVariantLabel());
+            assertEquals(2299L, xl.getUnitPriceCents());
+            assertEquals(2299L, xl.getLineTotalCents());
+            assertEquals("Cotton Crew Tee", xl.getTitleSnapshot());
+            assertEquals(listing.getMerchantId(), xl.getMerchantId());
+
+            // Reserved on the OPTIONS, under the listing's lock, and the total
+            // recomputed after - never the plain listing statement.
+            InOrder stock = inOrder(listingRepository, variantRepository);
+            stock.verify(listingRepository).lockForStock(tee);
+            stock.verify(variantRepository).reserve(medium, tee, 2);
+            stock.verify(variantRepository).reserve(extraLarge, tee, 1);
+            stock.verify(listingRepository).recomputeStockTotal(tee);
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+
+            // The stored replay carries the option too, so a retry answers the
+            // same two lines.
+            ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
+            verify(idempotencyService).complete(eq(KEY_HASH), eq(201), body.capture());
+            assertEquals(response, objectMapper.readValue(body.getValue(), OrderResponse.class));
+        }
+
+        @Test
+        @DisplayName("The same option twice is 400 duplicate_listing naming the listing AND the option")
+        void theSameOptionTwiceIsADuplicate() {
+            ApiException ex = createFails(req("0771234567",
+                    line(tee, 1, medium), line(tee, 2, medium)));
+
+            assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+            assertEquals("duplicate_listing", ex.code());
+            assertEquals("Listing " + tee + " variant " + medium
+                    + " appears more than once in the order", ex.getMessage());
+            verify(listingRepository, never()).findAllById(any());
+            verify(idempotencyService).release(KEY_HASH);
+        }
+
+        @Test
+        @DisplayName("A plain listing named twice keeps its pre-V19 duplicate message byte for byte")
+        void thePlainDuplicateMessageIsUnchanged() {
+            ApiException ex = createFails(req("0771234567",
+                    item(speaker, 1), item(speaker, 2)));
+
+            assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+            assertEquals("duplicate_listing", ex.code());
+            assertEquals("Listing " + speaker + " appears more than once in the order",
+                    ex.getMessage());
+        }
+
+        // --------------------------------------------------------------
+        // The headline refusal: V19 reasons rank after every older one
+        // --------------------------------------------------------------
+
+        @Test
+        @DisplayName("A named option that no longer exists is 422 variant_unavailable naming the "
+                + "listing and the option, with nothing reserved")
+        void aGoneOptionIsVariantUnavailable() {
+            onSale(List.of(teeListing()), teeOptions());
+
+            ApiException ex = createFails(req("0771234567", line(tee, 1, gone)));
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("variant_unavailable", ex.code());
+            assertEquals("Listing " + tee + " variant " + gone + " is not available",
+                    ex.getMessage());
+            OrderLineRejection only = rejectionsOf(ex).getFirst();
+            assertEquals(OrderLineRejection.REASON_VARIANT_UNAVAILABLE, only.reason());
+            assertEquals(gone, only.variantId());
+            assertNull(only.variantLabel(), "a gone option has no label to show");
+            assertEquals("The option you chose for Cotton Crew Tee is no longer available - "
+                    + "choose another", only.message());
+            verify(listingRepository, never()).lockForStock(any());
+            verify(variantRepository, never()).reserve(any(), any(), anyInt());
+            verify(idempotencyService).release(KEY_HASH);
+        }
+
+        @Test
+        @DisplayName("A plain line beside an option of the same listing is no duplicate - it is a "
+                + "line that chose nothing, 422 variant_required")
+        void aLineThatChoseNoOptionIsVariantRequired() {
+            onSale(List.of(teeListing()), teeOptions());
+
+            ApiException ex = createFails(req("0771234567",
+                    line(tee, 1, medium), item(tee, 1)));
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("variant_required", ex.code());
+            assertEquals("Listing " + tee + " needs an option chosen", ex.getMessage());
+            List<OrderLineRejection> rejections = rejectionsOf(ex);
+            assertEquals(1, rejections.size(), "the M line itself is fine");
+            assertEquals(OrderLineRejection.REASON_VARIANT_REQUIRED, rejections.getFirst().reason());
+            assertEquals("Choose a Size and Colour for Cotton Crew Tee",
+                    rejections.getFirst().message());
+            verify(listingRepository, never()).lockForStock(any());
+            verify(variantRepository, never()).reserve(any(), any(), anyInt());
+        }
+
+        @Test
+        @DisplayName("variant_unavailable outranks variant_required, whatever the request order")
+        void aGoneOptionOutranksAMissingChoice() {
+            onSale(List.of(teeListing()), teeOptions());
+
+            ApiException ex = createFails(req("0771234567",
+                    item(tee, 1), line(tee, 1, gone)));
+
+            assertEquals("variant_unavailable", ex.code());
+            assertEquals(List.of(OrderLineRejection.REASON_VARIANT_REQUIRED,
+                            OrderLineRejection.REASON_VARIANT_UNAVAILABLE),
+                    rejectionsOf(ex).stream().map(OrderLineRejection::reason).toList(),
+                    "both lines are reported, in REQUEST order");
+        }
+
+        /** Both V19 reasons first in the request, then the older reason on
+         *  the plain speaker LAST - so a headline naming the speaker is the
+         *  ranking talking, not the position. */
+        private ApiException refusedBesideBothOptionReasons(Listing plain, DeliveryMethod method) {
+            onSale(List.of(teeListing(), plain), teeOptions());
+            return createFails(new CreateOrderRequest("0771234567", null,
+                    List.of(item(tee, 1), line(tee, 1, gone), item(speaker, 1)),
+                    method, null, null));
+        }
+
+        @Test
+        @DisplayName("listing_unavailable still heads a refusal that also has both option reasons")
+        void listingUnavailableOutranksBothOptionReasons() {
+            Listing offSale = listing(speaker, 2399, "Wireless Bluetooth Speaker");
+            offSale.setStatus(ListingStatus.INACTIVE);
+
+            ApiException ex = refusedBesideBothOptionReasons(offSale, null);
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("listing_unavailable", ex.code());
+            assertEquals("Listing " + speaker + " is not available", ex.getMessage());
+            assertEquals(3, rejectionsOf(ex).size());
+        }
+
+        @Test
+        @DisplayName("insufficient_stock still heads a refusal that also has both option reasons")
+        void insufficientStockOutranksBothOptionReasons() {
+            ApiException ex = refusedBesideBothOptionReasons(
+                    listingWithStock(speaker, 2399, "Wireless Bluetooth Speaker", 0), null);
+
+            assertEquals(HttpStatus.CONFLICT, ex.status());
+            assertEquals("insufficient_stock", ex.code());
+            // The plain listing's message, byte-identical to before V19.
+            assertEquals("Insufficient stock for listing " + speaker, ex.getMessage());
+            assertEquals(3, rejectionsOf(ex).size());
+        }
+
+        @Test
+        @DisplayName("not_delivered_to_town still heads a refusal that also has both option reasons")
+        void notDeliveredToTownOutranksBothOptionReasons() {
+            when(addressService.requireForCheckout(any(), any())).thenReturn(harareAddress());
+            // The tee delivers to Harare; the speaker's seller does not.
+            when(coverage.findByListingIdIn(any()))
+                    .thenReturn(List.of(new ListingDeliveryTown(tee, "harare", 300)));
+
+            ApiException ex = refusedBesideBothOptionReasons(
+                    listing(speaker, 2399, "Wireless Bluetooth Speaker"), DeliveryMethod.DELIVERY);
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("not_delivered_to_town", ex.code());
+            assertEquals("Wireless Bluetooth Speaker is not delivered to Harare. Choose collection "
+                    + "or another address.", ex.getMessage());
+            assertEquals(3, rejectionsOf(ex).size());
+        }
+
+        // --------------------------------------------------------------
+        // Stock: the tie-break and the authoritative guard
+        // --------------------------------------------------------------
+
+        @Test
+        @DisplayName("Among short options of one listing the headline names the smallest option id "
+                + "- the reserve's own order - and each line names its option")
+        void theStockHeadlineNamesTheSmallestOption() {
+            onSale(List.of(teeListing()), teeOptions());
+
+            // M (0a6f...) sorts before L (1b7e...) before XL (2c8f...), and is
+            // deliberately LAST in the request.
+            ApiException ex = createFails(req("0771234567",
+                    line(tee, 7, extraLarge), line(tee, 1, large), line(tee, 5, medium)));
+
+            assertEquals(HttpStatus.CONFLICT, ex.status());
+            assertEquals("insufficient_stock", ex.code());
+            assertEquals("Insufficient stock for listing " + tee + " variant " + medium,
+                    ex.getMessage());
+
+            // Every short option is reported, in REQUEST order, named with its
+            // label and priced at the OPTION's price.
+            List<OrderLineRejection> rejections = rejectionsOf(ex);
+            assertEquals(List.of(extraLarge, large, medium),
+                    rejections.stream().map(OrderLineRejection::variantId).toList());
+            OrderLineRejection xl = rejections.get(0);
+            assertEquals("Only 6 left of Cotton Crew Tee (XL - Black)", xl.message());
+            assertEquals("XL - Black", xl.variantLabel());
+            assertEquals(6, xl.availableQty());
+            assertEquals(2299L, xl.unitPriceCents());
+            OrderLineRejection l = rejections.get(1);
+            assertEquals("Cotton Crew Tee (L - Black) is sold out", l.message());
+            assertEquals(0, l.availableQty());
+            assertEquals(1999L, l.unitPriceCents());
+            assertEquals("Only 4 left of Cotton Crew Tee (M - Black)", rejections.get(2).message());
+            verify(listingRepository, never()).lockForStock(any());
+        }
+
+        @Test
+        @DisplayName("Across listings the listing id decides first; a plain line keeps its "
+                + "byte-identical message")
+        void theListingIdDecidesBeforeTheOption() {
+            UUID low = new UUID(0, 1);
+            UUID high = new UUID(0, 2);
+            UUID shortOption = new UUID(0, 0x10);
+
+            // The smaller id is the PLAIN listing: its message, no option.
+            onSale(List.of(listingWithStock(low, 450, "Phone Charger", 0),
+                            optionListing(high, 1999, "Cotton Crew Tee")),
+                    List.of(option(high, shortOption, "M", null, 0)));
+            ApiException plainFirst = createFails(req("0771234567",
+                    line(high, 1, shortOption), item(low, 1)));
+            assertEquals("Insufficient stock for listing " + low, plainFirst.getMessage());
+
+            // The smaller id is the OPTION listing: named with its option.
+            onSale(List.of(optionListing(low, 1999, "Cotton Crew Tee"),
+                            listingWithStock(high, 450, "Phone Charger", 0)),
+                    List.of(option(low, shortOption, "M", null, 0)));
+            ApiException optionFirst = createFails(req("0771234567",
+                    item(high, 1), line(low, 1, shortOption)));
+            assertEquals("Insufficient stock for listing " + low + " variant " + shortOption,
+                    optionFirst.getMessage());
+        }
+
+        @Test
+        @DisplayName("An option that loses the reserve race is the plain 409 naming the option, "
+                + "with no per-line details")
+        void anOptionThatLosesTheRaceIsAPlain409() {
+            onSale(List.of(teeListing()), teeOptions());
+            when(listingRepository.lockForStock(tee)).thenReturn(lockedRow("ACTIVE", true, 10));
+            // The pricer read 4 left; a concurrent buyer took them before the
+            // guarded UPDATE ran.
+            when(variantRepository.reserve(medium, tee, 1)).thenReturn(0);
+
+            ApiException ex = createFails(req("0771234567", line(tee, 1, medium)));
+
+            assertEquals(HttpStatus.CONFLICT, ex.status());
+            assertEquals("insufficient_stock", ex.code());
+            assertEquals("Insufficient stock for listing " + tee + " variant " + medium,
+                    ex.getMessage());
+            assertNull(ex.details(), "a lost race reports no per-line detail");
+            verify(listingRepository, never()).recomputeStockTotal(any());
+            verify(orderRepository, never()).save(any());
+            verify(idempotencyService).release(KEY_HASH);
+        }
+
+        @Test
+        @DisplayName("When an option loses the race, what the order already took goes back, and "
+                + "nothing is announced as restocked")
+        void aLostOptionRaceUnReservesTheEarlierLines() {
+            UUID charger = new UUID(0, 1);
+            UUID shirt = new UUID(0, 2);
+            UUID small = new UUID(0, 0x10);
+            onSale(List.of(listing(charger, 450, "Phone Charger"),
+                            optionListing(shirt, 1999, "Cotton Crew Tee")),
+                    List.of(option(shirt, small, "S", null, 4)));
+            when(listingRepository.reserveStock(charger, 2)).thenReturn(1);
+            when(listingRepository.lockForStock(shirt)).thenReturn(lockedRow("ACTIVE", true, 4));
+            when(variantRepository.reserve(small, shirt, 1)).thenReturn(0);
+
+            ApiException ex = createFails(req("0771234567",
+                    line(shirt, 1, small), item(charger, 2)));
+
+            assertEquals("Insufficient stock for listing " + shirt + " variant " + small,
+                    ex.getMessage());
+            verify(listingRepository).restock(charger, 2);
+            verify(variantRepository, never()).restock(any(), any(), anyInt());
+            verify(eventPublisher, never()).publishEvent(any(Object.class));
+            verify(orderRepository, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("A listing taken off sale between pricing and the lock refuses the order "
+                + "without touching its options")
+        void aListingDeactivatedBeforeTheLockIsRefused() {
+            onSale(List.of(teeListing()), teeOptions());
+            when(listingRepository.lockForStock(tee)).thenReturn(lockedRow("INACTIVE", true, 10));
+
+            ApiException ex = createFails(req("0771234567",
+                    line(tee, 1, extraLarge), line(tee, 1, medium)));
+
+            assertEquals(HttpStatus.CONFLICT, ex.status());
+            assertEquals("insufficient_stock", ex.code());
+            // The group's first option in the reserve's order.
+            assertEquals("Insufficient stock for listing " + tee + " variant " + medium,
+                    ex.getMessage());
+            verify(variantRepository, never()).reserve(any(), any(), anyInt());
+            verify(orderRepository, never()).save(any());
+        }
+
+        // --------------------------------------------------------------
+        // The cart, after the order commits
+        // --------------------------------------------------------------
+
+        @Test
+        @DisplayName("After a cart order commits, plain lines leave cart_item and option lines "
+                + "leave cart_variant_item")
+        void aMixedCartOrderClearsBothTables() {
+            onSale(List.of(teeListing(), listing(speaker, 2399, "Wireless Bluetooth Speaker")),
+                    teeOptions());
+            when(listingRepository.reserveStock(speaker, 1)).thenReturn(1);
+            reservable(tee);
+            when(cartService.basketOf(BUYER)).thenReturn(List.of(
+                    new BasketLine(speaker, 1), new BasketLine(tee, 2, medium),
+                    new BasketLine(tee, 1, extraLarge)));
+
+            service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", true, null, null, null, null), RAW_KEY);
+
+            verify(cartService).removeOrdered(BUYER_UUID, List.of(speaker));
+            verify(cartService).removeOrderedVariants(BUYER_UUID, List.of(medium, extraLarge));
+        }
+
+        @Test
+        @DisplayName("A cart order with no option lines never touches the option table")
+        void aPlainCartOrderNeverClearsOptions() {
+            onSale(List.of(listing(speaker, 2399, "Wireless Bluetooth Speaker")), List.of());
+            when(listingRepository.reserveStock(speaker, 1)).thenReturn(1);
+            when(cartService.basketOf(BUYER)).thenReturn(List.of(new BasketLine(speaker, 1)));
+
+            service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", true, null, null, null, null), RAW_KEY);
+
+            verify(cartService).removeOrdered(BUYER_UUID, List.of(speaker));
+            verify(cartService, never()).removeOrderedVariants(any(), any());
+            // Nor, for a basket with no options, is the option table even read.
+            verify(variantRepository, never()).findAllById(any());
+        }
+
+        @Test
+        @DisplayName("An options-only cart order removes its option lines and no plain line")
+        void anOptionsOnlyCartOrderRemovesNoPlainLine() {
+            onSale(List.of(teeListing()), teeOptions());
+            reservable(tee);
+            when(cartService.basketOf(BUYER)).thenReturn(List.of(new BasketLine(tee, 1, medium)));
+
+            service.createOrder(BUYER,
+                    new CreateOrderRequest("0771234567", true, null, null, null, null), RAW_KEY);
+
+            verify(cartService).removeOrderedVariants(BUYER_UUID, List.of(medium));
+            // The M line's listing id must not be taken as a plain line: that
+            // would delete a plain cart row of the tee nobody ordered.
+            verify(cartService, never()).removeOrdered(eq(BUYER_UUID),
+                    argThat(ids -> !ids.isEmpty()));
+        }
+
+        @Test
+        @DisplayName("A refused cart order clears neither table")
+        void aRefusedCartOrderClearsNothing() {
+            onSale(List.of(teeListing()), teeOptions());
+            // L is sold out.
+            when(cartService.basketOf(BUYER)).thenReturn(List.of(new BasketLine(tee, 1, large)));
+
+            ApiException ex = createFails(
+                    new CreateOrderRequest("0771234567", true, null, null, null, null));
+
+            assertEquals("insufficient_stock", ex.code());
+            verify(cartService, never()).removeOrdered(any(), any());
+            verify(cartService, never()).removeOrderedVariants(any(), any());
+        }
+
+        @Test
+        @DisplayName("An explicit-items order with options never touches the cart")
+        void anExplicitOptionOrderNeverTouchesTheCart() {
+            onSale(List.of(teeListing()), teeOptions());
+            reservable(tee);
+
+            service.createOrder(BUYER, req("0771234567", line(tee, 1, medium)), RAW_KEY);
+
+            verify(cartService, never()).removeOrdered(any(), any());
+            verify(cartService, never()).removeOrderedVariants(any(), any());
+        }
+
+        // --------------------------------------------------------------
+        // Returns: cancel and expiry put each line back where it came from
+        // --------------------------------------------------------------
+
+        private MarketOrderItem optionItem(UUID orderId, UUID variantId, String label, int qty) {
+            return MarketOrderItem.builder()
+                    .id(UUID.randomUUID()).orderId(orderId).listingId(tee)
+                    .titleSnapshot("Cotton Crew Tee").unitPriceCents(1999).quantity(qty)
+                    .lineTotalCents(1999L * qty).variantId(variantId).variantLabel(label)
+                    .build();
+        }
+
+        private void cancellable(MarketOrder order) {
+            when(orderRepository.findByIdAndBuyerUuid(order.getId(), BUYER_UUID))
+                    .thenReturn(Optional.of(order));
+            when(transitions.transition(any(), eq(OrderStatus.CANCELLED), anyString()))
+                    .thenAnswer(inv -> {
+                        MarketOrder o = inv.getArgument(0);
+                        o.setStatus(OrderStatus.CANCELLED);
+                        return o;
+                    });
+        }
+
+        @Test
+        @DisplayName("Cancelling returns an option line to its OPTION, recomputes the total, and "
+                + "announces a listing that came back from zero")
+        void cancelReturnsAnOptionLineToItsOption() {
+            MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+            cancellable(order);
+            when(itemRepository.findByOrderId(order.getId())).thenReturn(List.of(
+                    optionItem(order.getId(), medium, "M - Black", 2),
+                    orderItem(order.getId(), speaker, 1)));
+            // The tee's total is 0 before the return (every size sold); the
+            // speaker still has stock.
+            when(listingRepository.lockForStock(tee)).thenReturn(lockedRow("ACTIVE", true, 0));
+            when(listingRepository.lockForStock(speaker)).thenReturn(lockedRow("ACTIVE", false, 5));
+            when(variantRepository.restock(medium, tee, 2)).thenReturn(1);
+            when(listingRepository.recomputeStockTotal(tee)).thenReturn(1);
+            when(listingRepository.stockQtyOf(tee)).thenReturn(2);
+            when(listingRepository.restock(speaker, 1)).thenReturn(1);
+
+            OrderResponse response = service.cancelOrder(BUYER, order.getId());
+
+            assertEquals(OrderStatus.CANCELLED, response.status());
+            InOrder returned = inOrder(listingRepository, variantRepository);
+            returned.verify(listingRepository).lockForStock(tee);
+            returned.verify(variantRepository).restock(medium, tee, 2);
+            returned.verify(listingRepository).recomputeStockTotal(tee);
+            // Never the plain statement for the option listing...
+            verify(listingRepository, never()).restock(eq(tee), anyInt());
+            // ...and exactly the plain one for the plain listing.
+            verify(listingRepository, times(1)).restock(speaker, 1);
+            verify(eventPublisher, times(1)).publishEvent(new ListingRestocked(tee));
+            verify(eventPublisher, never()).publishEvent(new ListingRestocked(speaker));
+            assertTrue(order.isStockReleased());
+            verify(orderRepository).save(order);
+        }
+
+        @Test
+        @DisplayName("Expiry returns an option line exactly as cancel does, silently when the "
+                + "listing never ran out")
+        void expiryReturnsAnOptionLineToItsOption() {
+            MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+            order.setExpiresAt(Instant.now().minusSeconds(60));
+            when(orderRepository.findById(order.getId())).thenReturn(Optional.of(order));
+            when(transitions.transitionIfLegal(eq(order), eq(OrderStatus.EXPIRED), anyString()))
+                    .thenReturn(true);
+            when(itemRepository.findByOrderId(order.getId())).thenReturn(List.of(
+                    optionItem(order.getId(), extraLarge, "XL - Black", 1)));
+            when(listingRepository.lockForStock(tee)).thenReturn(lockedRow("ACTIVE", true, 3));
+            when(variantRepository.restock(extraLarge, tee, 1)).thenReturn(1);
+            when(listingRepository.recomputeStockTotal(tee)).thenReturn(1);
+
+            assertTrue(service.expireOne(order.getId()));
+
+            verify(variantRepository).restock(extraLarge, tee, 1);
+            verify(listingRepository).recomputeStockTotal(tee);
+            verify(listingRepository, never()).restock(any(), anyInt());
+            // 3 -> 4 is not a restock: nobody is told "back in stock".
+            verify(eventPublisher, never()).publishEvent(any(Object.class));
+            assertTrue(order.isStockReleased());
+        }
+
+        @Test
+        @DisplayName("A return with nowhere to go is metered and dropped - the cancel still commits")
+        void aReturnToAConvertedListingNeverWedgesTheCancel() {
+            MarketOrder order = order(OrderStatus.PENDING_PAYMENT);
+            cancellable(order);
+            when(itemRepository.findByOrderId(order.getId())).thenReturn(List.of(
+                    optionItem(order.getId(), medium, "M - Black", 2)));
+            // The seller turned the tee back into a plain listing after the
+            // order was placed: the M option is gone with its stock model.
+            when(listingRepository.lockForStock(tee)).thenReturn(lockedRow("ACTIVE", false, 7));
+
+            OrderResponse response = service.cancelOrder(BUYER, order.getId());
+
+            assertEquals(OrderStatus.CANCELLED, response.status());
+            assertTrue(order.isStockReleased());
+            verify(variantRepository, never()).restock(any(), any(), anyInt());
+            verify(listingRepository, never()).restock(any(), anyInt());
+            assertEquals(1.0, registry.get("marketplace.stock.returns_dropped")
+                    .tag("reason", "listing_converted").counter().count());
         }
     }
 }

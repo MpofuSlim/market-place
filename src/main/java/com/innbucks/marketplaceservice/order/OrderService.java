@@ -6,14 +6,15 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.api.Msisdns;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
-import com.innbucks.marketplaceservice.catalog.Listing;
-import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.cart.CartService;
-import com.innbucks.marketplaceservice.catalog.ListingRestocked;
+import com.innbucks.marketplaceservice.catalog.Listing;
+import com.innbucks.marketplaceservice.catalog.ListingStock;
+import com.innbucks.marketplaceservice.catalog.StockLine;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
 import com.innbucks.marketplaceservice.checkout.BasketLine;
 import com.innbucks.marketplaceservice.checkout.CheckoutPricer;
 import com.innbucks.marketplaceservice.checkout.CheckoutService;
+import com.innbucks.marketplaceservice.checkout.LineKey;
 import com.innbucks.marketplaceservice.checkout.PricedBasket;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
@@ -24,16 +25,15 @@ import com.innbucks.marketplaceservice.idempotency.IdempotencyService;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.dto.ConfirmPaymentRequest;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
-import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.order.dto.InternalOrderView;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
 import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
+import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -71,12 +71,13 @@ import java.util.UUID;
  * response only after that transaction commits, and released if it throws.
  *
  * <h2>Stock invariants</h2>
- * Reservation is a single atomic UPDATE per line
- * ({@link ListingRepository#reserveStock}), executed in listing-id order so
+ * Reservation is a single atomic UPDATE per line — the listing's, or the
+ * option's for a listing with variants (V19) — all run by
+ * {@link ListingStock#reserveAll} in listing-id order under its lock rule, so
  * two concurrent multi-line orders can never deadlock; a 0 update-count means
  * insufficient stock (or a just-deactivated listing) and aborts the order.
  * Release happens exactly once, guarded by {@code market_order.stock_released}
- * ({@link #releaseStockOnce}).
+ * ({@link #releaseStockOnce}), back to wherever each line was reserved.
  */
 @Slf4j
 @Service
@@ -91,13 +92,12 @@ public class OrderService {
     private final MarketOrderRepository orderRepository;
     private final MarketOrderItemRepository itemRepository;
     private final MarketOrderDeliveryFeeRepository deliveryFeeRepository;
-    private final ListingRepository listingRepository;
+    private final ListingStock listingStock;
     private final OrderTransitionService transitions;
     private final IdempotencyService idempotencyService;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
     private final ObjectMapper objectMapper;
-    private final ApplicationEventPublisher eventPublisher;
     private final TransactionTemplate transactionTemplate;
     private final CheckoutService checkoutService;
     private final CheckoutPricer pricer;
@@ -115,13 +115,12 @@ public class OrderService {
     public OrderService(MarketOrderRepository orderRepository,
                         MarketOrderItemRepository itemRepository,
                         MarketOrderDeliveryFeeRepository deliveryFeeRepository,
-                        ListingRepository listingRepository,
+                        ListingStock listingStock,
                         OrderTransitionService transitions,
                         IdempotencyService idempotencyService,
                         AuditService auditService,
                         MarketplaceMetrics metrics,
                         ObjectMapper objectMapper,
-                        ApplicationEventPublisher eventPublisher,
                         PlatformTransactionManager transactionManager,
                         CheckoutService checkoutService,
                         CheckoutPricer pricer,
@@ -137,13 +136,12 @@ public class OrderService {
         this.orderRepository = orderRepository;
         this.itemRepository = itemRepository;
         this.deliveryFeeRepository = deliveryFeeRepository;
-        this.listingRepository = listingRepository;
+        this.listingStock = listingStock;
         this.transitions = transitions;
         this.idempotencyService = idempotencyService;
         this.auditService = auditService;
         this.metrics = metrics;
         this.objectMapper = objectMapper;
-        this.eventPublisher = eventPublisher;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.checkoutService = checkoutService;
         this.pricer = pricer;
@@ -200,8 +198,17 @@ public class OrderService {
         // themselves, which is strictly the better failure. Anything they did
         // not check out stays where it was.
         if (request.sourcedFromCart()) {
-            cartService.removeOrdered(UUID.fromString(buyer.uuid()),
-                    response.items().stream().map(OrderResponse.Line::listingId).toList());
+            UUID buyerId = UUID.fromString(buyer.uuid());
+            // Plain lines leave cart_item exactly as before V19; option lines
+            // leave cart_variant_item — touched only when the order had any.
+            cartService.removeOrdered(buyerId, response.items().stream()
+                    .filter(line -> line.variantId() == null)
+                    .map(OrderResponse.Line::listingId).toList());
+            List<UUID> orderedVariants = response.items().stream()
+                    .map(OrderResponse.Line::variantId).filter(java.util.Objects::nonNull).toList();
+            if (!orderedVariants.isEmpty()) {
+                cartService.removeOrderedVariants(buyerId, orderedVariants);
+            }
         }
 
         storeReplayBody(keyHash, response);
@@ -222,7 +229,8 @@ public class OrderService {
         List<BasketLine> basket = checkoutService.resolveBasket(buyer, request.sourcedFromCart(),
                 request.items() == null ? List.of()
                         : request.items().stream()
-                                .map(item -> new BasketLine(item.listingId(), item.quantity()))
+                                .map(item -> new BasketLine(item.listingId(), item.quantity(),
+                                        item.variantId()))
                                 .toList());
         validateBasket(basket);
 
@@ -261,7 +269,7 @@ public class OrderService {
                     "Order total exceeds the maximum representable amount");
         }
 
-        reserveStock(basket);
+        reserveStock(priced);
 
         Instant now = Instant.now();
         MarketOrder order = MarketOrder.builder()
@@ -298,6 +306,10 @@ public class OrderService {
                         .unitPriceCents(line.unitPriceCents())
                         .quantity(line.quantity())
                         .lineTotalCents(line.lineTotalCents())
+                        // V19: the option AS NAMED NOW - a later rename or
+                        // removal changes nothing about what was bought.
+                        .variantId(line.variant() == null ? null : line.variant().getId())
+                        .variantLabel(line.variantLabel())
                         .build())
                 .toList();
         itemRepository.saveAll(items);
@@ -329,7 +341,7 @@ public class OrderService {
             throw ApiException.badRequest("invalid_items",
                     "Order must contain between 1 and " + maxItems + " line items");
         }
-        Set<UUID> seen = new HashSet<>();
+        Set<LineKey> seen = new HashSet<>();
         for (BasketLine line : basket) {
             if (line.listingId() == null) {
                 // Bean Validation already rejects these; defensive for direct callers.
@@ -340,9 +352,13 @@ public class OrderService {
                         "Quantity for listing " + line.listingId() + " must be between 1 and "
                                 + maxQuantityPerItem);
             }
-            if (!seen.add(line.listingId())) {
-                throw ApiException.badRequest("duplicate_listing",
-                        "Listing " + line.listingId() + " appears more than once in the order");
+            // V19: a line is (listing, option). Two sizes of one listing are
+            // two lines; the same size twice is the duplicate.
+            if (!seen.add(line.key())) {
+                throw ApiException.badRequest("duplicate_listing", line.variantId() == null
+                        ? "Listing " + line.listingId() + " appears more than once in the order"
+                        : "Listing " + line.listingId() + " variant " + line.variantId()
+                                + " appears more than once in the order");
             }
         }
     }
@@ -433,9 +449,13 @@ public class OrderService {
                         "Listing " + r.listingId() + " is not available"))
                 .or(() -> rejections.stream()
                         .filter(r -> OrderLineRejection.REASON_INSUFFICIENT_STOCK.equals(r.reason()))
-                        .min(Comparator.comparing(OrderLineRejection::listingId))
+                        // The reserve's own order: by listing, then by option
+                        // with a plain line first.
+                        .min(Comparator.comparing(OrderLineRejection::listingId)
+                                .thenComparing(OrderLineRejection::variantId,
+                                        Comparator.nullsFirst(Comparator.naturalOrder())))
                         .map(r -> ApiException.conflict("insufficient_stock",
-                                "Insufficient stock for listing " + r.listingId())))
+                                insufficientStockMessage(r.listingId(), r.variantId()))))
                 // V14, last: a line nobody delivers to the buyer's town. Ranked
                 // after availability and stock so every pre-V14 refusal stays
                 // byte-identical; the details name every line either way.
@@ -444,33 +464,49 @@ public class OrderService {
                         .findFirst()
                         .map(r -> ApiException.unprocessable("not_delivered_to_town",
                                 r.message() + ". Choose collection or another address.")))
+                // V19, after everything older so every earlier refusal stays
+                // byte-identical: a named option that is gone, then a line that
+                // named none on a listing that sells options.
+                .or(() -> rejections.stream()
+                        .filter(r -> OrderLineRejection.REASON_VARIANT_UNAVAILABLE.equals(r.reason()))
+                        .findFirst()
+                        .map(r -> ApiException.unprocessable("variant_unavailable",
+                                "Listing " + r.listingId() + " variant " + r.variantId()
+                                        + " is not available")))
+                .or(() -> rejections.stream()
+                        .filter(r -> OrderLineRejection.REASON_VARIANT_REQUIRED.equals(r.reason()))
+                        .findFirst()
+                        .map(r -> ApiException.unprocessable("variant_required",
+                                "Listing " + r.listingId() + " needs an option chosen")))
                 .orElseThrow(() -> new IllegalStateException(
                         "refusalFor called with no rejections"));
     }
 
     /**
-     * Reserves every line atomically, SORTED BY LISTING ID so two concurrent
-     * orders over the same listings always lock in the same sequence (deadlock
-     * avoidance). A 0 update-count (insufficient stock or listing no longer
-     * ACTIVE) restocks everything already reserved and aborts with 409. The
-     * explicit restock keeps the guarantee even if this loop ever moves
-     * outside the creating transaction; today the rollback would also undo it.
+     * Reserves every priced line through {@link ListingStock} — per listing in
+     * UUID order (deadlock avoidance), each line by its own guarded UPDATE: the
+     * listing's for a listing without options (exactly the pre-V19
+     * statement), the option's for one with. A line that cannot be reserved
+     * (insufficient stock, or no longer ACTIVE) un-reserves everything taken
+     * and aborts with 409.
      */
-    private void reserveStock(List<BasketLine> items) {
-        List<BasketLine> sorted = items.stream()
-                .sorted(Comparator.comparing(BasketLine::listingId))
-                .toList();
-        List<BasketLine> reserved = new ArrayList<>(sorted.size());
-        for (BasketLine item : sorted) {
-            if (listingRepository.reserveStock(item.listingId(), item.quantity()) == 0) {
-                for (BasketLine taken : reserved) {
-                    listingRepository.restock(taken.listingId(), taken.quantity());
-                }
-                throw ApiException.conflict("insufficient_stock",
-                        "Insufficient stock for listing " + item.listingId());
-            }
-            reserved.add(item);
+    private void reserveStock(PricedBasket priced) {
+        StockLine refused = listingStock.reserveAll(priced.lines().stream()
+                .map(line -> new StockLine(line.listingId(),
+                        line.variant() == null ? null : line.variant().getId(), line.quantity()))
+                .toList());
+        if (refused != null) {
+            throw ApiException.conflict("insufficient_stock",
+                    insufficientStockMessage(refused.listingId(), refused.variantId()));
         }
+    }
+
+    /** "Insufficient stock for listing X" — exactly the pre-V19 text for a
+     *  line without an option — or "... variant V" for one with. */
+    private static String insufficientStockMessage(UUID listingId, UUID variantId) {
+        return variantId == null
+                ? "Insufficient stock for listing " + listingId
+                : "Insufficient stock for listing " + listingId + " variant " + variantId;
     }
 
     @Transactional
@@ -699,17 +735,14 @@ public class OrderService {
         if (order.isStockReleased()) {
             return;
         }
-        for (MarketOrderItem item : itemRepository.findByOrderId(order.getId())) {
-            // Restock-alert foundation: read the pre-release stock so a release
-            // that brings a sold-out listing back publishes ListingRestocked.
-            // The extra SELECT rides the same tx; the AFTER_COMMIT listener
-            // only fires if this cancel/expiry actually commits.
-            Integer before = listingRepository.stockQtyOf(item.getListingId());
-            listingRepository.restock(item.getListingId(), item.getQuantity());
-            if (before != null && before == 0 && item.getQuantity() > 0) {
-                eventPublisher.publishEvent(new ListingRestocked(item.getListingId()));
-            }
-        }
+        // ListingStock returns each line to where it was reserved (the listing,
+        // or the option), in the reserve's lock order, and publishes
+        // ListingRestocked for a listing it brings back from 0. The AFTER_COMMIT
+        // listener only fires if this cancel/expiry actually commits.
+        listingStock.returnAll(itemRepository.findByOrderId(order.getId()).stream()
+                .map(item -> new StockLine(item.getListingId(), item.getVariantId(),
+                        item.getQuantity()))
+                .toList());
         order.setStockReleased(true);
         order.setUpdatedAt(Instant.now());
         orderRepository.save(order);

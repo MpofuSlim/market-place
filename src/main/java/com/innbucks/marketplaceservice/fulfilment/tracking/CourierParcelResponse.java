@@ -45,6 +45,16 @@ public record CourierParcelResponse(
     @Schema(description = "One line to hand over")
     public record Item(
             @Schema(example = "Solar Lantern 20W") String title,
-            @Schema(example = "2") int quantity) {
+            @Schema(example = "2") int quantity,
+            @Schema(description = "The option to hand over (V19), e.g. \"XL - Black\" - absent for "
+                    + "a listing without options", example = "XL - Black", nullable = true)
+            @com.fasterxml.jackson.annotation.JsonInclude(
+                    com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            String variantLabel) {
+
+        /** An item without an option — the pre-V19 shape. */
+        public Item(String title, int quantity) {
+            this(title, quantity, null);
+        }
     }
 }

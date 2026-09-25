@@ -54,6 +54,7 @@ import org.springframework.http.HttpStatus;
 class CatalogServiceTest {
 
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
     private ListingImageRepository listingImageRepository;
     private CategoryRepository categoryRepository;
     private com.innbucks.marketplaceservice.seller.SellerService sellerService;
@@ -76,11 +77,12 @@ class CatalogServiceTest {
         sellerService = mock(com.innbucks.marketplaceservice.seller.SellerService.class);
         reviewService = mock(com.innbucks.marketplaceservice.review.ReviewService.class);
         collectionPoints = mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class);
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
         catalogService = new CatalogService(listingRepository, listingImageRepository,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
                         mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe(),
-                        collectionPoints),
+                        collectionPoints, variantRepository),
                 sellerService, reviewService,
                 mock(com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService.class),
                 TestTowns.zimbabwe(), collectionPoints);

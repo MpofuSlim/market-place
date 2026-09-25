@@ -65,9 +65,10 @@ public record ListingCreateRequest(
         @Max(100_000_000)
         Long priceCents,
 
-        @Schema(description = "Units in stock available for reservation.",
+        @Schema(description = "Units in stock available for reservation. REQUIRED for a listing "
+                + "without options (400 stock_required); ignored for one with options, whose "
+                + "stock is per option.",
                 example = "120", minimum = "0", maximum = "1000000")
-        @NotNull
         @Min(0)
         @Max(1_000_000)
         Integer stockQty,
@@ -86,7 +87,22 @@ public record ListingCreateRequest(
                 nullable = true)
         @Valid
         @Size(max = 100)
-        List<DeliveryTownFee> deliveryTowns
+        List<DeliveryTownFee> deliveryTowns,
+
+        @Schema(description = "V19: the option AXES of a listing that sells options, e.g. "
+                + "[\"Size\", \"Colour\"] (1-2 names, at most 30 characters, no comma). Send "
+                + "only together with a non-empty `variants`.", nullable = true)
+        @Size(max = 2)
+        List<String> options,
+
+        @Schema(description = "V19: the listing's OPTIONS (sizes, colours), each with its own stock "
+                + "and, optionally, a price above `priceCents` - which must then be the LOWEST "
+                + "option price. At most 50. A listing with options takes its stock from here and "
+                + "ignores `stockQty`. Needs the cell's options switch on (422 variants_disabled).",
+                nullable = true)
+        @Valid
+        @Size(max = 50)
+        List<VariantRequest> variants
 ) {
 
     /** Pre-V14 shape: collection only. */
@@ -95,5 +111,13 @@ public record ListingCreateRequest(
                                 Integer stockQty, UUID merchantId) {
         this(title, description, categoryCode, condition, city, area, priceCents, stockQty,
                 merchantId, null);
+    }
+
+    /** Pre-V19 shape: no options. */
+    public ListingCreateRequest(String title, String description, String categoryCode,
+                                ItemCondition condition, String city, String area, Long priceCents,
+                                Integer stockQty, UUID merchantId, List<DeliveryTownFee> deliveryTowns) {
+        this(title, description, categoryCode, condition, city, area, priceCents, stockQty,
+                merchantId, deliveryTowns, null, null);
     }
 }

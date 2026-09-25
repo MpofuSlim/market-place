@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.publictest;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.api.ApiResult;
+import com.innbucks.marketplaceservice.cart.CartController;
 import com.innbucks.marketplaceservice.cart.CartService;
 import com.innbucks.marketplaceservice.cart.dto.CartItemRequest;
 import com.innbucks.marketplaceservice.cart.dto.CartQuantityRequest;
@@ -33,6 +34,7 @@ import com.innbucks.marketplaceservice.settlement.DisputeService;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeRequest;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -47,6 +49,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,7 +61,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.http.HttpStatus;
 
 import java.util.List;
 import java.util.UUID;
@@ -176,6 +178,14 @@ import java.util.UUID;
              phone claim of its own, so there is nothing to fall back to. It is validated to E.164 \
              and it is the number payment-service will prompt to pay.
 
+             **Options (sizes, colours).** A listing with `hasVariants: true` is bought one option \
+             at a time, exactly as on the authenticated cart: send the chosen `variants[].id` as \
+             `variantId` in the add body, and as `?variantId=` on `PUT` / `DELETE \
+             /buyers/{handle}/cart/items/{listingId}` (a `DELETE` without it removes every line of \
+             that listing). The quote and order bodies carry `variantId` per line. No option on such \
+             a listing is `400 variant_required` at the cart and `422 variant_required` at the \
+             order; an option that is not that listing's is `404 variant_not_found` at the cart.
+
              Nothing here reaches a seller or operator surface. The derived caller is a `CUSTOMER` \
              and nothing else.
 
@@ -186,28 +196,11 @@ import java.util.UUID;
 @SecurityRequirements   // documents "no auth" — overrides the global bearerAuth requirement
 public class PublicTestController {
 
-    private static final String EXAMPLE_CART = """
-            {
-              "code": "OK",
-              "message": "Success",
-              "data": {
-                "items": [
-                  {
-                    "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
-                    "title": "Hand-woven sisal basket",
-                    "quantity": 2,
-                    "unitPriceCents": 2499,
-                    "lineTotalCents": 4998,
-                    "issue": null
-                  }
-                ],
-                "lineCount": 1,
-                "totalQuantity": 2,
-                "subtotalCents": 4998,
-                "currency": "USD",
-                "checkoutReady": true
-              }
-            }""";
+    /** The cart twins answer with exactly the authenticated cart's body (they
+     *  call the same {@code CartService}), so they document the same example -
+     *  a size line of the Cotton Crew Tee and a listing without options -
+     *  rather than a hand-kept copy that can drift from the real shape. */
+    private static final String EXAMPLE_CART = CartController.EXAMPLE_CART_200;
 
     private static final String EXAMPLE_DISABLED_404 = """
             {
@@ -288,15 +281,25 @@ public class PublicTestController {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Added; the whole cart comes back",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_CART))),
-            @ApiResponse(responseCode = "404", description = "No such listing, or the surface is off",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
-            @ApiResponse(responseCode = "409", description = "The cart already holds the maximum number of distinct listings")
+            @ApiResponse(responseCode = "400", description = "The listing sells options and no "
+                    + "variantId was sent",
+                    content = @Content(examples = @ExampleObject(
+                            value = CartController.EXAMPLE_VARIANT_REQUIRED_400))),
+            @ApiResponse(responseCode = "404", description = "No such listing, no such option of "
+                    + "it, or the surface is off",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Surface off", value = EXAMPLE_DISABLED_404),
+                            @ExampleObject(name = "Not one of this listing's options",
+                                    value = CartController.EXAMPLE_VARIANT_404)})),
+            @ApiResponse(responseCode = "409", description = "The cart already holds the maximum "
+                    + "number of lines (two options of one listing are two)")
     })
     public ResponseEntity<ApiResult<CartResponse>> addToCart(
             @PathVariable String handle, @Valid @RequestBody CartItemRequest request) {
         AuthenticatedUser buyer = actAs(handle, "cart_add");
         return ResponseEntity.ok(ApiResult.ok(
-                cartService.add(buyer, request.listingId(), request.quantityOrOne())));
+                cartService.add(buyer, request.listingId(), request.variantId(),
+                        request.quantityOrOne())));
     }
 
     @PutMapping("/buyers/{handle}/cart/items/{listingId}")
@@ -306,17 +309,28 @@ public class PublicTestController {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Set; the whole cart comes back",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_CART))),
-            @ApiResponse(responseCode = "400", description = "Above the per-item order limit"),
-            @ApiResponse(responseCode = "404", description = "No such listing, or the surface is off",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404)))
+            @ApiResponse(responseCode = "400", description = "Above the per-item order limit, or "
+                    + "no ?variantId= on a listing that sells options",
+                    content = @Content(examples = @ExampleObject(name = "No option chosen",
+                            value = CartController.EXAMPLE_VARIANT_REQUIRED_400))),
+            @ApiResponse(responseCode = "404", description = "No such listing, no such option of "
+                    + "it, or the surface is off",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Surface off", value = EXAMPLE_DISABLED_404),
+                            @ExampleObject(name = "Not one of this listing's options",
+                                    value = CartController.EXAMPLE_VARIANT_404)}))
     })
     public ResponseEntity<ApiResult<CartResponse>> setCartQuantity(
             @PathVariable String handle,
             @PathVariable UUID listingId,
+            @Parameter(description = "The option this line is for (V19) - required on a listing "
+                    + "with `hasVariants: true`, omitted otherwise",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352")
+            @RequestParam(value = "variantId", required = false) UUID variantId,
             @Valid @RequestBody CartQuantityRequest request) {
         AuthenticatedUser buyer = actAs(handle, "cart_set_quantity");
         return ResponseEntity.ok(ApiResult.ok(
-                cartService.setQuantity(buyer, listingId, request.quantity())));
+                cartService.setQuantity(buyer, listingId, variantId, request.quantity())));
     }
 
     @DeleteMapping("/buyers/{handle}/cart/items/{listingId}")
@@ -325,9 +339,14 @@ public class PublicTestController {
     @ApiResponses(@ApiResponse(responseCode = "200", description = "Removed; the whole cart comes back",
             content = @Content(examples = @ExampleObject(value = EXAMPLE_CART))))
     public ResponseEntity<ApiResult<CartResponse>> removeFromCart(
-            @PathVariable String handle, @PathVariable UUID listingId) {
+            @PathVariable String handle, @PathVariable UUID listingId,
+            @Parameter(description = "The option line to remove (V19). Omit to remove EVERY line "
+                    + "of this listing - the plain one and every option - which is what \"remove "
+                    + "this item\" meant before options existed",
+                    example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352")
+            @RequestParam(value = "variantId", required = false) UUID variantId) {
         AuthenticatedUser buyer = actAs(handle, "cart_remove");
-        return ResponseEntity.ok(ApiResult.ok(cartService.remove(buyer, listingId)));
+        return ResponseEntity.ok(ApiResult.ok(cartService.remove(buyer, listingId, variantId)));
     }
 
     @DeleteMapping("/buyers/{handle}/cart")

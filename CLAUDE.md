@@ -155,11 +155,15 @@ never change either casually.
   `ApiResult` is `@JsonInclude(NON_NULL)`, so every other error body is
   unchanged. Reasons are STRINGS with constants on `OrderLineRejection`, never
   an enum — a client meeting an unrecognised one must render it, not choke.
+  V19 added `VARIANT_REQUIRED` / `VARIANT_UNAVAILABLE`, ranked after every
+  older reason.
 * **Stock is reserved atomically** (`UPDATE listing SET stock_qty = stock_qty
-  - :q WHERE id = :id AND stock_qty >= :q` — check the update count), and
+  - :q WHERE id = :id AND stock_qty >= :q` — check the update count; for a
+  listing with options, the same guarded UPDATE on the OPTION's row), and
   released exactly once (`market_order.stock_released` double-release guard).
-  Prices/totals are computed SERVER-SIDE from listing rows — a client can
-  never supply a price.
+  Every stock statement runs through `catalog/ListingStock` (V19 — see
+  "Product variants" below). Prices/totals are computed SERVER-SIDE from
+  listing rows — a client can never supply a price.
 * **Order state machine**: legal-transitions map (PENDING_PAYMENT →
   PAID/CANCELLED/EXPIRED; terminals immutable); illegal requests are refused
   and counted, never applied; every transition writes a same-tx
@@ -236,7 +240,11 @@ never change either casually.
   `newest` (default) / `price_asc` / `price_desc`; `minPriceCents` +
   `maxPriceCents` are an INCLUSIVE window in minor units; `inStock=true`
   hides listings sitting at `stockQty = 0` (an ACTIVE listing legitimately
-  can); `merchantId` is "more from this seller".
+  can); `merchantId` is "more from this seller". For a listing with options
+  (V19) `priceCents` is its LOWEST option price, so sort and the window work
+  on the "from" price: `price_asc` is exact, `price_desc` orders by from-price,
+  and `minPriceCents` can exclude a listing whose dearer option is in range
+  (accepted; an exact per-option window would need an EXISTS over options).
   * **Every ordering ends with the same total-order tiebreaker**
     (`createdAt DESC, id`). A sort on a non-unique column is only a PARTIAL
     order, and Postgres may return tied rows in a different sequence per
@@ -317,7 +325,10 @@ never change either casually.
 * **Restock events (V6) + LIVE restock alerts**: when `stock_qty` moves
   **0 → >0** (merchant stock update, or an order cancel/expiry returning the
   last held units) the owning tx publishes the in-process `ListingRestocked`
-  event; `favorite/RestockAlertListener` (`AFTER_COMMIT` + `@Async`, never
+  event — since V19 ONLY from `ListingStock`, reading "before" under the
+  listing row lock, and for a listing with options on its TOTAL (no per-option
+  alert: favourites are per listing, and "size M is back" while L had stock
+  all along would be spam); `favorite/RestockAlertListener` (`AFTER_COMMIT` + `@Async`, never
   fires for a rollback, never throws) now DELIVERS: each favoriter is
   notified via `UserNotifyGateway` (user-service owns contact + channel),
   capped per event (default 200, oldest favorite first; overflow logged +
@@ -1219,6 +1230,141 @@ never change either casually.
   `ListingServiceTest`, and `SellerRecordConcurrencyIT` (real concurrent first
   listings and first payout destinations; refused first requests register
   nobody).
+* **Product variants (V19): options with their own stock and price.** A
+  seller of shoes used to make one listing per size, and a buyer could not
+  choose a size on a product page. A listing may now name up to **2** option
+  axes (`listing.option1_name`/`option2_name`, `has_variants` the
+  discriminator) and own up to **50** options (`listing_variant`: values, own
+  stock, optional own price). `ListingResponse` carries `hasVariants`,
+  `options` (axes with their values, for the picker), `variants` and
+  `maxPriceCents`; cart, quote and order lines carry an optional `variantId`.
+  * **Where stock lives.** A listing WITHOUT options keeps `listing.stock_qty`
+    exactly as before, moved by the same guarded deltas. A listing WITH
+    options keeps stock per option; its `listing.stock_qty` is a DERIVED
+    total, **recomputed** (`recomputeStockTotal`, never a delta) under the
+    listing row lock after the transaction's option statements. So every
+    listing-level read — browse `inStock`, card `stockQty`, restock detection,
+    every IT that runs `SELECT stock_qty FROM listing` — works unchanged, a
+    drifted total heals on the next movement, and it can never underflow the
+    CHECK. The guarded option UPDATE is the ONLY oversell guard for an option.
+  * **`catalog/ListingStock` is the one stock mover**: reserve, compensation,
+    returns (cancel/expiry via `stock_released`, parcel decline/buyer cancel
+    via `stock_returned`) and the seller's sets; the only caller of the stock
+    statements and the only publisher of `ListingRestocked`. **Lock rule**: a
+    listing's row before any of its option rows; across listings in
+    `java.util.UUID.compareTo` order, one statement at a time (never an SQL
+    `ORDER BY ... FOR UPDATE` — Java orders UUIDs signed, Postgres unsigned);
+    always `FOR NO KEY UPDATE` so FK inserts into child tables are never
+    blocked. Returns now iterate in the reserve's order; before V19 they did
+    not (item order vs the reserve's sort), a latent deadlock between a release
+    and a reservation. **Returns never throw for a data condition** — a throw
+    would roll back the EXPIRED/CANCELLED/UNFULFILLED transition and wedge the
+    order — so a return with nowhere to go is metered
+    `marketplace.stock.returns_dropped{reason}` (`listing_converted`,
+    `listing_missing`, `variant_removed`, `invariant_broken`) and skipped.
+    Pre-existing and unchanged: `SellerService.suspend`'s set-based
+    deactivation locks rows in scan order and can deadlock with a multi-listing
+    reserve; Postgres aborts one (40P01). Suspend is rare.
+  * **Stock columns are `updatable = false`** on both entities and only native
+    statements move them (see Persistence gotchas). The editor LOCKS the
+    listing row before it loads the entity (`managedListingForUpdate`), so an
+    edit serialises with any order on the listing and "before" is exact.
+  * **The floor rule**: `listing.price_cents` is the listing price and always
+    the LOWEST option price; an option's own price is a surcharge.
+    `VariantSetResolver` refuses an own price below it
+    (`variant_price_below_listing_price`), stores one EQUAL to it as "no own
+    price", and refuses a set where no option sells at it
+    (`listing_price_not_offered`) — also when only `priceCents` changes. That
+    keeps browse sort, the price window, every card and the restock SMS ("...
+    - from USD 19.99 ...") truthful by reading one column. Portal recipe:
+    `priceCents` = the cheapest option; own prices only on dearer ones.
+  * **Text**: names 1..30, values 1..40, HTML stripped, whitespace collapsed;
+    only `,` is refused (it separates lines in item summaries and it is the
+    `option_key` separator — `lower(v1) || ',' || lower(v2)`, the ONE
+    definition of "the same option", unique per listing and
+    `DEFERRABLE INITIALLY DEFERRED` so a rename or swap is checked at commit).
+    `/` is fine ("Navy/White", "6/128GB"). Labels are "M" / "M - Black";
+    text surfaces render "Title (M - Black)" via `MarketOrderItem.displayTitle`
+    — byte-identical to before for a line without an option.
+  * **The editor**: `options` + `variants` on create/update/multipart. On
+    update `variants` is the SECOND omit-keeps field (null keeps, `[]` removes
+    every option and needs `stockQty`, a list REPLACES). Identity: an entry's
+    `id` keeps that option (400 `unknown_variant` if not this listing's), an
+    id-less entry keeps the existing option with the same values, the rest are
+    new, and unclaimed options are removed. A kept entry that omits
+    `stockQty` keeps its stock — and the reservations riding on it.
+    `stockQty` is no longer `@NotNull`: required only for a listing without
+    options (400 `stock_required`), ignored with them. `PATCH
+    /marketplace/listings/{id}/variants/{variantId}/stock` is the one-size
+    quick restock. Keeping an id while changing its values re-points every
+    shopper's cart line — for typo fixes; a different size is a new entry.
+  * **The cart keeps option lines in a SIBLING table** (`cart_variant_item`,
+    PK `(buyer_uuid, variant_id)`), not a changed `cart_item`: swapping
+    `cart_item`'s key would take the `ON CONFLICT (buyer_uuid, listing_id)`
+    arbiter away from the previous image while it still serves during the
+    rolling restart (every cart write 500s) and again after any rollback. The
+    read merges both (each table's order kept when only one has rows),
+    `cart_full` counts LINES across both (two sizes are two), `DELETE
+    .../items/{listingId}` without `?variantId=` keeps its old meaning — every
+    line of that listing — and `variant_id` has no FK, so a removed option
+    stays visible as `VARIANT_UNAVAILABLE` rather than vanishing.
+  * **Line issues**: `VARIANT_REQUIRED` (a listing with options, no option
+    named — 400 `variant_required` at cart add, 422 at order) and
+    `VARIANT_UNAVAILABLE` (missing / another listing's / named on a listing
+    without options — 404 `variant_not_found` at cart add, 422 at order). Both
+    keep the line's listing (V18 needs the seller) and rank LAST in
+    `refusalFor`, so every older refusal stays byte-identical; the stock
+    tie-break is (listing, option with plain first) — the reserve's order.
+    `PricedLineResponse.unitPriceCents` is the line's own price (the listing's
+    `priceCents` is only the from-price).
+  * **Orders snapshot the option** (`market_order_item.variant_id` +
+    `variant_label`, no FK, both-or-neither CHECK); `listing_id` stays the
+    PARENT, which the review gate, restock and reports key on.
+    `OrderResponse.Line`'s two new keys are component-level NON_NULL, as are
+    the request `Item.variantId`s, so a line without an option — and a stored
+    idempotency body, and a request fingerprint — is byte-identical to before.
+  * **Conversions drop in-flight units, by design**: plain → options, options
+    → plain (`[]`), or removing an option makes a later return of units
+    reserved under the old shape credit nothing (metered, as above); the
+    seller's new counts are the truth. A PAID order still ships from its
+    snapshot.
+  * **`marketplace.listing.variants-enabled`** (`MARKETPLACE_VARIANTS_ENABLED`,
+    default **false**) gates only the move INTO options (a create with them,
+    or converting a listing) — 422 `variants_disabled`. While it is off no
+    listing with options can exist, which is what makes the rolling restart
+    and a rollback to a pre-V19 image safe. Production stays off until the
+    super-app picker and the portal editor ship; staging turns it on the way
+    `MARKETPLACE_PUBLIC_TEST_*` is set. **Rollback after options exist**: roll
+    forward if at all possible; otherwise first `UPDATE listing SET
+    status='INACTIVE' WHERE has_variants AND status='ACTIVE' RETURNING id`
+    (the old image cannot see options and would sell them sizeless), and after
+    rolling forward recompute totals (below) and re-activate those ids.
+  * **Drift is reported, never repaired**: `VariantStockDriftSweeper` (daily,
+    ShedLock) sets the gauge `marketplace.stock.aggregate_drift` (0 from boot)
+    from `ListingRepository.findStockDrift`. Only an out-of-band write can
+    cause one; any later movement heals it, or `UPDATE listing l SET
+    stock_qty = (SELECT COALESCE(SUM(v.stock_qty),0) FROM listing_variant v
+    WHERE v.listing_id = l.id) WHERE l.has_variants`.
+  * **Option text is normalised on UNICODE whitespace** (`(?U)\s+`, then
+    `strip()`). With ASCII `\s` a value pasted with a non-breaking space kept
+    it: identical on screen to "M", a different `option_key`, so it slipped
+    past the duplicate check and, on a replace, failed to match the existing
+    "M" and deleted it.
+  * **The editor checks ownership BEFORE the row lock**, off the lock-free
+    `ListingRepository.merchantIdOf` (a listing's seller never changes).
+    Locking first let any merchant stall a competitor's orders by editing
+    their listing id until their own 403 rolled back.
+  * Pinned by `VariantSetResolverTest`, `VariantLabelsTest`,
+    `ListingStockTest`, `ParcelStockReturnerTest`, `VariantWireCompatTest`,
+    `ListingViewAssemblerTest`, the option cases in `CheckoutPricerTest` /
+    `CartServiceTest` / `OrderServiceTest` / `ListingServiceTest`, and against
+    real Postgres by `V19MigrationIT` (the old image's SQL replayed on the V19
+    schema), `VariantStockFlowIT`, `VariantConcurrencyIT` (the lock order under
+    opposite line orders plus a concurrent cancel, and the last unit of one
+    option sold exactly once), `VariantSchemaIT`, `VariantConversionIT`,
+    `VariantStockDriftSweeperIT` (through the ShedLock proxy) and the option
+    cases in `NotificationFlowIT`, `CatalogTaxonomyBrowseIT`, `ReviewFlowIT`
+    and the public-test ITs.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling
@@ -1354,7 +1500,13 @@ never change either casually.
     (`buyer_uuid = v5(phone) → userUuid`) the first time an authenticated
     session with that phone claim touches this service. That is the follow-up
     that makes cut-over seamless; do not fake it by handing this rail v4 ids.
-    Demo-handle data never carries over, by design.
+    Demo-handle data never carries over, by design. **The re-key list includes
+    `cart_variant_item`** (V19) beside `cart_item` — a basket with sizes in it
+    is two tables.
+  * **Options ride this surface unchanged (V19)**: the cart twins take the
+    same optional `?variantId=` on PUT/DELETE and `variantId` in the POST
+    body, and the quote/order bodies carry it per line — no new public
+    endpoint.
   * `marketplace.public-test.enabled` / `.api-key`
     (`MARKETPLACE_PUBLIC_TEST_*`). Boot says which of off / ungated / gated a
     cell is in, and logs an **ERROR** when it is on under a deployment profile.
@@ -1524,13 +1676,27 @@ beans, real Postgres + security chain).
   low-entropy secrets, never bare hashes).
 * JPA entities use manually-assigned UUID ids + `@Version` optimistic
   locking; stock movements bypass the entity (bulk `@Modifying` update) —
-  never read-modify-write stock through the entity.
+  never read-modify-write stock through the entity. Since V19 the stock
+  columns (`listing.stock_qty`, `listing_variant.stock_qty`) are
+  `updatable = false`, so an entity save CANNOT write stock at all — before
+  V19 an image upload's `touch`, a status change or a moderation takedown
+  saved whatever stock the entity was loaded with and silently undid a
+  reservation made in between.
 
 ## Tests
 
 * Unit tests (`*Test`) run with Surefire, no Docker.
 * Integration tests (`*IT`) run with Failsafe during `verify` and use the
   shared Postgres Testcontainer — they need Docker (CI has it).
+* **A `@SchedulerLock` method must return `void`** (or a boxed type).
+  `@EnableSchedulerLock` runs in ShedLock's default `PROXY_METHOD` mode, which
+  refuses a method returning a primitive with `LockingNotSupportedException`
+  BEFORE the body runs. The scheduler logs and swallows it, so the job simply
+  never happens. V19's `VariantStockDriftSweeper` first shipped as `int
+  sweep()`, which left its drift gauge at 0 forever. A unit test over a
+  `new`-built sweeper skips the proxy and stays green through that bug:
+  drive a sweeper through its Spring bean at least once
+  (`VariantStockDriftSweeperIT`).
 * Every future external-HTTP client MUST get a standalone-WireMock contract
   test per the fleet convention.
 

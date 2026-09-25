@@ -40,6 +40,29 @@ class OrderNotificationComposerTest {
                 .build();
     }
 
+    /** An order line for one OPTION of a listing (V19), labelled as the
+     *  order snapshotted it. */
+    private MarketOrderItem optionItem(String title, String label, int quantity,
+                                       long lineTotalCents) {
+        MarketOrderItem item = item(title, quantity, lineTotalCents);
+        item.setVariantId(UUID.randomUUID());
+        item.setVariantLabel(label);
+        return item;
+    }
+
+    /** A listing that sells options: its price is the lowest option's. */
+    private Listing optionListing() {
+        Listing listing = new Listing();
+        listing.setId(UUID.randomUUID());
+        listing.setTitle("Cotton Crew Tee");
+        listing.setPriceCents(1999);
+        listing.setCurrency("USD");
+        listing.setHasVariants(true);
+        listing.setOption1Name("Size");
+        listing.setOption2Name("Colour");
+        return listing;
+    }
+
     @Test
     @DisplayName("buyer order-paid SMS: exact wording, total in major units")
     void buyerOrderPaidMessage_exactWording() {
@@ -80,6 +103,26 @@ class OrderNotificationComposerTest {
                 .isEqualTo("Back in stock. Solar Lantern 20W - USD 15.50 on InnBucks Marketplace");
         assertThat(OrderNotificationComposer.restockSubject())
                 .isEqualTo("Back in stock on InnBucks Marketplace");
+    }
+
+    @Test
+    @DisplayName("merchant message names the option a line was bought in, beside the title")
+    void merchantOrderMessage_namesTheOption() {
+        String message = OrderNotificationComposer.merchantOrderMessage(REF,
+                List.of(optionItem("Cotton Crew Tee", "XL - Black", 1, 2299),
+                        item("Solar Lantern 20W", 2, 3100)), "USD");
+        // The seller packs "XL - Black", not just "a tee"; a line without an
+        // option reads exactly as it did before options existed.
+        assertThat(message).isEqualTo("New paid order MKT-4F2A9C1B77D0. "
+                + "1 x Cotton Crew Tee (XL - Black), 2 x Solar Lantern 20W - USD 53.99");
+    }
+
+    @Test
+    @DisplayName("restock alert for a listing with options says 'from', because its price is "
+            + "the lowest option's")
+    void restockMessage_optionListingSaysFrom() {
+        assertThat(OrderNotificationComposer.restockMessage(optionListing()))
+                .isEqualTo("Back in stock. Cotton Crew Tee - from USD 19.99 on InnBucks Marketplace");
     }
 
     @Test
@@ -271,8 +314,14 @@ class OrderNotificationComposerTest {
                 OrderNotificationComposer.merchantOrderSubject(REF),
                 OrderNotificationComposer.merchantOrderMessage(REF,
                         List.of(item("Solar Lantern", 2, 5198), item("Garden Hose", 1, 2599)), "USD"),
+                // V19: an option line's " (" + label + ")" joiners and the
+                // "from" restock copy are fixed text, so they are pinned too.
+                OrderNotificationComposer.merchantOrderMessage(REF,
+                        List.of(optionItem("Cotton Crew Tee", "XL - Black", 1, 2299),
+                                item("Solar Lantern 20W", 2, 3100)), "USD"),
                 OrderNotificationComposer.restockSubject(),
                 OrderNotificationComposer.restockMessage(listing),
+                OrderNotificationComposer.restockMessage(optionListing()),
                 OrderNotificationComposer.giftSubject(),
                 // The buyer's own note is user text, sanitized by the SMS
                 // client on the way out; what is pinned here is the template

@@ -291,6 +291,43 @@ class ParcelTrackingServiceTest {
         assertThat(page.getValue().getPageSize()).isEqualTo(100);
     }
 
+    @Test
+    @DisplayName("The run names the option to hand over beside a bare title; a plain line carries none")
+    void runNamesTheOptionToHandOver() throws Exception {
+        MarketOrder order = order(DeliveryMethod.DELIVERY);
+        OrderFulfilment parcel = parcel(ORG, FulfilmentStatus.DISPATCHED);
+        when(fulfilmentRepository.findRun(eq(ORG), eq(FulfilmentStatus.DISPATCHED),
+                eq(DeliveryMethod.DELIVERY), any())).thenReturn(List.of(parcel));
+        when(orderRepository.findAllById(any())).thenReturn(List.of(order));
+        when(itemRepository.findByOrderIdIn(any())).thenReturn(List.of(
+                MarketOrderItem.builder().id(UUID.randomUUID()).orderId(ORDER_ID)
+                        .listingId(UUID.randomUUID()).merchantId(ORG)
+                        .titleSnapshot("Cotton Crew Tee").unitPriceCents(2299)
+                        .quantity(1).lineTotalCents(2299)
+                        .variantId(UUID.randomUUID()).variantLabel("XL - Black").build(),
+                MarketOrderItem.builder().id(UUID.randomUUID()).orderId(ORDER_ID)
+                        .listingId(UUID.randomUUID()).merchantId(ORG)
+                        .titleSnapshot("Wireless Bluetooth Speaker").unitPriceCents(2399)
+                        .quantity(2).lineTotalCents(4798).build()));
+
+        List<CourierParcelResponse.Item> items =
+                service.courierRun(DRIVER, 0, 20).getFirst().items();
+
+        // The driver hands over "XL - Black", not whichever tee is on top; the
+        // title is still the bare snapshot, so the two are never re-parsed.
+        assertThat(items).containsExactly(
+                new CourierParcelResponse.Item("Cotton Crew Tee", 1, "XL - Black"),
+                new CourierParcelResponse.Item("Wireless Bluetooth Speaker", 2));
+        // A plain line serialises exactly as before V19: no variantLabel key.
+        com.fasterxml.jackson.databind.ObjectMapper json =
+                new com.fasterxml.jackson.databind.ObjectMapper();
+        assertThat(json.writeValueAsString(items.get(1)))
+                .isEqualTo("{\"title\":\"Wireless Bluetooth Speaker\",\"quantity\":2}");
+        assertThat(json.writeValueAsString(items.get(0)))
+                .isEqualTo("{\"title\":\"Cotton Crew Tee\",\"quantity\":1,"
+                        + "\"variantLabel\":\"XL - Black\"}");
+    }
+
     // ------------------------------------------------------------------
     // The buyer's screen
     // ------------------------------------------------------------------

@@ -81,6 +81,17 @@ marketplace:
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}
+    # V19 product options (sizes, colours). OFF by default and on production
+    # until the super app ships an option picker: it gates only the move INTO
+    # options (creating a listing with them, or converting one), so while it
+    # is off no listing with options can exist - which is also what keeps a
+    # rolling restart and an image rollback safe. Editing an existing listing
+    # with options, and dropping its options, stay allowed. Turn it on per
+    # cell (staging) the way MARKETPLACE_PUBLIC_TEST_* is set, then restart.
+    variants-enabled: ${MARKETPLACE_VARIANTS_ENABLED:false}
+    # At most this many options per listing (every option rides every card of
+    # the listing, so this bounds the page payload).
+    max-variants: ${MARKETPLACE_LISTING_MAX_VARIANTS:50}
   public-test:
     # Unauthenticated PRE-CHECKOUT surface at /marketplace/public/**, for
     # building the super app before POST /auth/exchange is switched on. The
@@ -192,6 +203,9 @@ marketplace:
     # counter longer than fulfilment.collection-overdue-days. Daily, before
     # the working day starts.
     collection-overdue-cron: ${MARKETPLACE_COLLECTION_OVERDUE_CRON:0 0 5 * * *}
+    # V19: reports (never repairs) listings whose stock total disagrees with
+    # their options - only an out-of-band write can cause one. Daily.
+    variant-stock-drift-cron: ${MARKETPLACE_VARIANT_STOCK_DRIFT_CRON:0 17 3 * * *}
     # Nightly tamper-evidence walk over the audit chain.
     audit-verify-cron: ${MARKETPLACE_AUDIT_VERIFY_CRON:0 30 3 * * *}
   audit:

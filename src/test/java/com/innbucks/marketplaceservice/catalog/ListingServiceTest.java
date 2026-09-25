@@ -6,13 +6,19 @@ import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
 import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFee;
 import com.innbucks.marketplaceservice.catalog.dto.ListingCreateRequest;
+import com.innbucks.marketplaceservice.catalog.dto.ListingOptionResponse;
+import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
+import com.innbucks.marketplaceservice.catalog.dto.ListingVariantResponse;
+import com.innbucks.marketplaceservice.catalog.dto.VariantRequest;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.support.TestTowns;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -37,6 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -55,7 +62,12 @@ import static org.mockito.Mockito.when;
  * before storage, the stored currency is ALWAYS the cell currency, the
  * category code is validated against the taxonomy table, and the V3 gallery
  * invariant (one primary whenever any images exist; publish gate on ACTIVE)
- * is preserved by every image mutation.
+ * is preserved by every image mutation. V19: the options editor (create,
+ * keep / convert / replace on update, the per-cell switch, the floor rule on a
+ * price change, the one-option quick restock) runs through the REAL
+ * {@link ListingStock} and option planner over a small fake of the native
+ * stock statements, so the row lock, the recompute and the restock event are
+ * exercised as they run on Postgres.
  */
 class ListingServiceTest {
 
@@ -69,6 +81,8 @@ class ListingServiceTest {
             MERCHANT_ID.toString(), SHOP_ID.toString(), null, "ZW");
 
     private ListingRepository listingRepository;
+    private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private com.innbucks.marketplaceservice.seller.SellerService sellerService;
     private ListingImageRepository listingImageRepository;
     private CategoryRepository categoryRepository;
@@ -93,16 +107,135 @@ class ListingServiceTest {
         // returns true for an absent row), which is the pre-V8 behaviour these
         // existing cases were written against.
         when(sellerService.canPublish(any())).thenReturn(true);
-        service = new ListingService(listingRepository, listingImageRepository,
+        variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
+        eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        stockFake();
+        service = newService(true);
+    }
+
+    /**
+     * The service as a cell wires it, with the REAL stock mover and option
+     * planner over the mocked repositories, and the per-cell
+     * {@code marketplace.listing.variants-enabled} switch as given.
+     */
+    private ListingService newService(boolean variantsEnabled) {
+        ListingStock listingStock = new ListingStock(listingRepository, variantRepository,
+                eventPublisher, new MarketplaceMetrics(registry));
+        return new ListingService(listingRepository, listingImageRepository,
                 sellerService,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
                         deliveryTownRepository, TestTowns.zimbabwe(),
-                        mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class)),
+                        mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                        variantRepository),
                 auditService, new MarketplaceMetrics(registry),
-                mock(org.springframework.context.ApplicationEventPublisher.class),
                 deliveryTownRepository, TestTowns.zimbabwe(),
+                listingStock,
+                new com.innbucks.marketplaceservice.catalog.variant.ListingVariantService(
+                        variantRepository, listingStock, variantsEnabled, 50),
                 "USD", MAX_PER_MERCHANT);
+    }
+
+    /** Current stock per listing, as the native statements see it. */
+    private final java.util.Map<UUID, Integer> stock = new java.util.HashMap<>();
+
+    /** V19 {@code listing_variant}: the option rows (the managed entities, by
+     *  id) and, separately, what their {@code stock_qty} column holds — the
+     *  column is not updatable through the entity, so the two can differ. */
+    private final java.util.Map<UUID, ListingVariant> optionRows = new java.util.LinkedHashMap<>();
+    private final java.util.Map<UUID, Integer> optionStock = new java.util.HashMap<>();
+
+    /**
+     * A small stand-in for the native stock statements: the row lock reads the
+     * stock this map holds (10, the {@link #owned} fixture's, when unset), the
+     * plain set writes it, and the after-read returns it. Enough for the
+     * update path's lock -> set -> settle to behave as it does on Postgres.
+     *
+     * <p>V19: the option statements too. An option's set writes only its
+     * column, an INSERT (saveAll of a new row) carries the entity's stock, a
+     * delete removes the row, and the recompute sets the listing's total to
+     * the sum of its option rows (0 rows updated when the listing has none —
+     * the {@code has_variants = TRUE} guard).
+     */
+    private void stockFake() {
+        when(listingRepository.lockForStock(any())).thenAnswer(inv -> {
+            UUID id = inv.getArgument(0);
+            return stockRow(stock.getOrDefault(id, 10), !optionsOf(id).isEmpty());
+        });
+        when(listingRepository.setPlainStock(any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenAnswer(inv -> {
+                    stock.put(inv.getArgument(0), inv.getArgument(1));
+                    return 1;
+                });
+        when(listingRepository.stockQtyOf(any())).thenAnswer(inv ->
+                stock.getOrDefault(inv.<UUID>getArgument(0), 10));
+        // The lock-free seller read the editor checks ownership with, BEFORE
+        // the lock: the seller of whatever findById is stubbed to return.
+        when(listingRepository.merchantIdOf(any())).thenAnswer(inv ->
+                listingRepository.findById(inv.<UUID>getArgument(0))
+                        .map(Listing::getMerchantId).orElse(null));
+        when(listingRepository.recomputeStockTotal(any())).thenAnswer(inv -> {
+            UUID id = inv.getArgument(0);
+            List<ListingVariant> rows = optionsOf(id);
+            if (rows.isEmpty()) {
+                return 0;
+            }
+            stock.put(id, rows.stream().mapToInt(row -> optionStock.get(row.getId())).sum());
+            return 1;
+        });
+        when(variantRepository.setStock(any(), any(), anyInt(), any()))
+                .thenAnswer(inv -> {
+                    ListingVariant row = optionRows.get(inv.<UUID>getArgument(0));
+                    if (row == null || !row.getListingId().equals(inv.getArgument(1))) {
+                        return 0;
+                    }
+                    optionStock.put(row.getId(), inv.getArgument(2));
+                    return 1;
+                });
+        when(variantRepository.saveAll(any())).thenAnswer(inv -> {
+            List<ListingVariant> saved = new java.util.ArrayList<>();
+            for (ListingVariant row : inv.<Iterable<ListingVariant>>getArgument(0)) {
+                optionRows.put(row.getId(), row);
+                optionStock.putIfAbsent(row.getId(), row.getStockQty());
+                saved.add(row);
+            }
+            return saved;
+        });
+        org.mockito.Mockito.doAnswer(inv -> {
+            for (ListingVariant row : inv.<Iterable<ListingVariant>>getArgument(0)) {
+                optionRows.remove(row.getId());
+                optionStock.remove(row.getId());
+            }
+            return null;
+        }).when(variantRepository).deleteAll(any());
+        when(variantRepository.findByListingIdOrderByPositionAsc(any()))
+                .thenAnswer(inv -> optionsOf(inv.getArgument(0)));
+    }
+
+    private List<ListingVariant> optionsOf(UUID listingId) {
+        return optionRows.values().stream()
+                .filter(row -> row.getListingId().equals(listingId))
+                .sorted(java.util.Comparator.comparingInt(ListingVariant::getPosition))
+                .toList();
+    }
+
+    static StockRow stockRow(int qty, boolean hasVariants) {
+        return new StockRow() {
+            @Override
+            public String getStatus() {
+                return "ACTIVE";
+            }
+
+            @Override
+            public Boolean getHasVariants() {
+                return hasVariants;
+            }
+
+            @Override
+            public Integer getStockQty() {
+                return qty;
+            }
+        };
     }
 
     private static ListingCreateRequest createReq(String title, String description,
@@ -420,6 +553,9 @@ class ListingServiceTest {
         assertEquals(HttpStatus.FORBIDDEN, ex.status());
         assertEquals("listing_not_owned", ex.code());
         verify(listingRepository, never()).save(any());
+        // Refused BEFORE the row lock: a merchant must not be able to stall a
+        // competitor's orders by editing their listing id.
+        verify(listingRepository, never()).lockForStock(any());
     }
 
     @Test
@@ -1208,5 +1344,609 @@ class ListingServiceTest {
         order.verify(deliveryTownRepository).deleteByListingId(listingId);
         // The empty list wrote nothing back: the listing is collection-only now.
         verify(deliveryTownRepository).saveAll(any());
+    }
+
+    // ------------------------------------------------------------------
+    // Product variants (V19): the editor's options, their stock and price
+    // ------------------------------------------------------------------
+
+    /** The Swagger "Cotton Crew Tee" and its options. */
+    private static final UUID TEE = UUID.fromString("e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41");
+    private static final UUID M_BLACK = UUID.fromString("0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352");
+    private static final UUID L_BLACK = UUID.fromString("1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463");
+    private static final UUID XL_BLACK = UUID.fromString("2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574");
+    private static final List<String> SIZE_COLOUR = List.of("Size", "Colour");
+
+    /** A Black option of the given size, found by its values on a replace. */
+    private static VariantRequest option(String size, Long priceCents, Integer stockQty) {
+        return new VariantRequest(null, List.of(size, "Black"), priceCents, stockQty);
+    }
+
+    /** A Black option that names the existing option it keeps. */
+    private static VariantRequest option(UUID id, String size, Long priceCents, Integer stockQty) {
+        return new VariantRequest(id, List.of(size, "Black"), priceCents, stockQty);
+    }
+
+    private static ListingCreateRequest createTee(Integer stockQty, List<String> options,
+                                                  List<VariantRequest> variants) {
+        return new ListingCreateRequest("Cotton Crew Tee", "100% cotton, pre-shrunk", null,
+                null, null, null, 1999L, stockQty, null, null, options, variants);
+    }
+
+    private static ListingUpdateRequest updateTee(long priceCents, Integer stockQty,
+                                                  List<String> options, List<VariantRequest> variants) {
+        return new ListingUpdateRequest("Cotton Crew Tee", "100% cotton, pre-shrunk", null,
+                null, null, null, priceCents, stockQty, null, options, variants);
+    }
+
+    /**
+     * The Tee as the database holds it: priced 19.99, options M/Black (4),
+     * L/Black (0) and XL/Black at 22.99 (6), so a total of 10 on the listing
+     * row. Loadable by id.
+     */
+    private Listing seedTee() {
+        Listing tee = owned(TEE);
+        tee.setTitle("Cotton Crew Tee");
+        tee.setPriceCents(1999);
+        tee.setHasVariants(true);
+        tee.setOption1Name("Size");
+        tee.setOption2Name("Colour");
+        tee.setStockQty(10);
+        seedOption(TEE, M_BLACK, "M", null, 4, 0);
+        seedOption(TEE, L_BLACK, "L", null, 0, 1);
+        seedOption(TEE, XL_BLACK, "XL", 2299L, 6, 2);
+        stock.put(TEE, 10);
+        when(listingRepository.findById(TEE)).thenReturn(Optional.of(tee));
+        return tee;
+    }
+
+    private ListingVariant seedOption(UUID listingId, UUID id, String size, Long priceCents,
+                                      int stockQty, int position) {
+        Instant created = Instant.parse("2026-09-20T08:00:00Z");
+        ListingVariant row = ListingVariant.builder()
+                .id(id).listingId(listingId).priceCents(priceCents).stockQty(stockQty)
+                .position(position).createdAt(created).updatedAt(created).version(0L)
+                .build();
+        row.setValues(size, "Black");
+        optionRows.put(id, row);
+        optionStock.put(id, stockQty);
+        return row;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> auditMetadata(AuditEventType type) {
+        ArgumentCaptor<Map<String, Object>> meta = ArgumentCaptor.forClass(Map.class);
+        verify(auditService).record(eq(type), eq(MERCHANT.uuid()), anyString(), meta.capture());
+        return meta.getValue();
+    }
+
+    private static List<String> labels(ListingResponse response) {
+        return response.variants().stream().map(ListingVariantResponse::label).toList();
+    }
+
+    // ---- create -------------------------------------------------------
+
+    @Test
+    @DisplayName("A listing created with options stores its axes, starts at the sum of their stock "
+            + "and inserts the options after the listing row")
+    @SuppressWarnings("unchecked")
+    void createWithOptionsStoresTheAxesAndTheirSum() {
+        // stockQty 120 in the body is ignored: a listing with options takes
+        // its stock from them.
+        ListingResponse response = service.create(MERCHANT, createTee(120, SIZE_COLOUR, List.of(
+                option("M", null, 4), option("L", null, 0), option("XL", 2299L, 6))));
+
+        ArgumentCaptor<Listing> saved = ArgumentCaptor.forClass(Listing.class);
+        verify(listingRepository).save(saved.capture());
+        Listing listing = saved.getValue();
+        assertTrue(listing.isHasVariants());
+        assertEquals("Size", listing.getOption1Name());
+        assertEquals("Colour", listing.getOption2Name());
+        assertEquals(1999L, listing.getPriceCents());
+        assertEquals(10, listing.getStockQty());
+
+        // The options reference the listing row, so they are written after it.
+        InOrder order = inOrder(listingRepository, variantRepository);
+        order.verify(listingRepository).save(listing);
+        ArgumentCaptor<List<ListingVariant>> rows = ArgumentCaptor.forClass(List.class);
+        order.verify(variantRepository).saveAll(rows.capture());
+        List<ListingVariant> options = rows.getValue();
+        assertEquals(List.of("M - Black", "L - Black", "XL - Black"),
+                options.stream().map(ListingVariant::label).toList());
+        assertEquals(List.of("m,black", "l,black", "xl,black"),
+                options.stream().map(ListingVariant::getOptionKey).toList());
+        assertEquals(java.util.Arrays.asList(null, null, 2299L),
+                options.stream().map(ListingVariant::getPriceCents).toList());
+        assertEquals(List.of(4, 0, 6), options.stream().map(ListingVariant::getStockQty).toList());
+        assertEquals(List.of(0, 1, 2), options.stream().map(ListingVariant::getPosition).toList());
+        assertTrue(options.stream().allMatch(row -> listing.getId().equals(row.getListingId())));
+        // Inserted consistent: nothing to recompute, and a create announces no restock.
+        verify(listingRepository, never()).recomputeStockTotal(any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
+
+        Map<String, Object> audit = auditMetadata(AuditEventType.LISTING_CREATED);
+        assertEquals(3, audit.get("variantCount"));
+        assertEquals(10, audit.get("stockQty"));
+
+        assertTrue(response.hasVariants());
+        assertEquals(10, response.stockQty());
+        assertEquals(2299L, response.maxPriceCents());
+        assertEquals(List.of(new ListingOptionResponse("Size", List.of("M", "L", "XL")),
+                new ListingOptionResponse("Colour", List.of("Black"))), response.options());
+        assertEquals(List.of("M - Black", "L - Black", "XL - Black"), labels(response));
+    }
+
+    @Test
+    @DisplayName("With the cell switch off, a create with options is 422 variants_disabled and "
+            + "writes nothing, while a create without options still works")
+    void createWithOptionsWhileTheSwitchIsOffIs422() {
+        ListingService off = newService(false);
+
+        ApiException ex = assertThrows(ApiException.class, () -> off.create(MERCHANT,
+                createTee(null, SIZE_COLOUR, List.of(option("M", null, 4)))));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("variants_disabled", ex.code());
+        assertEquals("Product options are not available on this marketplace yet", ex.getMessage());
+        verify(listingRepository, never()).save(any());
+        verify(variantRepository, never()).saveAll(any());
+        // Refused before the seller record is ensured, like every other create refusal.
+        verify(sellerService, never()).ensureExists(any());
+
+        // The switch gates only the move INTO options.
+        off.create(MERCHANT, createReq("Solar Lantern", null, null));
+        verify(listingRepository).save(any());
+    }
+
+    @Test
+    @DisplayName("A create without options needs stockQty: null variants and an empty list are "
+            + "both 400 stock_required")
+    void createWithoutOptionsOrStockIs400StockRequired() {
+        for (List<VariantRequest> none : java.util.Arrays.asList(null, List.<VariantRequest>of())) {
+            ApiException ex = assertThrows(ApiException.class,
+                    () -> service.create(MERCHANT, createTee(null, null, none)));
+
+            assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+            assertEquals("stock_required", ex.code());
+            assertEquals("stockQty is required for a listing without variants", ex.getMessage());
+        }
+        verify(listingRepository, never()).save(any());
+        verify(sellerService, never()).ensureExists(any());
+    }
+
+    @Test
+    @DisplayName("options without variants is 400 options_without_variants, never silently dropped")
+    void optionsWithoutVariantsIs400() {
+        for (List<VariantRequest> none : java.util.Arrays.asList(null, List.<VariantRequest>of())) {
+            ApiException ex = assertThrows(ApiException.class,
+                    () -> service.create(MERCHANT, createTee(5, List.of("Size"), none)));
+
+            assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+            assertEquals("options_without_variants", ex.code());
+            assertEquals("options can only be sent together with variants", ex.getMessage());
+        }
+        verify(listingRepository, never()).save(any());
+    }
+
+    // ---- update -------------------------------------------------------
+
+    @Test
+    @DisplayName("Update with variants null KEEPS the options: no option write, stockQty ignored "
+            + "(and not required), and the response carries the total the database holds")
+    void updateWithVariantsNullKeepsTheOptions() {
+        Listing tee = seedTee();
+        // A stale in-memory total: the response must show what the recompute read back.
+        tee.setStockQty(99);
+
+        ListingResponse response = service.update(MERCHANT, TEE, updateTee(1999L, 500, null, null));
+        service.update(MERCHANT, TEE, updateTee(1999L, null, null, null));
+
+        verify(variantRepository, never()).saveAll(any());
+        verify(variantRepository, never()).deleteAll(any());
+        verify(variantRepository, never()).setStock(any(), any(), anyInt(), any());
+        verify(listingRepository, never()).setPlainStock(any(), anyInt());
+        assertTrue(tee.isHasVariants());
+        assertEquals("Size", tee.getOption1Name());
+        assertEquals("Colour", tee.getOption2Name());
+        assertEquals(10, tee.getStockQty());
+        assertEquals(10, response.stockQty());
+        assertEquals(List.of("M - Black", "L - Black", "XL - Black"), labels(response));
+        assertEquals(List.of(4, 0, 6), List.of(optionStock.get(M_BLACK), optionStock.get(L_BLACK),
+                optionStock.get(XL_BLACK)));
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> meta = ArgumentCaptor.forClass(Map.class);
+        verify(auditService, times(2)).record(eq(AuditEventType.LISTING_UPDATED),
+                eq(MERCHANT.uuid()), eq(TEE.toString()), meta.capture());
+        assertEquals(false, meta.getAllValues().get(0).get("variantsChanged"));
+        assertEquals(3, meta.getAllValues().get(0).get("variantCount"));
+        assertEquals(10, meta.getAllValues().get(0).get("stockQty"));
+    }
+
+    @Test
+    @DisplayName("Update with variants [] and no stockQty is 400 stock_required and leaves the "
+            + "options untouched")
+    void removingEveryOptionWithoutStockIs400() {
+        Listing tee = seedTee();
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.update(MERCHANT, TEE, updateTee(1999L, null, null, List.of())));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("stock_required", ex.code());
+        assertTrue(tee.isHasVariants());
+        verify(listingRepository, never()).save(any());
+        verify(variantRepository, never()).deleteAll(any());
+        verify(listingRepository, never()).setPlainStock(any(), anyInt());
+        assertEquals(3, optionsOf(TEE).size());
+    }
+
+    @Test
+    @DisplayName("Update with variants [] converts to a listing without options: every option "
+            + "deleted, the axes cleared, and stockQty set as the plain stock")
+    @SuppressWarnings("unchecked")
+    void removingEveryOptionConvertsToPlain() {
+        Listing tee = seedTee();
+
+        ListingResponse response = service.update(MERCHANT, TEE, updateTee(1999L, 7, null, List.of()));
+
+        assertFalse(tee.isHasVariants());
+        assertNull(tee.getOption1Name());
+        assertNull(tee.getOption2Name());
+        // The flag is saved first, so the guarded plain set (has_variants = FALSE) applies.
+        InOrder order = inOrder(listingRepository, variantRepository);
+        order.verify(listingRepository).save(tee);
+        ArgumentCaptor<List<ListingVariant>> removed = ArgumentCaptor.forClass(List.class);
+        order.verify(variantRepository).deleteAll(removed.capture());
+        order.verify(listingRepository).setPlainStock(TEE, 7);
+        assertEquals(List.of(M_BLACK, L_BLACK, XL_BLACK),
+                removed.getValue().stream().map(ListingVariant::getId).toList());
+        verify(listingRepository, never()).recomputeStockTotal(any());
+
+        assertEquals(7, tee.getStockQty());
+        assertEquals(7, response.stockQty());
+        assertFalse(response.hasVariants());
+        assertEquals(List.of(), response.options());
+        assertEquals(List.of(), response.variants());
+        assertEquals(1999L, response.maxPriceCents());
+        Map<String, Object> audit = auditMetadata(AuditEventType.LISTING_UPDATED);
+        assertEquals(true, audit.get("variantsChanged"));
+        assertEquals(0, audit.get("variantCount"));
+    }
+
+    @Test
+    @DisplayName("A replace keeps options by id and by values, deletes exactly the unclaimed ones, "
+            + "sets stock only where it was sent, and inserts the new ones")
+    @SuppressWarnings("unchecked")
+    void aReplaceKeepsByIdAndByValuesAndDeletesTheRest() {
+        seedTee();
+        ListingVariant m = optionRows.get(M_BLACK);
+        ListingVariant l = optionRows.get(L_BLACK);
+        ListingVariant xl = optionRows.get(XL_BLACK);
+
+        ListingResponse response = service.update(MERCHANT, TEE, updateTee(1999L, null, SIZE_COLOUR,
+                List.of(option(M_BLACK, "M", null, null),   // kept by id; no stockQty keeps its 4
+                        option("XL", 2299L, 9),              // kept by its values; set to 9
+                        option("S", null, 3))));             // new
+
+        // L is the one existing option no entry claimed.
+        ArgumentCaptor<List<ListingVariant>> removed = ArgumentCaptor.forClass(List.class);
+        verify(variantRepository).deleteAll(removed.capture());
+        assertEquals(List.of(l), removed.getValue());
+        // Stock is set only on the kept option that sent one.
+        verify(variantRepository, times(1)).setStock(any(), any(), anyInt(), any());
+        verify(variantRepository).setStock(eq(XL_BLACK), eq(TEE), eq(9), any());
+        verify(variantRepository, never()).setStock(eq(M_BLACK), any(), anyInt(), any());
+        assertEquals(4, optionStock.get(M_BLACK));
+        // ...and mirrored in memory, since the entity cannot write it.
+        assertEquals(4, m.getStockQty());
+        assertEquals(9, xl.getStockQty());
+        assertEquals(0, m.getPosition());
+        assertEquals(1, xl.getPosition());
+        assertEquals(2299L, xl.getPriceCents());
+        // The one new option.
+        ArgumentCaptor<List<ListingVariant>> added = ArgumentCaptor.forClass(List.class);
+        verify(variantRepository).saveAll(added.capture());
+        assertEquals(1, added.getValue().size());
+        ListingVariant s = added.getValue().get(0);
+        assertEquals(TEE, s.getListingId());
+        assertEquals("S - Black", s.label());
+        assertEquals(3, s.getStockQty());
+        assertEquals(2, s.getPosition());
+        assertFalse(Set.of(M_BLACK, L_BLACK, XL_BLACK).contains(s.getId()));
+
+        // Delete, then the kept rows' sets, then the inserts, and the total LAST.
+        InOrder order = inOrder(variantRepository, listingRepository);
+        order.verify(variantRepository).deleteAll(any());
+        order.verify(variantRepository).setStock(eq(XL_BLACK), eq(TEE), eq(9), any());
+        order.verify(variantRepository).saveAll(any());
+        order.verify(listingRepository).recomputeStockTotal(TEE);
+
+        // 4 (kept) + 9 + 3.
+        assertEquals(16, response.stockQty());
+        assertEquals(List.of("M - Black", "XL - Black", "S - Black"), labels(response));
+        assertEquals(List.of(4, 9, 3),
+                response.variants().stream().map(ListingVariantResponse::stockQty).toList());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
+        Map<String, Object> audit = auditMetadata(AuditEventType.LISTING_UPDATED);
+        assertEquals(true, audit.get("variantsChanged"));
+        assertEquals(3, audit.get("variantCount"));
+    }
+
+    @Test
+    @DisplayName("With the cell switch off, turning a listing without options into one with "
+            + "options is 422 variants_disabled and writes nothing")
+    void convertingAPlainListingWhileTheSwitchIsOffIs422() {
+        ListingService off = newService(false);
+        UUID listingId = UUID.randomUUID();
+        Listing plain = owned(listingId);
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(plain));
+
+        ApiException ex = assertThrows(ApiException.class, () -> off.update(MERCHANT, listingId,
+                updateTee(1000L, null, SIZE_COLOUR, List.of(option("M", null, 4)))));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("variants_disabled", ex.code());
+        assertFalse(plain.isHasVariants());
+        assertEquals("Old title", plain.getTitle());
+        verify(listingRepository, never()).save(any());
+        verify(variantRepository, never()).saveAll(any());
+        verify(listingRepository, never()).setPlainStock(any(), anyInt());
+    }
+
+    @Test
+    @DisplayName("With the cell switch off, a listing that already has options can still be "
+            + "edited and can still be turned back into one without")
+    void theSwitchNeverStrandsAListingThatAlreadyHasOptions() {
+        ListingService off = newService(false);
+        Listing tee = seedTee();
+
+        off.update(MERCHANT, TEE, updateTee(1999L, null, SIZE_COLOUR, List.of(
+                option(M_BLACK, "M", null, 5), option(XL_BLACK, "XL", 2299L, null))));
+        assertTrue(tee.isHasVariants());
+        assertEquals(11, tee.getStockQty());
+
+        off.update(MERCHANT, TEE, updateTee(1999L, 3, null, List.of()));
+        assertFalse(tee.isHasVariants());
+        assertEquals(3, tee.getStockQty());
+    }
+
+    @Test
+    @DisplayName("The editor takes the listing's row lock BEFORE it loads the entity, and only "
+            + "after the caller's merchant scope is checked")
+    void theRowLockIsTakenBeforeTheListingIsLoaded() {
+        UUID listingId = UUID.randomUUID();
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(owned(listingId)));
+
+        service.update(MERCHANT, listingId, updateReq("Lamp", null, null, 2399L, 5));
+
+        InOrder order = inOrder(listingRepository);
+        order.verify(listingRepository).lockForStock(listingId);
+        order.verify(listingRepository).findById(listingId);
+
+        // An unscoped caller is refused before any row is locked.
+        assertThrows(ApiException.class, () -> service.update(callerWithMerchantClaim(null),
+                listingId, updateReq("Lamp", null, null, 2399L, 5)));
+        verify(listingRepository, times(1)).lockForStock(any());
+    }
+
+    @Test
+    @DisplayName("A missing listing is 404 listing_not_found off the seller read: no lock, no entity load")
+    void missingListingIs404BeforeTheLock() {
+        UUID listingId = UUID.randomUUID();
+        org.mockito.Mockito.doReturn(null).when(listingRepository).merchantIdOf(listingId);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.update(MERCHANT, listingId,
+                updateReq("Lamp", null, null, 2399L, 5)));
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.status());
+        assertEquals("listing_not_found", ex.code());
+        verify(listingRepository, never()).lockForStock(any());
+        verify(listingRepository, never()).findById(any());
+    }
+
+    @Test
+    @DisplayName("A listing deleted between the seller read and the lock is 404 before the entity is loaded")
+    void noRowToLockIs404() {
+        UUID listingId = UUID.randomUUID();
+        org.mockito.Mockito.doReturn(MERCHANT_ID).when(listingRepository).merchantIdOf(listingId);
+        when(listingRepository.lockForStock(listingId)).thenReturn(null);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.update(MERCHANT, listingId,
+                updateReq("Lamp", null, null, 2399L, 5)));
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.status());
+        assertEquals("listing_not_found", ex.code());
+        verify(listingRepository, never()).findById(any());
+    }
+
+    @Test
+    @DisplayName("ListingRestocked is published from the stock read UNDER THE LOCK: 0 there and "
+            + "more after is a restock, whatever the loaded entity claimed")
+    void restockIsPublishedFromTheLockedBefore() {
+        UUID soldOut = UUID.randomUUID();
+        when(listingRepository.findById(soldOut)).thenReturn(Optional.of(owned(soldOut))); // entity: 10
+        stock.put(soldOut, 0); // the locked row: sold out
+
+        ListingResponse response = service.update(MERCHANT, soldOut,
+                updateReq("Lamp", null, null, 1000L, 25));
+
+        verify(eventPublisher, times(1)).publishEvent(new ListingRestocked(soldOut));
+        assertEquals(25, response.stockQty());
+
+        // The other way round: the entity claims 0, but the locked row held 5.
+        UUID inStock = UUID.randomUUID();
+        Listing staleZero = owned(inStock);
+        staleZero.setStockQty(0);
+        when(listingRepository.findById(inStock)).thenReturn(Optional.of(staleZero));
+        stock.put(inStock, 5);
+
+        service.update(MERCHANT, inStock, updateReq("Lamp", null, null, 1000L, 25));
+
+        verify(eventPublisher, never()).publishEvent(new ListingRestocked(inStock));
+        verify(eventPublisher, times(1)).publishEvent(any(Object.class));
+    }
+
+    @Test
+    @DisplayName("Raising priceCents above an option's own price with variants null is 400 "
+            + "variant_price_below_listing_price, and nothing is written")
+    void raisingThePriceAboveAnOptionsOwnPriceIs400() {
+        Listing tee = seedTee();
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.update(MERCHANT, TEE, updateTee(2500L, null, null, null)));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("variant_price_below_listing_price", ex.code());
+        assertEquals("The option XL - Black costs less than priceCents - make priceCents the lowest "
+                + "option price", ex.getMessage());
+        assertEquals(1999L, tee.getPriceCents());
+        assertEquals(2299L, optionRows.get(XL_BLACK).getPriceCents());
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Raising priceCents to exactly an option's own price clears that own price, so "
+            + "the option follows the listing price from then on")
+    void raisingThePriceToAnOptionsOwnPriceClearsIt() {
+        Listing tee = seedTee();
+
+        ListingResponse response = service.update(MERCHANT, TEE, updateTee(2299L, null, null, null));
+
+        assertEquals(2299L, tee.getPriceCents());
+        assertNull(optionRows.get(XL_BLACK).getPriceCents());
+        assertTrue(response.variants().stream().allMatch(v -> v.priceOverrideCents() == null));
+        assertTrue(response.variants().stream().allMatch(v -> v.priceCents() == 2299L));
+        assertEquals(2299L, response.maxPriceCents());
+        verify(variantRepository, never()).saveAll(any());
+    }
+
+    // ---- the one-option quick restock -----------------------------------
+
+    @Test
+    @DisplayName("Setting an option's stock on a listing without options is 404 variant_not_found")
+    void variantStockOnAPlainListingIs404() {
+        UUID listingId = UUID.randomUUID();
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(owned(listingId)));
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.setVariantStock(MERCHANT, listingId, M_BLACK, 12));
+
+        assertEquals(HttpStatus.NOT_FOUND, ex.status());
+        assertEquals("variant_not_found", ex.code());
+        assertEquals("Variant not found", ex.getMessage());
+        verify(variantRepository, never()).setStock(any(), any(), anyInt(), any());
+        verify(listingRepository, never()).save(any());
+        verify(auditService, never()).record(eq(AuditEventType.LISTING_VARIANT_STOCK_SET),
+                any(), any(), anyMap());
+    }
+
+    @Test
+    @DisplayName("Setting the stock of an id that is not an option of THIS listing (the statement "
+            + "updates no row) is 404 variant_not_found and recomputes nothing")
+    void variantStockForAnotherListingsOptionIs404() {
+        seedTee();
+        UUID otherListing = UUID.randomUUID();
+        UUID foreign = UUID.randomUUID();
+        seedOption(otherListing, foreign, "M", null, 1, 0);
+
+        for (UUID variantId : List.of(foreign, UUID.randomUUID())) {
+            ApiException ex = assertThrows(ApiException.class,
+                    () -> service.setVariantStock(MERCHANT, TEE, variantId, 12));
+
+            assertEquals(HttpStatus.NOT_FOUND, ex.status());
+            assertEquals("variant_not_found", ex.code());
+        }
+        assertEquals(1, optionStock.get(foreign));
+        verify(listingRepository, never()).recomputeStockTotal(any());
+        verify(listingRepository, never()).save(any());
+        verify(auditService, never()).record(eq(AuditEventType.LISTING_VARIANT_STOCK_SET),
+                any(), any(), anyMap());
+    }
+
+    @Test
+    @DisplayName("Setting one option's stock locks the listing first, recomputes the total, audits "
+            + "LISTING_VARIANT_STOCK_SET and returns the new total")
+    void variantStockSetRecomputesAuditsAndReturnsTheTotal() {
+        Listing tee = seedTee();
+
+        ListingResponse response = service.setVariantStock(MERCHANT, TEE, L_BLACK, 12);
+
+        InOrder order = inOrder(listingRepository, variantRepository);
+        order.verify(listingRepository).lockForStock(TEE);
+        order.verify(listingRepository).findById(TEE);
+        order.verify(variantRepository).setStock(eq(L_BLACK), eq(TEE), eq(12), any());
+        order.verify(listingRepository).recomputeStockTotal(TEE);
+        // The other options - and the reservations riding on them - are left alone.
+        verify(variantRepository, times(1)).setStock(any(), any(), anyInt(), any());
+        assertEquals(4, optionStock.get(M_BLACK));
+        assertEquals(6, optionStock.get(XL_BLACK));
+
+        // 4 + 12 + 6.
+        assertEquals(22, response.stockQty());
+        assertEquals(22, tee.getStockQty());
+        Map<String, Object> audit = auditMetadata(AuditEventType.LISTING_VARIANT_STOCK_SET);
+        assertEquals(Map.of("merchantId", MERCHANT_ID.toString(), "variantId", L_BLACK.toString(),
+                "stockQty", 12), audit);
+        // The total was 10 before: not a restock.
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
+    }
+
+    @Test
+    @DisplayName("Setting one option's stock on a listing whose options were ALL sold out "
+            + "publishes one ListingRestocked for the listing")
+    void variantStockSetFromATotalOfZeroIsARestock() {
+        seedTee();
+        optionStock.put(M_BLACK, 0);
+        optionStock.put(XL_BLACK, 0);
+        stock.put(TEE, 0);
+
+        ListingResponse response = service.setVariantStock(MERCHANT, TEE, L_BLACK, 2);
+
+        verify(eventPublisher, times(1)).publishEvent(new ListingRestocked(TEE));
+        assertEquals(2, response.stockQty());
+    }
+
+    @Test
+    @DisplayName("Setting one option's stock so the options add up to more than 1000000 is 400 "
+            + "stock_out_of_range and audits nothing")
+    void variantStockSetAboveTheTotalBoundIs400() {
+        seedTee();
+
+        // 4 + 999991 + 6 = 1000001.
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.setVariantStock(MERCHANT, TEE, L_BLACK, 999_991));
+
+        assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+        assertEquals("stock_out_of_range", ex.code());
+        assertEquals("The options' stock adds up to more than 1000000", ex.getMessage());
+        verify(auditService, never()).record(eq(AuditEventType.LISTING_VARIANT_STOCK_SET),
+                any(), any(), anyMap());
+    }
+
+    // ---- publish --------------------------------------------------------
+
+    @Test
+    @DisplayName("A listing with options whose total is 0 can still be published - no new "
+            + "publish rule, exactly as for a listing without options - and no stock moves")
+    void aListingWithOptionsAtZeroCanBePublished() {
+        Listing tee = seedTee();
+        tee.setStockQty(0);
+        optionStock.replaceAll((id, qty) -> 0);
+        stock.put(TEE, 0);
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(TEE)).thenReturn(true);
+
+        ListingResponse response = service.changeStatus(MERCHANT, TEE,
+                new ListingStatusRequest(ListingStatus.ACTIVE));
+
+        assertEquals(ListingStatus.ACTIVE, tee.getStatus());
+        assertEquals(ListingStatus.ACTIVE, response.status());
+        assertEquals(0, response.stockQty());
+        assertTrue(response.hasVariants());
+        verify(listingRepository, never()).recomputeStockTotal(any());
+        verify(listingRepository, never()).setPlainStock(any(), anyInt());
+        verify(variantRepository, never()).setStock(any(), any(), anyInt(), any());
+        verify(eventPublisher, never()).publishEvent(any(Object.class));
     }
 }

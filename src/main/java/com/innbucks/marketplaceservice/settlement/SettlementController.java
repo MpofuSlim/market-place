@@ -67,22 +67,19 @@ public class SettlementController {
               "data": {
                 "items": [
                   {
-                    "id": "9d2f7a10-3b64-4c8e-a1f5-6e7b8c9d0a12",
-                    "orderId": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
-                    "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                    "id": "4f1a9c3e-7b25-4d80-b6e3-2c9d8a7f1e54",
+                    "orderId": "d7e1c3a5-8b2f-4c69-9e04-3f6a1b8d2c75",
+                    "fulfilmentId": "8c4e2a6f-1d3b-4e75-a9c8-5b7d0f2e4a16",
                     "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
-                    "status": "RELEASABLE",
-                    "grossCents": 5598,
+                    "status": "HELD",
+                    "grossCents": 5699,
                     "commissionCents": 0,
-                    "netCents": 5598,
-                    "deliveryFeeCents": 800,
+                    "netCents": 5699,
+                    "deliveryFeeCents": 300,
                     "currency": "USD",
-                    "releasedAt": "2026-09-16T14:05:00Z",
-                    "createdAt": "2026-09-14T11:20:10Z",
-                    "orderRef": "MKT-4F9A1C22B7D3",
-                    "itemSummary": "2 x Wireless Bluetooth Speaker",
-                    "closedBy": "BUYER_CONFIRMED",
-                    "closedAt": "2026-09-16T14:05:00Z"
+                    "createdAt": "2026-09-24T11:12:40Z",
+                    "orderRef": "MKT-4F2A9C1B77D0",
+                    "itemSummary": "1 x Cotton Crew Tee (XL - Black), 2 x Solar Lantern 20W"
                   },
                   {
                     "id": "0b7e3c91-2d48-4f5a-9c6e-1a2b3c4d5e6f",
@@ -102,11 +99,29 @@ public class SettlementController {
                     "closedBy": "CANNOT_SUPPLY",
                     "closedAt": "2026-09-18T09:15:00Z",
                     "refundReason": "Out of stock - the last one was damaged in storage"
+                  },
+                  {
+                    "id": "9d2f7a10-3b64-4c8e-a1f5-6e7b8c9d0a12",
+                    "orderId": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                    "fulfilmentId": "3a7b19e4-8c25-4f6d-b019-5e2c7a4d8f31",
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "status": "RELEASABLE",
+                    "grossCents": 5598,
+                    "commissionCents": 0,
+                    "netCents": 5598,
+                    "deliveryFeeCents": 800,
+                    "currency": "USD",
+                    "releasedAt": "2026-09-16T14:05:00Z",
+                    "createdAt": "2026-09-14T11:20:10Z",
+                    "orderRef": "MKT-4F9A1C22B7D3",
+                    "itemSummary": "2 x Wireless Bluetooth Speaker",
+                    "closedBy": "BUYER_CONFIRMED",
+                    "closedAt": "2026-09-16T14:05:00Z"
                   }
                 ],
                 "page": 0,
                 "size": 20,
-                "totalItems": 1,
+                "totalItems": 3,
                 "totalPages": 1
               }
             }""";
@@ -168,7 +183,9 @@ public class SettlementController {
                     + "Each row carries what a person needs to recognise it: the buyer's "
                     + "`orderRef`, an `itemSummary`, `closedBy` (how the parcel ended — which is "
                     + "why one row cleared at once and another waits out the dispute window), "
-                    + "`refundReason` on refund rows and `dispute` where the buyer raised one.\n\n"
+                    + "`refundReason` on refund rows and `dispute` where the buyer raised one. "
+                    + "`itemSummary` names an option the way the buyer bought it - \"1 x Cotton "
+                    + "Crew Tee (XL - Black)\" - and is unchanged for an item without one.\n\n"
                     + "`from` / `to` are calendar days in this market (inclusive), matched on "
                     + "when the buyer paid. The same filters export as CSV at `/statement`.")
     @ApiResponses({
@@ -222,7 +239,9 @@ public class SettlementController {
                                     + "2026-09-14,MKT-4F9A1C22B7D3,2 x Wireless Bluetooth Speaker,PAID_OUT,"
                                     + "BUYER_CONFIRMED,2026-09-16T16:05:00+02:00,5598,800,0,5598,USD,,"
                                     + "2026-09-16T16:05:00+02:00,2026-09-30T12:00:00+02:00,PAYOUT-2026-09-30-01,"
-                                    + ",,,,\n"))),
+                                    + ",,,,\n"
+                                    + "2026-09-24,MKT-4F2A9C1B77D0,\"1 x Cotton Crew Tee (XL - Black), "
+                                    + "2 x Solar Lantern 20W\",HELD,,,5699,300,0,5699,USD,,,,,,,,,\n"))),
             @ApiResponse(responseCode = "400", description = "SUPER_ADMIN without a merchantId, or "
                     + "'to' before 'from'",
                     content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """

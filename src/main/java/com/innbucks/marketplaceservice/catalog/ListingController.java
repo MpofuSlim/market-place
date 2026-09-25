@@ -7,6 +7,7 @@ import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
 import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
+import com.innbucks.marketplaceservice.catalog.dto.VariantStockRequest;
 import com.innbucks.marketplaceservice.security.CurrentUser;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -59,7 +60,9 @@ import java.util.UUID;
                 + "any merchant's listings, on-behalf creation via the request merchantId field); "
                 + "merchant scope is never taken from the request body except that one admin case. "
                 + "Listings carry a GALLERY of up to 10 images — exactly one PRIMARY (required to "
-                + "publish) plus up to 9 additional.")
+                + "publish) plus up to 9 additional. A listing may also sell OPTIONS (V19): up to 2 "
+                + "axes such as Size and Colour and up to 50 options, each with its own stock and "
+                + "an optional own price above the listing's - see create and update.")
 @RestController
 @RequestMapping("/marketplace/listings")
 @RequiredArgsConstructor
@@ -95,11 +98,259 @@ public class ListingController {
                 "updatedAt": "2026-08-05T09:15:00Z",
                 "imageUrl": null,
                 "imageUrls": [],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
                 "deliverable": true,
                 "deliveryTowns": [
                   { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
                   { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
-                ]
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2599
+              }
+            }""";
+
+    /** V19: the canonical listing WITH options as the JSON create returns it —
+     *  a DRAFT with no photo yet. Every controller's examples use these ids
+     *  (Cotton Crew Tee, sizes M/L/XL in Black, XL dearer, L sold out). */
+    private static final String EXAMPLE_VARIANT_CREATED_201 = """
+            {
+              "code": "CREATED",
+              "message": "Created",
+              "data": {
+                "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Cotton Crew Tee",
+                "description": "100% cotton, pre-shrunk",
+                "categoryCode": "other",
+                "categoryName": "Other",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 1999,
+                "currency": "USD",
+                "stockQty": 10,
+                "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-09-24T08:00:00Z",
+                "updatedAt": "2026-09-24T08:00:00Z",
+                "imageUrl": null,
+                "imageUrls": [],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": true,
+                "options": [
+                  { "name": "Size", "values": ["M", "L", "XL"] },
+                  { "name": "Colour", "values": ["Black"] }
+                ],
+                "variants": [
+                  { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                    "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                  { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                    "label": "L - Black", "priceCents": 1999, "stockQty": 0 },
+                  { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                    "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                    "stockQty": 6 }
+                ],
+                "maxPriceCents": 2299
+              }
+            }""";
+
+    /** The multipart create of the same listing with its photo in the {@code image}
+     *  part: identical but for the gallery (the photo the later examples show). */
+    private static final String EXAMPLE_VARIANT_CREATED_WITH_IMAGE_201 = """
+            {
+              "code": "CREATED",
+              "message": "Created",
+              "data": {
+                "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Cotton Crew Tee",
+                "description": "100% cotton, pre-shrunk",
+                "categoryCode": "other",
+                "categoryName": "Other",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 1999,
+                "currency": "USD",
+                "stockQty": 10,
+                "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-09-24T08:00:00Z",
+                "updatedAt": "2026-09-24T08:00:00Z",
+                "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                "imageUrls": [
+                  "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/images/4d1c7e2a-9b3f-4a58-8e6d-0f2a1b3c4d5e"
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": true,
+                "options": [
+                  { "name": "Size", "values": ["M", "L", "XL"] },
+                  { "name": "Colour", "values": ["Black"] }
+                ],
+                "variants": [
+                  { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                    "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                  { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                    "label": "L - Black", "priceCents": 1999, "stockQty": 0 },
+                  { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                    "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                    "stockQty": 6 }
+                ],
+                "maxPriceCents": 2299
+              }
+            }""";
+
+    /** The same listing after PUT /{id} kept every option by id (see the update
+     *  request example) — nothing moved but {@code updatedAt}, which is the
+     *  point: omitting an option's stockQty keeps its stock. */
+    private static final String EXAMPLE_VARIANT_UPDATED_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Cotton Crew Tee",
+                "description": "100% cotton, pre-shrunk",
+                "categoryCode": "other",
+                "categoryName": "Other",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 1999,
+                "currency": "USD",
+                "stockQty": 10,
+                "status": "DRAFT",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-09-24T08:00:00Z",
+                "updatedAt": "2026-09-24T08:20:00Z",
+                "imageUrl": null,
+                "imageUrls": [],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": true,
+                "options": [
+                  { "name": "Size", "values": ["M", "L", "XL"] },
+                  { "name": "Colour", "values": ["Black"] }
+                ],
+                "variants": [
+                  { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                    "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                  { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                    "label": "L - Black", "priceCents": 1999, "stockQty": 0 },
+                  { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                    "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                    "stockQty": 6 }
+                ],
+                "maxPriceCents": 2299
+              }
+            }""";
+
+    /** V19: the canonical listing WITH options — the same ids every controller's
+     *  examples use (Cotton Crew Tee, sizes M/L/XL in Black, XL dearer). Shown
+     *  here after PATCH .../variants/{L}/stock restocked size L to 12. */
+    static final String EXAMPLE_VARIANT_LISTING_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                "title": "Cotton Crew Tee",
+                "description": "100% cotton, pre-shrunk",
+                "categoryCode": "other",
+                "categoryName": "Other",
+                "condition": "NEW",
+                "city": "Harare",
+                "area": "Avondale",
+                "priceCents": 1999,
+                "currency": "USD",
+                "stockQty": 22,
+                "status": "ACTIVE",
+                "ratingAvg": null,
+                "reviewCount": 0,
+                "createdAt": "2026-09-24T08:00:00Z",
+                "updatedAt": "2026-09-24T10:30:00Z",
+                "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                "imageUrls": [
+                  "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/images/4d1c7e2a-9b3f-4a58-8e6d-0f2a1b3c4d5e"
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": true,
+                "options": [
+                  { "name": "Size", "values": ["M", "L", "XL"] },
+                  { "name": "Colour", "values": ["Black"] }
+                ],
+                "variants": [
+                  { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                    "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                  { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                    "label": "L - Black", "priceCents": 1999, "stockQty": 12 },
+                  { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                    "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                    "stockQty": 6 }
+                ],
+                "maxPriceCents": 2299
               }
             }""";
 
@@ -126,7 +377,25 @@ public class ListingController {
                 "createdAt": "2026-08-05T09:15:00Z",
                 "updatedAt": "2026-08-05T09:20:00Z",
                 "imageUrl": null,
-                "imageUrls": []
+                "imageUrls": [],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
               }
             }""";
 
@@ -157,7 +426,25 @@ public class ListingController {
                 "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                 "imageUrls": [
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
-                ]
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
               }
             }""";
 
@@ -189,7 +476,25 @@ public class ListingController {
                 "imageUrls": [
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d",
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
-                ]
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
               }
             }""";
 
@@ -220,7 +525,25 @@ public class ListingController {
                 "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                 "imageUrls": [
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
-                ]
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
               }
             }""";
 
@@ -247,7 +570,25 @@ public class ListingController {
                 "createdAt": "2026-08-05T09:15:00Z",
                 "updatedAt": "2026-08-05T09:25:00Z",
                 "imageUrl": null,
-                "imageUrls": []
+                "imageUrls": [],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
               }
             }""";
 
@@ -276,16 +617,87 @@ public class ListingController {
                 "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                 "imageUrls": [
                   "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
-                ]
+                ],
+                "seller": {
+                  "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                  "displayName": "Sunrise Electronics",
+                  "verified": true,
+                  "since": "2026-04-01T09:15:00Z"
+                },
+                "deliverable": true,
+                "deliveryTowns": [
+                  { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                  { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                ],
+                "collectionTowns": [
+                  { "townCode": "harare", "townName": "Harare" }
+                ],
+                "hasVariants": false,
+                "options": [],
+                "variants": [],
+                "maxPriceCents": 2399
               }
             }""";
 
+    /** Newest first: the Cotton Crew Tee (published, size L still sold out -
+     *  before the quick restock) above the speaker. */
     private static final String EXAMPLE_MINE_200 = """
             {
               "code": "OK",
               "message": "Success",
               "data": {
                 "items": [
+                  {
+                    "id": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "title": "Cotton Crew Tee",
+                    "description": "100% cotton, pre-shrunk",
+                    "categoryCode": "other",
+                    "categoryName": "Other",
+                    "condition": "NEW",
+                    "city": "Harare",
+                    "area": "Avondale",
+                    "priceCents": 1999,
+                    "currency": "USD",
+                    "stockQty": 10,
+                    "status": "ACTIVE",
+                    "ratingAvg": null,
+                    "reviewCount": 0,
+                    "createdAt": "2026-09-24T08:00:00Z",
+                    "updatedAt": "2026-09-24T09:00:00Z",
+                    "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
+                    "imageUrls": [
+                      "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/images/4d1c7e2a-9b3f-4a58-8e6d-0f2a1b3c4d5e"
+                    ],
+                    "seller": {
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "displayName": "Sunrise Electronics",
+                      "verified": true,
+                      "since": "2026-04-01T09:15:00Z"
+                    },
+                    "deliverable": true,
+                    "deliveryTowns": [
+                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 }
+                    ],
+                    "collectionTowns": [
+                      { "townCode": "harare", "townName": "Harare" }
+                    ],
+                    "hasVariants": true,
+                    "options": [
+                      { "name": "Size", "values": ["M", "L", "XL"] },
+                      { "name": "Colour", "values": ["Black"] }
+                    ],
+                    "variants": [
+                      { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", "values": ["M", "Black"],
+                        "label": "M - Black", "priceCents": 1999, "stockQty": 4 },
+                      { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463", "values": ["L", "Black"],
+                        "label": "L - Black", "priceCents": 1999, "stockQty": 0 },
+                      { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574", "values": ["XL", "Black"],
+                        "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
+                        "stockQty": 6 }
+                    ],
+                    "maxPriceCents": 2299
+                  },
                   {
                     "id": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
@@ -307,12 +719,30 @@ public class ListingController {
                     "imageUrl": "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/image",
                     "imageUrls": [
                       "/marketplace/catalog/b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93/images/5f0d8c2a-7b3e-4d16-9a8c-1e2f3a4b5c6d"
-                    ]
+                    ],
+                    "seller": {
+                      "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                      "displayName": "Sunrise Electronics",
+                      "verified": true,
+                      "since": "2026-04-01T09:15:00Z"
+                    },
+                    "deliverable": true,
+                    "deliveryTowns": [
+                      { "townCode": "harare", "townName": "Harare", "feeCents": 300 },
+                      { "townCode": "bulawayo", "townName": "Bulawayo", "feeCents": 1200 }
+                    ],
+                    "collectionTowns": [
+                      { "townCode": "harare", "townName": "Harare" }
+                    ],
+                    "hasVariants": false,
+                    "options": [],
+                    "variants": [],
+                    "maxPriceCents": 2399
                   }
                 ],
                 "page": 0,
                 "size": 20,
-                "totalItems": 1,
+                "totalItems": 2,
                 "totalPages": 1
               }
             }""";
@@ -466,6 +896,100 @@ public class ListingController {
               "message": "At most 9 additional images are allowed (10 in total with the primary)"
             }""";
 
+    // -- V19 options editor refusals (messages exactly as VariantSetResolver,
+    //    VariantLabels, ListingVariantService and ListingService throw them) --
+
+    private static final String EXAMPLE_INVALID_VARIANT_OPTION_400 = """
+            {
+              "code": "invalid_variant_option",
+              "message": "variants[0].values[1] must not contain a comma"
+            }""";
+
+    private static final String EXAMPLE_VARIANT_VALUES_MISMATCH_400 = """
+            {
+              "code": "variant_values_mismatch",
+              "message": "variants[2].values must give one value for each of Size, Colour"
+            }""";
+
+    private static final String EXAMPLE_DUPLICATE_VARIANT_400 = """
+            {
+              "code": "duplicate_variant",
+              "message": "variants names M - Black more than once"
+            }""";
+
+    private static final String EXAMPLE_UNKNOWN_VARIANT_400 = """
+            {
+              "code": "unknown_variant",
+              "message": "variants[1].id is not a variant of this listing"
+            }""";
+
+    /** A request whose priceCents (2299) is above the M option's own 1999. */
+    private static final String EXAMPLE_VARIANT_PRICE_BELOW_400 = """
+            {
+              "code": "variant_price_below_listing_price",
+              "message": "variants[0] (M - Black) costs less than priceCents - make priceCents the lowest option price"
+            }""";
+
+    /** An update that omits variants but raises priceCents above the XL
+     *  option's own 2299: the kept options are re-checked against the floor. */
+    private static final String EXAMPLE_KEPT_PRICE_BELOW_400 = """
+            {
+              "code": "variant_price_below_listing_price",
+              "message": "The option XL - Black costs less than priceCents - make priceCents the lowest option price"
+            }""";
+
+    private static final String EXAMPLE_LISTING_PRICE_NOT_OFFERED_400 = """
+            {
+              "code": "listing_price_not_offered",
+              "message": "No option sells at priceCents - make priceCents the lowest option price"
+            }""";
+
+    private static final String EXAMPLE_STOCK_REQUIRED_400 = """
+            {
+              "code": "stock_required",
+              "message": "stockQty is required for a listing without variants"
+            }""";
+
+    private static final String EXAMPLE_VARIANT_STOCK_REQUIRED_400 = """
+            {
+              "code": "variant_stock_required",
+              "message": "variants[2].stockQty is required for a new option"
+            }""";
+
+    private static final String EXAMPLE_OPTIONS_WITHOUT_VARIANTS_400 = """
+            {
+              "code": "options_without_variants",
+              "message": "options can only be sent together with variants"
+            }""";
+
+    private static final String EXAMPLE_VARIANTS_DISABLED_422 = """
+            {
+              "code": "variants_disabled",
+              "message": "Product options are not available on this marketplace yet"
+            }""";
+
+    /** The listing request with options, shared by the JSON create example and
+     *  the multipart {@code listing} part. */
+    private static final String EXAMPLE_VARIANT_CREATE_REQUEST = """
+            {
+              "title": "Cotton Crew Tee",
+              "description": "100% cotton, pre-shrunk",
+              "categoryCode": "other",
+              "condition": "NEW",
+              "city": "Harare",
+              "area": "Avondale",
+              "priceCents": 1999,
+              "options": ["Size", "Colour"],
+              "variants": [
+                { "values": ["M", "Black"], "stockQty": 4 },
+                { "values": ["L", "Black"], "stockQty": 0 },
+                { "values": ["XL", "Black"], "priceCents": 2299, "stockQty": 6 }
+              ],
+              "deliveryTowns": [
+                { "townCode": "harare", "feeCents": 300 }
+              ]
+            }""";
+
     @Operation(summary = "Create a listing",
             description = "Creates a DRAFT listing owned by the caller's merchant (merchantId JWT claim) — "
                     + "merchants NEVER send a merchantId; scope is automatic from the token. "
@@ -476,11 +1000,25 @@ public class ListingController {
                     + "ACTIVE requires a primary image first. "
                     + "SUPER_ADMIN only: creates ON BEHALF of a merchant and MUST send the request "
                     + "merchantId field (admins carry no merchant claim); a MERCHANT_ADMIN sending a "
-                    + "merchantId different from their own claim is refused with 422.",
+                    + "merchantId different from their own claim is refused with 422.\n\n"
+                    + "**Options (V19).** A product sold in sizes or colours sends `options` (1-2 "
+                    + "axis names, e.g. `[\"Size\", \"Colour\"]`) and `variants` (up to 50: one value "
+                    + "per axis, each option's own `stockQty`, and an optional own `priceCents` that "
+                    + "may only be ABOVE the listing's). `priceCents` must then be the CHEAPEST "
+                    + "option's price - leave `priceCents` off the options that sell at it - and the "
+                    + "top-level `stockQty` is ignored: the listing's stock is the options' total. "
+                    + "Names are 1-30 characters, values 1-40, and neither may contain a comma. "
+                    + "Without `variants`, `stockQty` is required (400 `stock_required`). A cell "
+                    + "with options switched off refuses a create that has them (422 "
+                    + "`variants_disabled`).",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                             schema = @Schema(implementation = ListingCreateRequest.class),
                             examples = {
+                                    @ExampleObject(name = "with options (sizes)",
+                                            summary = "A listing sold in sizes - priceCents is the "
+                                                    + "cheapest option, XL costs more",
+                                            value = EXAMPLE_VARIANT_CREATE_REQUEST),
                                     @ExampleObject(name = "merchant (normal)",
                                             summary = "MERCHANT_ADMIN — no merchantId, scope comes from your JWT",
                                             value = """
@@ -515,10 +1053,13 @@ public class ListingController {
                             })))
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Listing created as DRAFT",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "created", value = EXAMPLE_CREATED_201))),
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "created", value = EXAMPLE_CREATED_201),
+                            @ExampleObject(name = "created-with-options",
+                                    value = EXAMPLE_VARIANT_CREATED_201)})),
             @ApiResponse(responseCode = "400", description = "Validation failed, unknown categoryCode, "
-                    + "or SUPER_ADMIN omitted the target merchantId",
+                    + "SUPER_ADMIN omitted the target merchantId, no stockQty for a listing without "
+                    + "options, or options that break the editor's rules",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "bean-validation", value = EXAMPLE_VALIDATION_400),
                             @ExampleObject(name = "title-empty-after-sanitization", value = EXAMPLE_TITLE_400),
@@ -526,7 +1067,21 @@ public class ListingController {
                             @ExampleObject(name = "unknown-town", value = EXAMPLE_UNKNOWN_TOWN_400),
                             @ExampleObject(name = "town-named-twice", value = EXAMPLE_DUPLICATE_TOWN_400),
                             @ExampleObject(name = "super-admin-without-merchant-id",
-                                    value = EXAMPLE_MERCHANT_ID_REQUIRED_400)})),
+                                    value = EXAMPLE_MERCHANT_ID_REQUIRED_400),
+                            @ExampleObject(name = "stock-required", value = EXAMPLE_STOCK_REQUIRED_400),
+                            @ExampleObject(name = "options-without-variants",
+                                    value = EXAMPLE_OPTIONS_WITHOUT_VARIANTS_400),
+                            @ExampleObject(name = "invalid-variant-option",
+                                    value = EXAMPLE_INVALID_VARIANT_OPTION_400),
+                            @ExampleObject(name = "variant-values-mismatch",
+                                    value = EXAMPLE_VARIANT_VALUES_MISMATCH_400),
+                            @ExampleObject(name = "duplicate-variant", value = EXAMPLE_DUPLICATE_VARIANT_400),
+                            @ExampleObject(name = "variant-stock-required",
+                                    value = EXAMPLE_VARIANT_STOCK_REQUIRED_400),
+                            @ExampleObject(name = "variant-price-below-listing-price",
+                                    value = EXAMPLE_VARIANT_PRICE_BELOW_400),
+                            @ExampleObject(name = "listing-price-not-offered",
+                                    value = EXAMPLE_LISTING_PRICE_NOT_OFFERED_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
@@ -538,10 +1093,12 @@ public class ListingController {
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "limit-reached", value = EXAMPLE_LIMIT_409))),
             @ApiResponse(responseCode = "422", description = "MERCHANT_ADMIN sent a merchantId that is "
-                    + "not their own",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "merchant-scope-mismatch",
-                                    value = EXAMPLE_SCOPE_MISMATCH_422)))
+                    + "not their own, or options were sent while this cell has them switched off",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "merchant-scope-mismatch",
+                                    value = EXAMPLE_SCOPE_MISMATCH_422),
+                            @ExampleObject(name = "variants-disabled",
+                                    value = EXAMPLE_VARIANTS_DISABLED_422)}))
     })
     @PostMapping
     public ResponseEntity<ApiResult<ListingResponse>> create(
@@ -554,7 +1111,9 @@ public class ListingController {
             description = """
                     Multipart variant of the JSON create (same path, selected by \
                     Content-Type). Parts:
-                    - `listing` — JSON body matching the plain create request.
+                    - `listing` — JSON body matching the plain create request, \
+                    including `options` + `variants` for a product sold in sizes or \
+                    colours (same rules as the JSON create).
                     - `image` — optional; becomes the gallery's PRIMARY image \
                     (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB each, \
                     magic-byte verified).
@@ -579,17 +1138,29 @@ public class ListingController {
             @ApiResponse(responseCode = "201", description = "Listing created (with its gallery when "
                     + "files were supplied — imageUrl serves the primary, imageUrls lists every image "
                     + "primary-first)",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "created", value = EXAMPLE_CREATED_201))),
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "created", value = EXAMPLE_CREATED_201),
+                            @ExampleObject(name = "created-with-options-and-photo",
+                                    value = EXAMPLE_VARIANT_CREATED_WITH_IMAGE_201)})),
             @ApiResponse(responseCode = "400", description = "Validation failed, bad image "
                     + "(unsupported_image_type / image_too_large / image_required), more than 9 "
-                    + "additional images, unknown categoryCode, or SUPER_ADMIN without merchantId",
+                    + "additional images, unknown categoryCode, SUPER_ADMIN without merchantId, no "
+                    + "stockQty for a listing without options, or options that break the editor's "
+                    + "rules",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "unsupported-image", value = EXAMPLE_UNSUPPORTED_IMAGE_400),
                             @ExampleObject(name = "too-many-images", value = EXAMPLE_TOO_MANY_IMAGES_400),
                             @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
                             @ExampleObject(name = "merchant-id-required",
-                                    value = EXAMPLE_MERCHANT_ID_REQUIRED_400)})),
+                                    value = EXAMPLE_MERCHANT_ID_REQUIRED_400),
+                            @ExampleObject(name = "stock-required", value = EXAMPLE_STOCK_REQUIRED_400),
+                            @ExampleObject(name = "invalid-variant-option",
+                                    value = EXAMPLE_INVALID_VARIANT_OPTION_400),
+                            @ExampleObject(name = "duplicate-variant", value = EXAMPLE_DUPLICATE_VARIANT_400),
+                            @ExampleObject(name = "variant-price-below-listing-price",
+                                    value = EXAMPLE_VARIANT_PRICE_BELOW_400),
+                            @ExampleObject(name = "listing-price-not-offered",
+                                    value = EXAMPLE_LISTING_PRICE_NOT_OFFERED_400)})),
             @ApiResponse(responseCode = "401", description = "Missing or invalid bearer token",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
@@ -601,10 +1172,13 @@ public class ListingController {
             @ApiResponse(responseCode = "409", description = "Per-merchant listing cap reached",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "limit-reached", value = EXAMPLE_LIMIT_409))),
-            @ApiResponse(responseCode = "422", description = "MERCHANT_ADMIN sent a foreign merchantId",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "merchant-scope-mismatch",
-                                    value = EXAMPLE_SCOPE_MISMATCH_422)))
+            @ApiResponse(responseCode = "422", description = "MERCHANT_ADMIN sent a foreign merchantId, "
+                    + "or options were sent while this cell has them switched off",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "merchant-scope-mismatch",
+                                    value = EXAMPLE_SCOPE_MISMATCH_422),
+                            @ExampleObject(name = "variants-disabled",
+                                    value = EXAMPLE_VARIANTS_DISABLED_422)}))
     })
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ApiResult<ListingResponse>> createWithImages(
@@ -622,19 +1196,11 @@ public class ListingController {
     @SuppressWarnings("unused")
     private static class CreateListingMultipartRequest {
         @Schema(description = "Listing JSON payload. MERCHANT_ADMIN: no merchantId — scope comes "
-                + "from your JWT (SUPER_ADMIN on-behalf creation adds it).",
+                + "from your JWT (SUPER_ADMIN on-behalf creation adds it). The example sells in "
+                + "sizes (`options` + `variants`); a listing without options sends `stockQty` "
+                + "instead.",
                 implementation = ListingCreateRequest.class,
-                example = """
-                        {
-                          "title": "Wireless Bluetooth Speaker",
-                          "description": "Portable speaker with 12h battery life.",
-                          "categoryCode": "tv-audio",
-                          "condition": "NEW",
-                          "city": "Harare",
-                          "area": "Avondale",
-                          "priceCents": 2599,
-                          "stockQty": 120
-                        }""")
+                example = EXAMPLE_VARIANT_CREATE_REQUEST)
         public ListingCreateRequest listing;
 
         @Schema(type = "string", format = "binary",
@@ -653,23 +1219,112 @@ public class ListingController {
                     + "and omitted condition to NEW, so send current values to keep them). Status and "
                     + "currency are not updatable here; the gallery has its own endpoints. Caller "
                     + "must own the listing.\n\n"
-                    + "**`deliveryTowns` is the one exception to full replace**: OMIT it (or send "
-                    + "null) to keep the towns as they are; send a list to replace them; send `[]` "
-                    + "to make the listing collection-only. Orders already placed keep the fee "
-                    + "they were quoted.")
+                    + "**Two fields are exceptions to full replace - OMIT them (or send null) to "
+                    + "keep what is there:**\n\n"
+                    + "- **`deliveryTowns`**: omit to keep the towns as they are; send a list to "
+                    + "replace them; send `[]` to make the listing collection-only. Orders already "
+                    + "placed keep the fee they were quoted.\n"
+                    + "- **`variants`** (with `options`, V19): omit to keep every option exactly as "
+                    + "it is, stock included (a new `priceCents` is still checked against the "
+                    + "options' own prices); send `[]` to remove every option - the listing goes "
+                    + "back to one stock count, so `stockQty` is then required; send a list to "
+                    + "REPLACE the set. In a list, an entry with an `id` keeps that option (400 "
+                    + "`unknown_variant` if it is not one of this listing's), an entry without one "
+                    + "keeps the existing option with the same values, anything else is new, and "
+                    + "options nobody names are removed. A kept entry that omits `stockQty` keeps "
+                    + "its stock; a new one must send it. Keeping an `id` while changing its values "
+                    + "moves every shopper's cart line to the new values - use that to fix a typo, "
+                    + "and add a NEW entry for a different size.\n\n"
+                    + "On a listing with options the top-level `stockQty` is ignored; restock one "
+                    + "size with `PATCH /marketplace/listings/{id}/variants/{variantId}/stock`. "
+                    + "Turning a listing without options INTO one with them is refused while this "
+                    + "cell has options switched off (422 `variants_disabled`); editing a listing "
+                    + "that already has options, or removing them with `[]`, is always allowed.",
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                            schema = @Schema(implementation = ListingUpdateRequest.class),
+                            examples = {
+                                    @ExampleObject(name = "listing without options",
+                                            summary = "New price and stock; deliveryTowns omitted, "
+                                                    + "so the towns are kept",
+                                            value = """
+                                                    {
+                                                      "title": "Wireless Bluetooth Speaker",
+                                                      "description": "Portable speaker with 12h battery life.",
+                                                      "categoryCode": "tv-audio",
+                                                      "condition": "NEW",
+                                                      "city": "Harare",
+                                                      "area": "Avondale",
+                                                      "priceCents": 2399,
+                                                      "stockQty": 150
+                                                    }"""),
+                                    @ExampleObject(name = "with options, kept by id",
+                                            summary = "Every option named by id and no stockQty "
+                                                    + "sent, so each keeps its stock",
+                                            value = """
+                                                    {
+                                                      "title": "Cotton Crew Tee",
+                                                      "description": "100% cotton, pre-shrunk",
+                                                      "categoryCode": "other",
+                                                      "condition": "NEW",
+                                                      "city": "Harare",
+                                                      "area": "Avondale",
+                                                      "priceCents": 1999,
+                                                      "options": ["Size", "Colour"],
+                                                      "variants": [
+                                                        { "id": "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352",
+                                                          "values": ["M", "Black"] },
+                                                        { "id": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463",
+                                                          "values": ["L", "Black"] },
+                                                        { "id": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574",
+                                                          "values": ["XL", "Black"], "priceCents": 2299 }
+                                                      ]
+                                                    }"""),
+                                    @ExampleObject(name = "remove every option",
+                                            summary = "variants: [] - back to one stock count, so "
+                                                    + "stockQty is required",
+                                            value = """
+                                                    {
+                                                      "title": "Cotton Crew Tee",
+                                                      "description": "100% cotton, pre-shrunk",
+                                                      "categoryCode": "other",
+                                                      "condition": "NEW",
+                                                      "city": "Harare",
+                                                      "area": "Avondale",
+                                                      "priceCents": 1999,
+                                                      "stockQty": 10,
+                                                      "variants": []
+                                                    }""")
+                            })))
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Listing updated",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "updated", value = EXAMPLE_UPDATED_200))),
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "updated", value = EXAMPLE_UPDATED_200),
+                            @ExampleObject(name = "updated-with-options",
+                                    value = EXAMPLE_VARIANT_UPDATED_200)})),
             @ApiResponse(responseCode = "400", description = "Validation failed, unknown categoryCode, "
-                    + "or malformed id",
+                    + "malformed id, no stockQty for a listing without options, or options that "
+                    + "break the editor's rules",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "bean-validation", value = EXAMPLE_VALIDATION_400),
                             @ExampleObject(name = "title-empty-after-sanitization", value = EXAMPLE_TITLE_400),
                             @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
                             @ExampleObject(name = "unknown-town", value = EXAMPLE_UNKNOWN_TOWN_400),
                             @ExampleObject(name = "town-named-twice", value = EXAMPLE_DUPLICATE_TOWN_400),
-                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400)})),
+                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400),
+                            @ExampleObject(name = "stock-required", value = EXAMPLE_STOCK_REQUIRED_400),
+                            @ExampleObject(name = "options-without-variants",
+                                    value = EXAMPLE_OPTIONS_WITHOUT_VARIANTS_400),
+                            @ExampleObject(name = "invalid-variant-option",
+                                    value = EXAMPLE_INVALID_VARIANT_OPTION_400),
+                            @ExampleObject(name = "duplicate-variant", value = EXAMPLE_DUPLICATE_VARIANT_400),
+                            @ExampleObject(name = "unknown-variant", value = EXAMPLE_UNKNOWN_VARIANT_400),
+                            @ExampleObject(name = "variant-price-below-listing-price",
+                                    value = EXAMPLE_VARIANT_PRICE_BELOW_400),
+                            @ExampleObject(name = "kept-option-below-new-price",
+                                    value = EXAMPLE_KEPT_PRICE_BELOW_400),
+                            @ExampleObject(name = "listing-price-not-offered",
+                                    value = EXAMPLE_LISTING_PRICE_NOT_OFFERED_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
@@ -680,7 +1335,12 @@ public class ListingController {
                             @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
             @ApiResponse(responseCode = "404", description = "No listing with that id",
                     content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404)))
+                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404))),
+            @ApiResponse(responseCode = "422", description = "Options sent for a listing without "
+                    + "them while this cell has options switched off",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "variants-disabled",
+                                    value = EXAMPLE_VARIANTS_DISABLED_422)))
     })
     @PutMapping("/{id}")
     public ApiResult<ListingResponse> update(
@@ -729,6 +1389,56 @@ public class ListingController {
             @PathVariable("id") String id,
             @Valid @RequestBody ListingStatusRequest request) {
         return ApiResult.ok(listingService.changeStatus(CurrentUser.get(), parseListingId(id), request));
+    }
+
+    @Operation(summary = "Set ONE option's stock (quick restock)",
+            description = "V19. The absolute stock of one option of a listing with options - "
+                    + "\"size M is back to 12\" - leaving every other option, and the orders "
+                    + "already holding units of them, alone. The listing's `stockQty` (the total) "
+                    + "follows. Favourites are told when the listing comes back from 0. Allowed "
+                    + "even while the cell's options switch is off. Owner or SUPER_ADMIN.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Set; the whole listing comes back",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "restocked",
+                                    value = EXAMPLE_VARIANT_LISTING_200))),
+            @ApiResponse(responseCode = "400", description = "Malformed listing or option id, a "
+                    + "missing or out-of-range stockQty, or a count that would take the options' "
+                    + "total over 1000000",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400),
+                            @ExampleObject(name = "invalid-variant-id", value = """
+                                    {"code":"invalid_variant_id","message":"Variant id must be a UUID"}"""),
+                            @ExampleObject(name = "stock-out-of-range", value = """
+                                    {"code":"VALIDATION_ERROR","message":"Request validation failed","data":{"stockQty":"must be less than or equal to 1000000"}}"""),
+                            @ExampleObject(name = "total-over-the-cap", value = """
+                                    {"code":"stock_out_of_range","message":"The options' stock adds up to more than 1000000"}""")})),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Wrong role, no merchant scope, or not the owner",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403),
+                            @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
+            @ApiResponse(responseCode = "404", description = "No such listing, or no such option of it",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "listing-not-found", value = EXAMPLE_NOT_FOUND_404),
+                            @ExampleObject(name = "variant-not-found", value = """
+                                    {"code":"variant_not_found","message":"Variant not found"}""")}))
+    })
+    @PatchMapping("/{id}/variants/{variantId}/stock")
+    public ApiResult<ListingResponse> setVariantStock(
+            @Parameter(description = "Listing id", example = "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id,
+            @Parameter(description = "Option id (one of the listing's `variants[].id`)",
+                    example = "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("variantId") String variantId,
+            @Valid @RequestBody VariantStockRequest request) {
+        return ApiResult.ok(listingService.setVariantStock(CurrentUser.get(), parseListingId(id),
+                parseVariantId(variantId), request.stockQty()));
     }
 
     @Operation(summary = "Upload/replace the PRIMARY listing image",
@@ -989,6 +1699,14 @@ public class ListingController {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException ex) {
             throw ApiException.badRequest("invalid_listing_id", "Listing id must be a UUID");
+        }
+    }
+
+    private static UUID parseVariantId(String raw) {
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            throw ApiException.badRequest("invalid_variant_id", "Variant id must be a UUID");
         }
     }
 

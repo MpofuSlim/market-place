@@ -89,7 +89,17 @@ public class OrderController {
                     + "problems is corrected once instead of over two round-trips. The top-level `code` and "
                     + "`message` still name the first offender exactly as before, so existing clients are "
                     + "unaffected. The order is refused as a whole either way: a partially-fulfilled order "
-                    + "is never created.",
+                    + "is never created."
+                    + "\n\n**Options (V19).** A line for a listing sold in options (`hasVariants: true` - "
+                    + "sizes, colours) names the chosen one as `variantId`; the line is charged at that "
+                    + "OPTION's price and stock is reserved from that option. Two sizes of one listing are "
+                    + "two lines; the same option twice is 400 `duplicate_listing`. A line naming no option "
+                    + "is refused 422 `variant_required` (the cart answers the same miss with 400 - branch "
+                    + "on the code), and one whose option is gone or not that listing's 422 "
+                    + "`variant_unavailable`; both rank after every older reason, so an order that fails "
+                    + "for an older reason as well still reports that one at the top. Each created line "
+                    + "carries `variantId` and `variantLabel` (\"XL - Black\") as they were at order "
+                    + "time - show `titleSnapshot` and `variantLabel` as two strings, verbatim.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = CreateOrderRequest.class),
@@ -97,6 +107,17 @@ public class OrderController {
                                     @ExampleObject(name = "Check out the cart", value = """
                                             {
                                               "fromCart": true,
+                                              "deliveryMethod": "DELIVERY",
+                                              "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                                            }
+                                            """),
+                                    @ExampleObject(name = "Buy Now, a size chosen, delivered", value = """
+                                            {
+                                              "items": [
+                                                { "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41", "quantity": 1,
+                                                  "variantId": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574" },
+                                                { "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d", "quantity": 2 }
+                                              ],
                                               "deliveryMethod": "DELIVERY",
                                               "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
                                             }
@@ -124,68 +145,133 @@ public class OrderController {
             @ApiResponse(responseCode = "201", description = "Order created; stock reserved",
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = OrderResponse.class),
-                            examples = @ExampleObject(name = "Created order", value = """
-                                    {
-                                      "code": "CREATED",
-                                      "message": "Created",
-                                      "data": {
-                                        "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
-                                        "orderRef": "MKT-4F9A1C22B7D3",
-                                        "status": "PENDING_PAYMENT",
-                                        "subtotalCents": 3550,
-                                        "deliveryFeeCents": 200,
-                                        "totalCents": 3750,
-                                        "currency": "USD",
-                                        "deliveryMethod": "DELIVERY",
-                                        "deliveryAddress": {
-                                          "recipientName": "Tariro Moyo",
-                                          "recipientMsisdn": "+263771234567",
-                                          "line1": "14 Samora Machel Ave",
-                                          "line2": "Flat 3B",
-                                          "city": "Harare",
-                                          "area": "Avondale",
-                                          "landmark": "Opposite the clinic, blue gate",
-                                          "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
-                                        },
-                                        "expiresAt": "2026-08-05T10:45:00Z",
-                                        "createdAt": "2026-08-05T10:15:00Z",
-                                        "items": [
-                                          {
-                                            "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
-                                            "titleSnapshot": "Solar Lantern 20W",
-                                            "unitPriceCents": 1550,
-                                            "quantity": 2,
-                                            "lineTotalCents": 3100
-                                          },
-                                          {
-                                            "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
-                                            "titleSnapshot": "USB-C Charging Cable 2m",
-                                            "unitPriceCents": 450,
-                                            "quantity": 1,
-                                            "lineTotalCents": 450
-                                          }
-                                        ],
-                                        "payment": {
-                                          "endpoint": "POST /payments",
-                                          "orderType": "MARKETPLACE",
-                                          "orderRef": "MKT-4F9A1C22B7D3",
-                                          "amountCents": 3750,
-                                          "currency": "USD",
-                                          "payBefore": "2026-08-05T10:45:00Z",
-                                          "methods": [
+                            examples = {
+                                    @ExampleObject(name = "Created order, a size chosen", value = """
                                             {
-                                              "rail": "INNBUCKS_CODE",
-                                              "label": "InnBucks app",
-                                              "description": "Approve the payment code in your InnBucks app.",
-                                              "completion": "APPROVE_IN_APP"
+                                              "code": "CREATED",
+                                              "message": "Created",
+                                              "data": {
+                                                "id": "d7e1c3a5-8b2f-4c69-9e04-3f6a1b8d2c75",
+                                                "orderRef": "MKT-4F2A9C1B77D0",
+                                                "status": "PENDING_PAYMENT",
+                                                "subtotalCents": 5399,
+                                                "deliveryFeeCents": 300,
+                                                "totalCents": 5699,
+                                                "currency": "USD",
+                                                "deliveryMethod": "DELIVERY",
+                                                "deliveryAddress": {
+                                                  "recipientName": "Tariro Moyo",
+                                                  "recipientMsisdn": "+263771234567",
+                                                  "line1": "14 Samora Machel Ave",
+                                                  "line2": "Flat 3B",
+                                                  "city": "Harare",
+                                                  "area": "Avondale",
+                                                  "landmark": "Opposite the clinic, blue gate",
+                                                  "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                                                },
+                                                "expiresAt": "2026-09-24T11:35:00Z",
+                                                "createdAt": "2026-09-24T11:05:00Z",
+                                                "items": [
+                                                  {
+                                                    "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                                                    "titleSnapshot": "Cotton Crew Tee",
+                                                    "unitPriceCents": 2299,
+                                                    "quantity": 1,
+                                                    "lineTotalCents": 2299,
+                                                    "variantId": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574",
+                                                    "variantLabel": "XL - Black"
+                                                  },
+                                                  {
+                                                    "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                                    "titleSnapshot": "Solar Lantern 20W",
+                                                    "unitPriceCents": 1550,
+                                                    "quantity": 2,
+                                                    "lineTotalCents": 3100
+                                                  }
+                                                ],
+                                                "payment": {
+                                                  "endpoint": "POST /payments",
+                                                  "orderType": "MARKETPLACE",
+                                                  "orderRef": "MKT-4F2A9C1B77D0",
+                                                  "amountCents": 5699,
+                                                  "currency": "USD",
+                                                  "payBefore": "2026-09-24T11:35:00Z",
+                                                  "methods": [
+                                                    {
+                                                      "rail": "INNBUCKS_CODE",
+                                                      "label": "InnBucks app",
+                                                      "description": "Approve the payment code in your InnBucks app.",
+                                                      "completion": "APPROVE_IN_APP"
+                                                    }
+                                                  ]
+                                                },
+                                                "fulfilments": [],
+                                                "actions": { "canCancel": true }
+                                              }
                                             }
-                                          ]
-                                        },
-                                        "fulfilments": [],
-                                        "actions": { "canCancel": true }
-                                      }
-                                    }
-                                    """))),
+                                            """),
+                                    @ExampleObject(name = "Created order", value = """
+                                            {
+                                              "code": "CREATED",
+                                              "message": "Created",
+                                              "data": {
+                                                "id": "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e",
+                                                "orderRef": "MKT-4F9A1C22B7D3",
+                                                "status": "PENDING_PAYMENT",
+                                                "subtotalCents": 3550,
+                                                "deliveryFeeCents": 200,
+                                                "totalCents": 3750,
+                                                "currency": "USD",
+                                                "deliveryMethod": "DELIVERY",
+                                                "deliveryAddress": {
+                                                  "recipientName": "Tariro Moyo",
+                                                  "recipientMsisdn": "+263771234567",
+                                                  "line1": "14 Samora Machel Ave",
+                                                  "line2": "Flat 3B",
+                                                  "city": "Harare",
+                                                  "area": "Avondale",
+                                                  "landmark": "Opposite the clinic, blue gate",
+                                                  "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                                                },
+                                                "expiresAt": "2026-08-05T10:45:00Z",
+                                                "createdAt": "2026-08-05T10:15:00Z",
+                                                "items": [
+                                                  {
+                                                    "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                                                    "titleSnapshot": "Solar Lantern 20W",
+                                                    "unitPriceCents": 1550,
+                                                    "quantity": 2,
+                                                    "lineTotalCents": 3100
+                                                  },
+                                                  {
+                                                    "listingId": "5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d",
+                                                    "titleSnapshot": "USB-C Charging Cable 2m",
+                                                    "unitPriceCents": 450,
+                                                    "quantity": 1,
+                                                    "lineTotalCents": 450
+                                                  }
+                                                ],
+                                                "payment": {
+                                                  "endpoint": "POST /payments",
+                                                  "orderType": "MARKETPLACE",
+                                                  "orderRef": "MKT-4F9A1C22B7D3",
+                                                  "amountCents": 3750,
+                                                  "currency": "USD",
+                                                  "payBefore": "2026-08-05T10:45:00Z",
+                                                  "methods": [
+                                                    {
+                                                      "rail": "INNBUCKS_CODE",
+                                                      "label": "InnBucks app",
+                                                      "description": "Approve the payment code in your InnBucks app.",
+                                                      "completion": "APPROVE_IN_APP"
+                                                    }
+                                                  ]
+                                                },
+                                                "fulfilments": [],
+                                                "actions": { "canCancel": true }
+                                              }
+                                            }
+                                            """)})),
             @ApiResponse(responseCode = "400", description = "Missing Idempotency-Key, invalid msisdn, "
                     + "invalid lines, a collection-point choice that is not that seller's (data "
                     + "names the seller), or one seller named twice in collectionPoints",
@@ -204,6 +290,9 @@ public class OrderController {
                                     """),
                             @ExampleObject(name = "Duplicate line", value = """
                                     {"code":"duplicate_listing","message":"Listing 9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d appears more than once in the order"}
+                                    """),
+                            @ExampleObject(name = "Same option twice", value = """
+                                    {"code":"duplicate_listing","message":"Listing e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41 variant 2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574 appears more than once in the order"}
                                     """),
                             @ExampleObject(name = "Stale collection point",
                                     value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
@@ -249,13 +338,34 @@ public class OrderController {
                                       }
                                     }
                                     """),
+                            @ExampleObject(name = "An option sold out", value = """
+                                    {
+                                      "code": "insufficient_stock",
+                                      "message": "Insufficient stock for listing e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41 variant 1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                                            "reason": "INSUFFICIENT_STOCK",
+                                            "message": "Cotton Crew Tee (L - Black) is sold out",
+                                            "requestedQty": 1,
+                                            "availableQty": 0,
+                                            "unitPriceCents": 1999,
+                                            "variantId": "1b7e3e29-6d4c-4fa8-9e32-c5a8f0d2b463",
+                                            "variantLabel": "L - Black"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """),
                             @ExampleObject(name = "Concurrent duplicate", value = """
                                     {"code":"request_in_flight","message":"A request with this Idempotency-Key is already in flight"}
                                     """)})),
             @ApiResponse(responseCode = "422", description = "Listing unavailable, a DELIVERY line "
-                    + "its seller does not deliver to the address's town, an address with no town, "
-                    + "or the key was reused with a different body. An unavailability refusal carries "
-                    + "`data.rejections` — EVERY failing line, whatever the mix of reasons.",
+                    + "its seller does not deliver to the address's town, an address with no town, a "
+                    + "line with no option chosen on a listing sold in options, a chosen option that is "
+                    + "gone, or the key was reused with a different body. An unavailability refusal "
+                    + "carries `data.rejections` — EVERY failing line, whatever the mix of reasons.",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "Listing unavailable (mixed reasons, all listed)", value = """
                                     {
@@ -300,6 +410,41 @@ public class OrderController {
                                     """),
                             @ExampleObject(name = "Address has no town", value = """
                                     {"code":"address_town_required","message":"Choose the town for this address before using it for delivery"}
+                                    """),
+                            @ExampleObject(name = "No option chosen", value = """
+                                    {
+                                      "code": "variant_required",
+                                      "message": "Listing e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41 needs an option chosen",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                                            "reason": "VARIANT_REQUIRED",
+                                            "message": "Choose a Size and Colour for Cotton Crew Tee",
+                                            "requestedQty": 1,
+                                            "unitPriceCents": 1999
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """),
+                            @ExampleObject(name = "The chosen option is gone", value = """
+                                    {
+                                      "code": "variant_unavailable",
+                                      "message": "Listing e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41 variant 9f1d6b42-3a8e-4c17-b5d9-0e2f7c4a8b61 is not available",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                                            "reason": "VARIANT_UNAVAILABLE",
+                                            "message": "The option you chose for Cotton Crew Tee is no longer available - choose another",
+                                            "requestedQty": 1,
+                                            "unitPriceCents": 1999,
+                                            "variantId": "9f1d6b42-3a8e-4c17-b5d9-0e2f7c4a8b61"
+                                          }
+                                        ]
+                                      }
+                                    }
                                     """),
                             @ExampleObject(name = "Key reused with different body", value = """
                                     {"code":"idempotency_key_reuse","message":"Idempotency-Key was already used with a different request body"}

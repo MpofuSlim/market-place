@@ -15,31 +15,98 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
         JpaSpecificationExecutor<Listing> {
 
     /**
-     * Atomic stock reservation for the order flow: decrements only when enough
-     * stock exists AND the listing is ACTIVE, all inside one UPDATE — the
-     * returned count is the success signal (0 = insufficient stock or not
-     * ACTIVE; the caller must check it). Never read-modify-write stock through
-     * the entity. Caller owns the transaction.
+     * Atomic stock reservation for the order flow — a listing WITHOUT variants:
+     * decrements only when enough stock exists AND the listing is ACTIVE AND it
+     * has no variants, all inside one UPDATE. The returned count is the success
+     * signal (0 = insufficient stock, not ACTIVE, or a variant listing; the
+     * caller must check it). Native, because {@code stock_qty} is not updatable
+     * through the entity (V19). Caller owns the transaction; only
+     * {@code ListingStock} calls it.
      */
     @Modifying
-    @Query("""
-            update Listing l
-               set l.stockQty = l.stockQty - :q
-             where l.id = :id
-               and l.stockQty >= :q
-               and l.status = com.innbucks.marketplaceservice.catalog.ListingStatus.ACTIVE
-            """)
+    @Query(value = """
+            UPDATE listing SET stock_qty = stock_qty - :q
+             WHERE id = :id AND stock_qty >= :q AND status = 'ACTIVE' AND has_variants = FALSE
+            """, nativeQuery = true)
     int reserveStock(@Param("id") UUID id, @Param("q") int q);
 
     /**
-     * Returns reserved stock on cancel/expiry. No status guard: a reservation
-     * released after the merchant deactivated the listing must still restock —
-     * the units were really held. Exactly-once is the order package's job
-     * ({@code market_order.stock_released} double-release guard).
+     * Returns reserved stock on cancel/expiry/decline — a listing WITHOUT
+     * variants. No status guard: a reservation released after the merchant
+     * deactivated the listing must still restock — the units were really held.
+     * The {@code has_variants = FALSE} guard makes a return to a listing that
+     * has since been converted to variants a 0 (metered, never credited to a
+     * total it would no longer mean anything in). Exactly-once is the
+     * callers' job ({@code market_order.stock_released},
+     * {@code order_fulfilment.stock_returned}).
      */
     @Modifying
-    @Query("update Listing l set l.stockQty = l.stockQty + :q where l.id = :id")
+    @Query(value = """
+            UPDATE listing SET stock_qty = stock_qty + :q
+             WHERE id = :id AND has_variants = FALSE
+            """, nativeQuery = true)
     int restock(@Param("id") UUID id, @Param("q") int q);
+
+    /**
+     * Locks one listing row for a stock movement and reads what the movement
+     * needs to know first ({@code FOR NO KEY UPDATE} — the lock a non-key
+     * UPDATE takes, so it never blocks the {@code FOR KEY SHARE} of an FK
+     * insert into a child table). Null when there is no such row.
+     *
+     * <p>The lock rule (see {@code ListingStock}): a listing row before any of
+     * its variant rows, and across listings in {@code java.util.UUID} order.
+     * The aliases are quoted so the projection binds by exact name.
+     */
+    @Query(value = """
+            SELECT status AS "status", has_variants AS "hasVariants", stock_qty AS "stockQty"
+              FROM listing WHERE id = :id FOR NO KEY UPDATE
+            """, nativeQuery = true)
+    StockRow lockForStock(@Param("id") UUID id);
+
+    /**
+     * Sets a variant listing's derived total to the sum of its variants. Runs
+     * ONLY while the transaction holds the listing row lock and AFTER that
+     * transaction's variant statements — never a delta, so a drifted total
+     * heals on the next movement and can never underflow the CHECK.
+     * {@code flushAutomatically} so variant rows saved through the entity
+     * manager are in the sum.
+     */
+    @Modifying(flushAutomatically = true)
+    @Query(value = """
+            UPDATE listing SET stock_qty = (SELECT COALESCE(SUM(v.stock_qty), 0)
+                                              FROM listing_variant v WHERE v.listing_id = :id)
+             WHERE id = :id AND has_variants = TRUE
+            """, nativeQuery = true)
+    int recomputeStockTotal(@Param("id") UUID id);
+
+    /** The seller's absolute stock set on a listing WITHOUT variants. */
+    @Modifying(flushAutomatically = true)
+    @Query(value = "UPDATE listing SET stock_qty = :qty WHERE id = :id AND has_variants = FALSE",
+            nativeQuery = true)
+    int setPlainStock(@Param("id") UUID id, @Param("qty") int qty);
+
+    /** True when the listing exists and sells options — the cart's question
+     *  before it accepts a line with or without a variant. */
+    boolean existsByIdAndHasVariantsTrue(UUID id);
+
+    /**
+     * Listings whose derived total disagrees with their variants, or whose
+     * discriminator disagrees with whether variant rows exist. Only an
+     * out-of-band write (an older image after a rollback, manual SQL) can make
+     * one; {@code VariantStockDriftSweeper} reports the count and never
+     * repairs.
+     */
+    @Query(value = """
+            SELECT l.id FROM listing l
+             WHERE (l.has_variants AND l.stock_qty <> COALESCE(
+                        (SELECT SUM(v.stock_qty) FROM listing_variant v WHERE v.listing_id = l.id), 0))
+                OR (l.has_variants AND NOT EXISTS
+                        (SELECT 1 FROM listing_variant v WHERE v.listing_id = l.id))
+                OR (NOT l.has_variants AND EXISTS
+                        (SELECT 1 FROM listing_variant v WHERE v.listing_id = l.id))
+             ORDER BY l.id
+            """, nativeQuery = true)
+    java.util.List<UUID> findStockDrift();
 
     /**
      * Atomic review-aggregate maintenance (V5): applied in the SAME transaction
@@ -58,10 +125,19 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
                                @Param("sumDelta") long sumDelta,
                                @Param("countDelta") int countDelta);
 
-    /** Current stock only — used by the restock-alert foundation to detect a
-     *  0 → &gt;0 transition around {@link #restock} without loading the entity. */
+    /** Current stock (the derived total for a variant listing) — read by
+     *  {@code ListingStock} UNDER the listing row lock, after a movement, to
+     *  detect a 0 → &gt;0 transition without loading the entity. */
     @Query("select l.stockQty from Listing l where l.id = :id")
     Integer stockQtyOf(@Param("id") UUID id);
+
+    /** The listing's seller, read WITHOUT a lock and without loading the
+     *  entity — so an editor can refuse a listing that is not the caller's
+     *  BEFORE taking its row lock (V19). Null when there is no such listing.
+     *  Safe to check ahead of the lock because no path changes a listing's
+     *  seller. */
+    @Query("select l.merchantId from Listing l where l.id = :id")
+    UUID merchantIdOf(@Param("id") UUID id);
 
     long countByMerchantId(UUID merchantId);
 

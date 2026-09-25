@@ -3,14 +3,18 @@ package com.innbucks.marketplaceservice.catalog.dto;
 import com.innbucks.marketplaceservice.catalog.ItemCondition;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
+import com.innbucks.marketplaceservice.catalog.ListingStatus;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
 import com.innbucks.marketplaceservice.pickup.dto.CollectionTown;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
-import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -57,13 +61,16 @@ public record ListingResponse(
                 example = "Avondale", nullable = true)
         String area,
 
-        @Schema(description = "Unit price in MINOR units (cents)", example = "2599")
+        @Schema(description = "Unit price in MINOR units (cents). For a listing with options "
+                + "(`hasVariants`) this is the LOWEST option price - show it as \"from\" - and "
+                + "each option's own price is on `variants[].priceCents`.", example = "2599")
         long priceCents,
 
         @Schema(description = "ISO-4217 cell currency", example = "USD")
         String currency,
 
-        @Schema(example = "120")
+        @Schema(description = "Units on sale. For a listing with options, the total across them "
+                + "(each option's own count is on `variants[].stockQty`).", example = "120")
         int stockQty,
 
         @Schema(example = "ACTIVE")
@@ -109,7 +116,25 @@ public record ListingResponse(
         @Schema(description = "Towns where the seller has a collection point, in the town list's "
                 + "display order (V18). Empty when the seller has set none up - collection is "
                 + "then arranged with the seller directly.")
-        List<CollectionTown> collectionTowns
+        List<CollectionTown> collectionTowns,
+
+        @Schema(description = "V19: true when the buyer must choose an option (a size, a colour) - "
+                + "show the picker, and send the chosen `variants[].id` as `variantId` on the cart, "
+                + "the quote and the order.", example = "false")
+        boolean hasVariants,
+
+        @Schema(description = "V19: the option axes with their values, in the seller's order - "
+                + "render one row of choices per entry. Empty for a listing without options.")
+        List<ListingOptionResponse> options,
+
+        @Schema(description = "V19: every option with its own price and stock, in the seller's "
+                + "order. Empty for a listing without options.")
+        List<ListingVariantResponse> variants,
+
+        @Schema(description = "V19: the highest option price (equals `priceCents` for a listing "
+                + "without options) - with `priceCents`, the range to print (\"USD 19.99 - "
+                + "22.99\").", example = "2599")
+        long maxPriceCents
 ) {
 
     /**
@@ -150,6 +175,23 @@ public record ListingResponse(
                                        MarketplaceSeller seller, String resolvedName,
                                        List<DeliveryTownFeeResponse> deliveryTowns,
                                        List<CollectionTown> collectionTowns) {
+        return from(listing, images, categoryName, seller, resolvedName, deliveryTowns,
+                collectionTowns, List.of());
+    }
+
+    /** {@code variants} are the listing's options (V19) in position order —
+     *  empty for a listing without options. */
+    public static ListingResponse from(Listing listing, List<ImageMeta> images, String categoryName,
+                                       MarketplaceSeller seller, String resolvedName,
+                                       List<DeliveryTownFeeResponse> deliveryTowns,
+                                       List<CollectionTown> collectionTowns,
+                                       List<ListingVariant> variants) {
+        List<ListingVariant> options = listing.isHasVariants() && variants != null
+                ? variants : List.of();
+        long listingPrice = listing.getPriceCents();
+        long maxPrice = options.stream()
+                .mapToLong(v -> v.effectivePriceCents(listingPrice))
+                .max().orElse(listingPrice);
         boolean hasPrimary = images.stream().anyMatch(ImageMeta::isPrimaryImage);
         List<String> urls = images.stream()
                 .map(meta -> "/marketplace/catalog/" + listing.getId() + "/images/" + meta.getId())
@@ -181,7 +223,33 @@ public record ListingResponse(
                         : SellerBadge.from(seller, resolvedName),
                 !deliveryTowns.isEmpty(),
                 List.copyOf(deliveryTowns),
-                collectionTowns == null ? List.of() : List.copyOf(collectionTowns));
+                collectionTowns == null ? List.of() : List.copyOf(collectionTowns),
+                listing.isHasVariants(),
+                axes(listing, options),
+                options.stream().map(v -> ListingVariantResponse.from(v, listingPrice)).toList(),
+                Math.max(maxPrice, listingPrice));
+    }
+
+    /** Each axis with its distinct values in the options' order — what a picker
+     *  renders, so the app derives nothing. */
+    private static List<ListingOptionResponse> axes(Listing listing, List<ListingVariant> options) {
+        if (!listing.isHasVariants() || listing.getOption1Name() == null) {
+            return List.of();
+        }
+        Set<String> first = new LinkedHashSet<>();
+        Set<String> second = new LinkedHashSet<>();
+        for (ListingVariant option : options) {
+            first.add(option.getOption1Value());
+            if (option.getOption2Value() != null) {
+                second.add(option.getOption2Value());
+            }
+        }
+        List<ListingOptionResponse> axes = new ArrayList<>(2);
+        axes.add(new ListingOptionResponse(listing.getOption1Name(), List.copyOf(first)));
+        if (listing.getOption2Name() != null) {
+            axes.add(new ListingOptionResponse(listing.getOption2Name(), List.copyOf(second)));
+        }
+        return List.copyOf(axes);
     }
 
     /** One-decimal average from the denormalized V5 aggregates — zero extra

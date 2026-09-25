@@ -86,7 +86,7 @@ public class SettlementViewAssembler {
             return null;
         }
         String named = items.stream().limit(SUMMARY_LINES)
-                .map(item -> item.getQuantity() + " x " + item.getTitleSnapshot())
+                .map(item -> item.getQuantity() + " x " + item.displayTitle())
                 .collect(Collectors.joining(", "));
         return items.size() > SUMMARY_LINES
                 ? named + " + " + (items.size() - SUMMARY_LINES) + " more" : named;

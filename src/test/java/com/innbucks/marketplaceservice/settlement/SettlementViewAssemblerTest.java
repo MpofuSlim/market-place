@@ -100,6 +100,28 @@ class SettlementViewAssemblerTest {
     }
 
     @Test
+    @DisplayName("A line bought in an option names it beside the title; a plain line reads as before")
+    void anOptionLineNamesItsOption() {
+        UUID orderId = UUID.randomUUID();
+        MarketOrderItem tee = item(orderId, SELLER, "Cotton Crew Tee", 1);
+        tee.setVariantId(UUID.randomUUID());
+        tee.setVariantLabel("XL - Black");
+
+        assertThat(SettlementViewAssembler.itemSummary(
+                List.of(tee, item(orderId, SELLER, "Solar Lantern 20W", 2))))
+                .isEqualTo("1 x Cotton Crew Tee (XL - Black), 2 x Solar Lantern 20W");
+        // Two sizes of one listing are two lines, and count as two toward the
+        // summary's bound.
+        MarketOrderItem medium = item(orderId, SELLER, "Cotton Crew Tee", 2);
+        medium.setVariantId(UUID.randomUUID());
+        medium.setVariantLabel("M - Black");
+        assertThat(SettlementViewAssembler.itemSummary(List.of(medium, tee,
+                item(orderId, SELLER, "Solar Lantern 20W", 1), item(orderId, SELLER, "Garden Hose", 1))))
+                .isEqualTo("2 x Cotton Crew Tee (M - Black), 1 x Cotton Crew Tee (XL - Black), "
+                        + "1 x Solar Lantern 20W + 1 more");
+    }
+
+    @Test
     @DisplayName("A refund reason appears only where a refund is in play, from whoever decided it")
     void refundReasonSources() {
         MerchantSettlement released = MerchantSettlement.builder()

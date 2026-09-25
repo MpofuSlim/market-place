@@ -19,7 +19,19 @@ public record CartItemRequest(
                 + "rather than refused — a shopper tapping + past the cap wants the cap, not an error.",
                 example = "1", nullable = true)
         @Min(1)
-        Integer quantity) {
+        Integer quantity,
+
+        @Schema(description = "The option to add (V19) - REQUIRED when the listing has "
+                + "`hasVariants: true` (400 variant_required otherwise), one of its `variants[].id` "
+                + "(404 variant_not_found otherwise). Omit for a listing without options. Two "
+                + "options of one listing are two cart lines.",
+                example = "0a6f2d18-5c3b-4e97-8d21-b4f7e9c1a352", nullable = true)
+        UUID variantId) {
+
+    /** A line on a listing without options — the pre-V19 shape. */
+    public CartItemRequest(UUID listingId, Integer quantity) {
+        this(listingId, quantity, null);
+    }
 
     public int quantityOrOne() {
         return quantity == null ? 1 : quantity;

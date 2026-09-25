@@ -6,6 +6,8 @@ import com.innbucks.marketplaceservice.catalog.ListingDeliveryTown;
 import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
+import com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
@@ -46,8 +48,8 @@ import java.util.stream.Collectors;
  * charged.
  *
  * <p><b>Advisory, always.</b> Stock read here can be stale the instant it is
- * taken. {@code ListingRepository.reserveStock}'s atomic UPDATE remains the
- * authoritative guard at order creation — this exists so the COMMON case
+ * taken. {@code ListingStock.reserveAll}'s guarded UPDATEs (the listing's, or
+ * each option's) remain the authoritative guard at order creation — this exists so the COMMON case
  * reports every problem at once, on the screen before the customer commits,
  * instead of one problem per attempt.
  */
@@ -58,15 +60,18 @@ public class CheckoutPricer {
     private final ListingDeliveryTownRepository deliveryTownRepository;
     private final DeliveryTownCatalog towns;
     private final String currency;
+    private final ListingVariantRepository variantRepository;
 
     public CheckoutPricer(ListingRepository listingRepository,
                           ListingDeliveryTownRepository deliveryTownRepository,
                           DeliveryTownCatalog towns,
-                          @Value("${innbucks.currency}") String currency) {
+                          @Value("${innbucks.currency}") String currency,
+                          ListingVariantRepository variantRepository) {
         this.listingRepository = listingRepository;
         this.deliveryTownRepository = deliveryTownRepository;
         this.towns = towns;
         this.currency = currency;
+        this.variantRepository = variantRepository;
     }
 
     /**
@@ -98,6 +103,14 @@ public class CheckoutPricer {
                 .findAllById(listingIds)
                 .stream()
                 .collect(Collectors.toMap(Listing::getId, l -> l));
+        // V19: every named option in ONE query, and none at all for a basket
+        // of listings without options.
+        List<UUID> variantIds = requested.stream().map(BasketLine::variantId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<UUID, ListingVariant> variants = variantIds.isEmpty()
+                ? Map.of()
+                : variantRepository.findAllById(variantIds).stream()
+                        .collect(Collectors.toMap(ListingVariant::getId, v -> v));
         boolean delivering = method == DeliveryMethod.DELIVERY;
         // One query for every line's coverage — never one per line.
         Map<UUID, Map<String, Long>> coverage = delivering ? coverageOf(listingIds) : Map.of();
@@ -109,13 +122,25 @@ public class CheckoutPricer {
         long subtotal = 0L;
         for (BasketLine line : requested) {
             Listing listing = listings.get(line.listingId());
-            OrderLineRejection issue = classify(listing, line);
+            // Only an option OF THIS listing counts as the line's option; a
+            // foreign or missing one is classified below and priced as nothing.
+            // (An immutable Map refuses a null key, so a line without an option
+            // must not ask.)
+            ListingVariant variant = line.variantId() == null ? null : variants.get(line.variantId());
+            if (variant != null && (listing == null || !listing.isHasVariants()
+                    || !variant.getListingId().equals(listing.getId()))) {
+                variant = null;
+            }
+            OrderLineRejection issue = classify(listing, line, variant);
             if (issue == null && delivering) {
                 Long fee = coverage.getOrDefault(listing.getId(), Map.of()).get(townCode);
                 if (fee == null) {
                     issue = OrderLineRejection.notDeliveredToTown(listing.getId(), listing.getTitle(),
-                            line.quantity(), listing.getPriceCents(),
-                            townName == null ? "this town" : townName);
+                            line.quantity(),
+                            variant == null ? listing.getPriceCents()
+                                    : variant.effectivePriceCents(listing.getPriceCents()),
+                            townName == null ? "this town" : townName,
+                            line.variantId(), variant == null ? null : variant.label());
                 } else {
                     // One parcel per seller: the trip costs the dearest of
                     // that seller's lines to this town, not their sum.
@@ -125,17 +150,23 @@ public class CheckoutPricer {
             // An unavailable listing is handed on as null even when a row was
             // found: nothing downstream should price, name or attribute a
             // listing this surface has just declared unbuyable.
+            // A VARIANT_* issue keeps its listing: the seller is still known
+            // (V18's collection-point resolution needs them) and the line can
+            // still be named and priced for the shopper who must fix it.
+            boolean unavailable = issue != null
+                    && OrderLineRejection.REASON_UNAVAILABLE.equals(issue.reason());
             PricedLine priced = new PricedLine(line.listingId(), line.quantity(),
-                    issue != null && OrderLineRejection.REASON_UNAVAILABLE.equals(issue.reason())
-                            ? null : listing,
-                    issue);
+                    unavailable ? null : listing,
+                    issue, line.variantId(), unavailable ? null : variant);
             lines.add(priced);
             if (issue != null) {
                 issues.add(issue);
             } else {
                 try {
+                    // The line's own unit price, so a line and the subtotal it
+                    // feeds can never disagree about what an option costs.
                     subtotal = Math.addExact(subtotal,
-                            Math.multiplyExact(listing.getPriceCents(), (long) line.quantity()));
+                            Math.multiplyExact(priced.unitPriceCents(), (long) line.quantity()));
                 } catch (ArithmeticException ex) {
                     throw ApiException.unprocessable("order_total_overflow",
                             "Order total exceeds the maximum representable amount");
@@ -168,17 +199,52 @@ public class CheckoutPricer {
      * One reason for missing / not ACTIVE / foreign currency: the client remedy
      * is identical (drop the line), and it leaks nothing the public catalog
      * does not already show.
+     *
+     * <p>V19, after availability and before stock: a listing that sells
+     * options needs one named ({@code VARIANT_REQUIRED}), and a named option
+     * must be one of THIS listing's ({@code VARIANT_UNAVAILABLE} — also for an
+     * option named on a listing without options). Stock is then the OPTION's.
+     *
+     * @param variant the line's option, already confirmed to belong to
+     *                {@code listing}; null when none was named or it is not
+     *                this listing's
      */
-    private OrderLineRejection classify(Listing listing, BasketLine line) {
+    private OrderLineRejection classify(Listing listing, BasketLine line, ListingVariant variant) {
         if (listing == null
                 || listing.getStatus() != ListingStatus.ACTIVE
                 || !currency.equals(listing.getCurrency())) {
-            return OrderLineRejection.unavailable(line.listingId(), line.quantity());
+            return line.variantId() == null
+                    ? OrderLineRejection.unavailable(line.listingId(), line.quantity())
+                    : OrderLineRejection.unavailable(line.listingId(), line.quantity(), line.variantId(),
+                            variant == null ? null : variant.label());
+        }
+        if (listing.isHasVariants() && line.variantId() == null) {
+            return OrderLineRejection.variantRequired(listing.getId(), listing.getTitle(),
+                    axes(listing), line.quantity(), listing.getPriceCents());
+        }
+        if (line.variantId() != null && variant == null) {
+            return OrderLineRejection.variantUnavailable(listing.getId(), listing.getTitle(),
+                    line.variantId(), line.quantity(), listing.getPriceCents());
+        }
+        if (variant != null) {
+            if (variant.getStockQty() < line.quantity()) {
+                return OrderLineRejection.insufficientStock(line.listingId(), listing.getTitle(),
+                        line.quantity(), variant.getStockQty(),
+                        variant.effectivePriceCents(listing.getPriceCents()),
+                        variant.getId(), variant.label());
+            }
+            return null;
         }
         if (listing.getStockQty() < line.quantity()) {
             return OrderLineRejection.insufficientStock(line.listingId(), listing.getTitle(),
                     line.quantity(), listing.getStockQty(), listing.getPriceCents());
         }
         return null;
+    }
+
+    /** "Size" or "Size and Colour" — what the shopper has to choose. */
+    private static String axes(Listing listing) {
+        String first = listing.getOption1Name() == null ? "option" : listing.getOption1Name();
+        return listing.getOption2Name() == null ? first : first + " and " + listing.getOption2Name();
     }
 }

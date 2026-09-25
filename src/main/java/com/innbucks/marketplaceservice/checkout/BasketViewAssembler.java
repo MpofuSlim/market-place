@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.checkout;
 
 import com.innbucks.marketplaceservice.catalog.ListingViewAssembler;
 import com.innbucks.marketplaceservice.catalog.dto.ListingResponse;
+import com.innbucks.marketplaceservice.catalog.dto.ListingVariantResponse;
 import com.innbucks.marketplaceservice.checkout.dto.PricedLineResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -35,7 +36,7 @@ public class BasketViewAssembler {
      *                quote built from explicit items — the field is
      *                {@code NON_NULL} and simply drops out then
      */
-    public List<PricedLineResponse> toLines(PricedBasket basket, Map<UUID, Instant> addedAt) {
+    public List<PricedLineResponse> toLines(PricedBasket basket, Map<LineKey, Instant> addedAt) {
         Map<UUID, ListingResponse> views = listingViewAssembler.toResponsesById(
                 basket.lines().stream()
                         .map(PricedLine::listing)
@@ -51,7 +52,12 @@ public class BasketViewAssembler {
                     line.quantity(),
                     line.lineTotalCents(),
                     line.issue(),
-                    addedAt.get(line.listingId())));
+                    addedAt.get(line.key()),
+                    line.variantId(),
+                    line.variant() == null || line.listing() == null ? null
+                            : ListingVariantResponse.from(line.variant(),
+                                    line.listing().getPriceCents()),
+                    line.listing() == null ? null : line.unitPriceCents()));
         }
         return List.copyOf(lines);
     }

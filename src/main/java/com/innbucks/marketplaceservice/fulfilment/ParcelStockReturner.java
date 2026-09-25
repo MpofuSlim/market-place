@@ -1,12 +1,12 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
-import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingRestocked;
+import com.innbucks.marketplaceservice.catalog.ListingStock;
+import com.innbucks.marketplaceservice.catalog.StockLine;
 import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,8 +37,7 @@ import java.util.List;
 public class ParcelStockReturner {
 
     private final MarketOrderItemRepository itemRepository;
-    private final ListingRepository listingRepository;
-    private final ApplicationEventPublisher eventPublisher;
+    private final ListingStock listingStock;
 
     /**
      * @return the number of lines returned, 0 when this parcel's stock has
@@ -53,13 +52,14 @@ public class ParcelStockReturner {
         List<MarketOrderItem> mine = itemRepository.findByOrderId(parcel.getOrderId()).stream()
                 .filter(item -> parcel.getMerchantId().equals(item.getMerchantId()))
                 .toList();
-        for (MarketOrderItem item : mine) {
-            Integer before = listingRepository.stockQtyOf(item.getListingId());
-            listingRepository.restock(item.getListingId(), item.getQuantity());
-            if (before != null && before == 0 && item.getQuantity() > 0) {
-                eventPublisher.publishEvent(new ListingRestocked(item.getListingId()));
-            }
-        }
+        // Back to where each line was reserved (the listing, or the option),
+        // in the reserve's lock order; ListingStock publishes ListingRestocked
+        // for a listing it brings back from 0 and never throws for a return
+        // with nowhere to go, which would wedge the decline.
+        listingStock.returnAll(mine.stream()
+                .map(item -> new StockLine(item.getListingId(), item.getVariantId(),
+                        item.getQuantity()))
+                .toList());
         parcel.setStockReturned(true);
         log.info("parcel stock returned fulfilmentId={} orderId={} lines={}",
                 parcel.getId(), parcel.getOrderId(), mine.size());

@@ -18,7 +18,8 @@ public record CartResponse(
         @Schema(description = "Lines, most recently added first")
         List<PricedLineResponse> items,
 
-        @Schema(description = "Distinct listings in the cart", example = "2")
+        @Schema(description = "Distinct lines in the cart - one listing in two sizes is two lines",
+                example = "2")
         int lineCount,
 
         @Schema(description = "Total units across all lines — the number on the cart badge",

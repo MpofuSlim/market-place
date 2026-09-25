@@ -22,8 +22,10 @@ import java.util.UUID;
  *
  * <p>{@code merchantId}/{@code shopId} are copied from the fleet JWT's claims
  * at create time — never from a request body. Stock movements bypass this
- * entity entirely (bulk {@code @Modifying} updates in {@link ListingRepository})
- * so reservation is a single atomic UPDATE, never a read-modify-write.
+ * entity entirely (native bulk updates in {@link ListingRepository}, all driven
+ * by {@code ListingStock}) so reservation is a single atomic UPDATE, never a
+ * read-modify-write — and {@code stockQty} is not updatable through the entity
+ * at all.
  */
 @Entity
 @Table(name = "listing")
@@ -78,8 +80,42 @@ public class Listing {
     @Column(name = "currency", nullable = false, length = 3)
     private String currency;
 
-    @Column(name = "stock_qty", nullable = false)
+    /**
+     * Units on sale. For a listing WITHOUT variants this is the stock itself;
+     * for one WITH variants (V19) it is a DERIVED total of its
+     * {@code listing_variant} rows, recomputed under the listing row lock in
+     * the same transaction as every variant movement.
+     *
+     * <p>{@code updatable = false}: inserted on create, then moved ONLY by the
+     * native statements in {@link ListingRepository} / {@code ListingStock}.
+     * Before V19 every entity save (an image upload's touch, a status change,
+     * a moderation takedown) wrote back whatever stock the entity was loaded
+     * with — a bulk reservation in between was silently undone, re-selling
+     * units already held. Hibernate's dirty check skips a non-updatable
+     * column, so setting it in memory after a native write is harmless.
+     */
+    @Column(name = "stock_qty", nullable = false, updatable = false)
     private int stockQty;
+
+    /**
+     * V19: true when the listing sells OPTIONS (sizes, colours) with their own
+     * stock in {@code listing_variant}. The discriminator every stock statement
+     * guards on, so a plain-listing UPDATE can never move a variant listing's
+     * derived total. Written only by the editor, through this entity (a
+     * version bump), never by a stock path.
+     */
+    @Builder.Default
+    @Column(name = "has_variants", nullable = false)
+    private boolean hasVariants = false;
+
+    /** V19: the first option axis ("Size"); null exactly when the listing has
+     *  no variants ({@code chk_listing_variant_axes}). */
+    @Column(name = "option1_name", length = 30)
+    private String option1Name;
+
+    /** V19: the optional second axis ("Colour"). */
+    @Column(name = "option2_name", length = 30)
+    private String option2Name;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16)

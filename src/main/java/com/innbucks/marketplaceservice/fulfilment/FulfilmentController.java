@@ -89,16 +89,68 @@ public class FulfilmentController {
               "createdAt": "2026-09-14T11:20:10Z"
             }""";
 
+    /** V19: a parcel with an OPTION line - the Cotton Crew Tee in XL beside two
+     *  Solar Lanterns (order MKT-4F2A9C1B77D0). Pack by `titleSnapshot` plus
+     *  `variantLabel`, both exactly as they were at order time. On the road, its
+     *  money held until the buyer has it. */
+    private static final String EXAMPLE_PARCEL_WITH_OPTION = """
+            {
+              "id": "8c4e2a6f-1d3b-4e75-a9c8-5b7d0f2e4a16",
+              "orderId": "d7e1c3a5-8b2f-4c69-9e04-3f6a1b8d2c75",
+              "orderRef": "MKT-4F2A9C1B77D0",
+              "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+              "status": "DISPATCHED",
+              "deliveryMethod": "DELIVERY",
+              "destination": {
+                "recipientName": "Tariro Moyo",
+                "recipientMsisdn": "+263771234567",
+                "line1": "14 Samora Machel Ave",
+                "line2": "Flat 3B",
+                "city": "Harare",
+                "area": "Avondale",
+                "landmark": "Opposite the clinic, blue gate"
+              },
+              "items": [
+                {
+                  "listingId": "e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41",
+                  "titleSnapshot": "Cotton Crew Tee",
+                  "unitPriceCents": 2299,
+                  "quantity": 1,
+                  "lineTotalCents": 2299,
+                  "variantId": "2c8f4f3a-7e5d-40b9-af43-d6b9a1e3c574",
+                  "variantLabel": "XL - Black"
+                },
+                {
+                  "listingId": "9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d",
+                  "titleSnapshot": "Solar Lantern 20W",
+                  "unitPriceCents": 1550,
+                  "quantity": 2,
+                  "lineTotalCents": 3100
+                }
+              ],
+              "subtotalCents": 5399,
+              "currency": "USD",
+              "paidAt": "2026-09-24T11:12:40Z",
+              "dispatchNote": "Own driver, Avondale run",
+              "dispatchedAt": "2026-09-24T13:45:00Z",
+              "createdAt": "2026-09-24T11:12:40Z",
+              "settlementStatus": "HELD",
+              "settlementNetCents": 5699,
+              "trackingCode": "TRK-9H4M2P7R3W",
+              "trackingStatus": "DISPATCHED"
+            }""";
+
     private static final String EXAMPLE_QUEUE_200 = """
             {
               "code": "OK",
               "message": "Success",
               "data": {
                 "items": [""" + EXAMPLE_PARCEL + """
+                ,""" + EXAMPLE_PARCEL_WITH_OPTION + """
                 ],
                 "page": 0,
                 "size": 20,
-                "totalItems": 1,
+                "totalItems": 2,
                 "totalPages": 1
               }
             }""";
@@ -166,6 +218,9 @@ public class FulfilmentController {
                     + "Each row carries the DESTINATION and only THIS seller's lines and subtotal — "
                     + "never the whole order — so a seller in a multi-seller order learns nothing "
                     + "about what else the buyer bought.\n\n"
+                    + "A line for one option of a listing (a size, a colour - V19) also carries "
+                    + "`variantId` and `variantLabel` (\"XL - Black\") exactly as they were when the "
+                    + "buyer paid: pack by `titleSnapshot` AND `variantLabel`.\n\n"
                     + "**Find the buyer at the counter with `q`** — one box, read by shape: an "
                     + "order reference (`MKT-…`), a tracking code (`TRK-…`), a phone number (any "
                     + "spelling: `0771234567`, `+263 77 123 4567`), or part of a name. A name "
