@@ -20,6 +20,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -61,6 +62,9 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
 
     @Value("${jwt.secret}")
     private String jwtSecret;
+
+    @Value("${innbucks.internal-api-token}")
+    private String internalToken;
 
     private String merchantToken;
     private UUID merchantId;
@@ -159,6 +163,38 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.collectionPoints[0].collectionPoint.line1")
                         .value("22 Fife St"));
+    }
+
+    @Test
+    @DisplayName("Once paid, a token-less buyer's parcels carry the same server-computed actions")
+    void aPaidPublicOrderCarriesParcelActions() throws Exception {
+        String listingId = publishListing();
+        addToCart("alice", listingId, 1);
+        String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "public-actions-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"fromCart":true,"buyerMsisdn":"0771234567","deliveryMethod":"COLLECTION"}"""))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.actions.canCancel").value(true))
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+        String orderRef = JsonPath.read(created, "$.data.orderRef");
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentRef\":\"INB-PAY-PUB-1\",\"amountCents\":1550}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/orders/{o}", "alice", orderId)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control",
+                        org.hamcrest.Matchers.containsString("no-store")))
+                .andExpect(jsonPath("$.data.actions.canCancel").value(false))
+                .andExpect(jsonPath("$.data.fulfilments[0].actions.canConfirmReceipt").value(true))
+                .andExpect(jsonPath("$.data.fulfilments[0].actions.canRequestCollectCode").value(true))
+                .andExpect(jsonPath("$.data.fulfilments[0].actions.canCancel").value(true))
+                .andExpect(jsonPath("$.data.fulfilments[0].actions.canDispute").value(true));
     }
 
     @Test

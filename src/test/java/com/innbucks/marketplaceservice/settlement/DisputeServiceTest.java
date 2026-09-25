@@ -79,7 +79,8 @@ class DisputeServiceTest {
         eventPublisher = mock(ApplicationEventPublisher.class);
         service = new DisputeService(disputeRepository, settlementRepository,
                 fulfilmentRepository, orderRepository, settlementService, auditService,
-                new MarketplaceMetrics(new SimpleMeterRegistry()), eventPublisher, WINDOW_DAYS);
+                new MarketplaceMetrics(new SimpleMeterRegistry()), eventPublisher,
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(WINDOW_DAYS));
         when(disputeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
 

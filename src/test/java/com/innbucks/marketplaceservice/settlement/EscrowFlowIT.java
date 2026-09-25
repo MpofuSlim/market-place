@@ -205,8 +205,8 @@ class EscrowFlowIT extends PostgresTestContainer {
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(jsonPath("$.data.items[0].status").value("HELD"));
 
-        // 48 hours pass (the clock is data, so the test moves it), and the
-        // next sweep releases the money.
+        // The grace window passes (the clock is data, so the test moves it),
+        // and the next sweep releases the money.
         jdbc.update("UPDATE merchant_settlement SET releasable_at = now() - interval '1 hour'");
         sweeper.sweep();
         mockMvc.perform(get("/marketplace/settlements")

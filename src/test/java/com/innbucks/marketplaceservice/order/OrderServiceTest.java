@@ -144,7 +144,9 @@ class OrderServiceTest {
         OrderViewAssembler views = new OrderViewAssembler(itemRepository, fulfilmentService,
                 mock(com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository.class),
                 mock(SellerService.class), checkoutService,
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                mock(com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.class),
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
         service = new OrderService(orderRepository, itemRepository, deliveryFeeRepository,
                 listingRepository,
                 transitions, idempotencyService, auditService,
@@ -192,6 +194,24 @@ class OrderServiceTest {
                 .expiresAt(now.plusSeconds(1800)).stockReleased(false)
                 .createdAt(now).updatedAt(now)
                 .build();
+    }
+
+    @Test
+    void confirmReceivedRefusesAnotherOrdersParcelBeforeClosingIt() {
+        // The parcel is the buyer's, but on a DIFFERENT order of theirs. It
+        // must be refused BEFORE anything closes: closing first and then
+        // rolling back left a FULFILMENT_DELIVERED audit row behind, because the
+        // audit commits in its own transaction.
+        MarketOrder order = order(OrderStatus.PAID);
+        when(orderRepository.findByIdAndBuyerUuid(order.getId(), BUYER_UUID))
+                .thenReturn(java.util.Optional.of(order));
+        when(fulfilmentService.forOrder(order.getId())).thenReturn(List.of());
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> service.confirmReceived(BUYER, order.getId(), UUID.randomUUID()));
+
+        assertEquals("fulfilment_not_found", ex.code());
+        verify(fulfilmentService, never()).confirmReceived(any(), any());
     }
 
     private static MarketOrderItem orderItem(UUID orderId, UUID listingId, int quantity) {
@@ -695,7 +715,7 @@ class OrderServiceTest {
                 Instant.now().plusSeconds(1800), Instant.now(), null,
                 List.of(new OrderResponse.Line(new UUID(0, 1), "Solar Lantern 20W",
                         1550, 2, 3100)),
-                null, null, List.of(), null, null);
+                null, null, List.of(), null, null, null);
         when(idempotencyService.claim(anyString(), anyString())).thenReturn(
                 new ClaimResult.Replay(201, objectMapper.writeValueAsString(stored)));
 

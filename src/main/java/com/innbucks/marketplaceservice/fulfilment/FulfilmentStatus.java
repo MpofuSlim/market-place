@@ -29,13 +29,15 @@ public enum FulfilmentStatus {
     /** Sent (DELIVERY) or ready at the counter (COLLECTION). */
     DISPATCHED,
 
-    /** Handed over. Terminal — either the buyer confirmed receipt or the seller
-     *  marked it delivered. */
+    /** Handed over. Terminal — the buyer confirmed receipt, the collector's
+     *  code was redeemed at the counter, or (DELIVERY only) the seller marked
+     *  it delivered; {@code deliveredBy} says which. */
     DELIVERED,
 
     /**
-     * The seller cannot supply these goods. Terminal, and reachable only from
-     * PREPARING (V12).
+     * The parcel will not arrive. Terminal: the seller cannot supply it, the
+     * buyer cancelled it (V16), or — a COLLECTION only, from DISPATCHED — it
+     * was never collected. Otherwise reachable only from PREPARING (V12).
      *
      * <p>Named UNFULFILLED rather than CANCELLED because {@code OrderStatus}
      * already spends that word on a BUYER abandoning an order before paying.

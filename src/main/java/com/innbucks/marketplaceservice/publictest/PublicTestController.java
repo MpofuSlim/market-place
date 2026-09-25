@@ -568,7 +568,8 @@ public class PublicTestController {
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable) {
         AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_list");
-        return ResponseEntity.ok(ApiResult.ok(
+        // no-store, as the authenticated twin: the parcels' `actions` change with time.
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResult.ok(
                 OrderPageResponse.from(orderService.getMine(buyer, pageable))));
     }
 
@@ -584,7 +585,7 @@ public class PublicTestController {
     public ResponseEntity<ApiResult<OrderResponse>> myOrder(
             @PathVariable String handle, @PathVariable String orderId) {
         AuthenticatedUser buyer = actAsOrderingBuyer(handle, "order_read");
-        return ResponseEntity.ok(ApiResult.ok(
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResult.ok(
                 orderService.getOrder(buyer, parseUuid(orderId, "invalid_order_id", "Order id must be a UUID"))));
     }
 
@@ -665,7 +666,9 @@ public class PublicTestController {
             @ApiResponse(responseCode = "200", description = "A live code for this parcel"),
             @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or not this handle's order/parcel",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
-            @ApiResponse(responseCode = "409", description = "A delivery order, or a parcel already handed over")
+            @ApiResponse(responseCode = "409", description = "A delivery order, a parcel already "
+                    + "handed over, or a cancelled one - `collect_code_not_applicable` / "
+                    + "`illegal_fulfilment_state`, as on the authenticated endpoint")
     })
     public ResponseEntity<ApiResult<CollectCodeResponse>> collectCode(
             @PathVariable String handle, @PathVariable String orderId,

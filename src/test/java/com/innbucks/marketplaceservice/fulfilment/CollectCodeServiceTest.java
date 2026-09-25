@@ -87,7 +87,8 @@ class CollectCodeServiceTest {
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(MarketOrderDeliveryFeeRepository.class),
                 TestParcelViews.over(orderRepository, itemRepository, settlementService),
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class));
+                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
         ReflectionTestUtils.setField(service, "maxCollectAttempts", MAX_ATTEMPTS);
         when(fulfilmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
@@ -224,6 +225,24 @@ class CollectCodeServiceTest {
                 .isEqualTo("illegal_fulfilment_state");
     }
 
+    @Test
+    @DisplayName("A cancelled or never-collected parcel gets no code - and nobody is texted one")
+    void mintingRefusesAnUnfulfilledParcel() {
+        order(DeliveryMethod.COLLECTION, "Chipo Moyo", "+263772000111");
+        OrderFulfilment cancelled = parcel(FulfilmentStatus.UNFULFILLED);
+
+        assertThatThrownBy(() -> service.mintCollectCode(BUYER, ORDER_ID, cancelled.getId()))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    assertThat(((ApiException) ex).code()).isEqualTo("illegal_fulfilment_state");
+                    assertThat(ex.getMessage())
+                            .isEqualTo("This parcel was cancelled - there is nothing to collect");
+                });
+        assertThat(cancelled.getCollectCodeHash()).isNull();
+        verify(fulfilmentRepository, never()).save(any());
+        verify(notifier, never()).send(any(), any(), any());
+    }
+
     // ------------------------------------------------------------------
     // Redeeming
     // ------------------------------------------------------------------
@@ -318,6 +337,50 @@ class CollectCodeServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("collect_code_unavailable");
+        verify(attempts, never()).bumpAndCount(any());
+    }
+
+    @Test
+    @DisplayName("A code presented for a cancelled parcel is refused before the compare - no "
+            + "budget spent, nothing handed over")
+    void aCancelledParcelIsRefusedBeforeTheCompare() {
+        order(DeliveryMethod.COLLECTION, null, null);
+        OrderFulfilment parcel = parcel(FulfilmentStatus.DISPATCHED);
+        String code = service.mintCollectCode(BUYER, ORDER_ID, parcel.getId()).code();
+        // The seller then closes it as not collected; the old code is still hashed.
+        parcel.setStatus(FulfilmentStatus.UNFULFILLED);
+
+        assertThatThrownBy(() -> service.collect(SELLER, parcel.getId(), new CollectRequest(code)))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    assertThat(((ApiException) ex).code()).isEqualTo("illegal_fulfilment_state");
+                    assertThat(ex.getMessage())
+                            .isEqualTo("This parcel was cancelled - do not hand it over");
+                });
+        verify(attempts, never()).bumpAndCount(any());
+        assertThat(parcel.getStatus()).isEqualTo(FulfilmentStatus.UNFULFILLED);
+    }
+
+    @Test
+    @DisplayName("A cancelled parcel that never had a code says it was cancelled - it does not "
+            + "send the seller to ask for a code the buyer can no longer mint")
+    void aCancelledParcelWithNoCodeSaysCancelled() {
+        order(DeliveryMethod.COLLECTION, null, null);
+        OrderFulfilment parcel = parcel(FulfilmentStatus.UNFULFILLED);
+
+        assertThatThrownBy(() -> service.collect(SELLER, parcel.getId(),
+                new CollectRequest("K7Q2-9XMF-3TRW")))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    assertThat(((ApiException) ex).code()).isEqualTo("illegal_fulfilment_state");
+                    assertThat(ex.getMessage())
+                            .isEqualTo("This parcel was cancelled - do not hand it over");
+                });
+        // And the advice the old order gave really would have dead-ended:
+        assertThatThrownBy(() -> service.mintCollectCode(BUYER, ORDER_ID, parcel.getId()))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("illegal_fulfilment_state");
         verify(attempts, never()).bumpAndCount(any());
     }
 

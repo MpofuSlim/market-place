@@ -349,8 +349,12 @@ public class FulfilmentController {
                     + "which is weaker evidence than a buyer's own confirmation. So:\n\n"
                     + "- the buyer is sent an SMS saying you marked it delivered, and that they "
                     + "can report it within the dispute window if it never arrived;\n"
-                    + "- your money is held for that whole window (7 days by default) before it "
-                    + "can be paid out. The buyer tapping \"received\" releases it at once.\n\n"
+                    + "- your money is held for that whole window (7 days by default) and is then "
+                    + "released automatically unless the buyer reports a problem. This close is "
+                    + "final: the buyer cannot confirm receipt afterwards, so nothing the buyer "
+                    + "does releases it sooner - only an operator settling a dispute in your "
+                    + "favour can. (A buyer who confirms receipt BEFORE you mark it delivered "
+                    + "releases it at once.)\n\n"
                     + "**Refused on a COLLECTION order** (`collect_code_required`), for every "
                     + "caller: a collection closes as delivered only with the buyer's collection "
                     + "code (`POST /{id}/collect`) or the buyer's own \"received\". If the buyer "
@@ -481,9 +485,15 @@ public class FulfilmentController {
             @ApiResponse(responseCode = "404", description = "No such parcel for this seller",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404))),
             @ApiResponse(responseCode = "409", description = "Nothing to redeem here: a delivery "
-                    + "order, no code issued yet, the parcel is already closed, or the wrong-code "
-                    + "budget has run out",
+                    + "order, the parcel is already closed (collected, or cancelled - never hand "
+                    + "those goods over), no code issued yet, or the wrong-code budget has run "
+                    + "out. A closed parcel is refused on its state before the code is looked "
+                    + "at, so no code is compared and no budget is spent",
                     content = @Content(examples = {
+                            @ExampleObject(name = "Already collected", value = """
+                                    {"code":"illegal_fulfilment_state","message":"This parcel has already been handed over"}"""),
+                            @ExampleObject(name = "Cancelled", value = """
+                                    {"code":"illegal_fulfilment_state","message":"This parcel was cancelled - do not hand it over"}"""),
                             @ExampleObject(name = "No code yet", value = """
                                     {"code":"collect_code_unavailable","message":"No collection code has been issued for this parcel - ask the buyer to generate one in their app"}"""),
                             @ExampleObject(name = "Locked", value = """

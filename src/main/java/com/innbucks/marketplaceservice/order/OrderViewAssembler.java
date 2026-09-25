@@ -2,23 +2,28 @@ package com.innbucks.marketplaceservice.order;
 
 import com.innbucks.marketplaceservice.checkout.CheckoutService;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
+import com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
-import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentDestination;
+import com.innbucks.marketplaceservice.fulfilment.dto.FulfilmentResponse;
+import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
+import com.innbucks.marketplaceservice.order.dto.OrderActions;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.SellerService;
+import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
+import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository;
 import com.innbucks.marketplaceservice.settlement.SettlementDispute;
 import com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
-import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -45,12 +50,15 @@ public class OrderViewAssembler {
     private final SellerService sellerService;
     private final CheckoutService checkoutService;
     private final CollectionPointViews collectionPoints;
+    private final MerchantSettlementRepository settlementRepository;
+    private final BuyerParcelRules buyerRules;
 
     /** Single-order assembly. */
     public OrderResponse toResponse(MarketOrder order) {
         List<MarketOrderItem> items = itemRepository.findByOrderId(order.getId());
         List<OrderFulfilment> parcels = fulfilmentService.forOrder(order.getId());
         return build(order, items, parcels, sellerNames(parcels), disputes(parcels),
+                settlements(parcels),
                 collectionPointsOf(List.of(order)).getOrDefault(order.getId(), Map.of()));
     }
 
@@ -59,7 +67,7 @@ public class OrderViewAssembler {
      * path, which has just written them and must not read them back.
      */
     public OrderResponse toResponse(MarketOrder order, List<MarketOrderItem> items) {
-        return build(order, items, List.of(), Map.of(), Map.of(),
+        return build(order, items, List.of(), Map.of(), Map.of(), Map.of(),
                 collectionPointsOf(List.of(order)).getOrDefault(order.getId(), Map.of()));
     }
 
@@ -74,11 +82,12 @@ public class OrderViewAssembler {
                 .flatMap(List::stream).toList();
         Map<UUID, String> sellers = sellerNames(allParcels);
         Map<UUID, DisputeResponse> disputes = disputes(allParcels);
+        Map<UUID, MerchantSettlement> settlements = settlements(allParcels);
         Map<UUID, Map<UUID, CollectionPointResponse>> points = collectionPointsOf(page.getContent());
         return page.map(order -> build(order,
                 itemsByOrder.getOrDefault(order.getId(), List.of()),
                 parcelsByOrder.getOrDefault(order.getId(), List.of()),
-                sellers, disputes, points.getOrDefault(order.getId(), Map.of())));
+                sellers, disputes, settlements, points.getOrDefault(order.getId(), Map.of())));
     }
 
     /** ONE snapshot query (plus one for live hours) for every COLLECTION order
@@ -93,6 +102,7 @@ public class OrderViewAssembler {
     private OrderResponse build(MarketOrder order, List<MarketOrderItem> items,
                                 List<OrderFulfilment> parcels, Map<UUID, String> sellerNames,
                                 Map<UUID, DisputeResponse> disputes,
+                                Map<UUID, MerchantSettlement> settlements,
                                 Map<UUID, CollectionPointResponse> pointBySeller) {
         List<OrderResponse.Line> lines = items.stream().map(OrderViewAssembler::toLine).toList();
         boolean collection = order.getDeliveryMethod() == DeliveryMethod.COLLECTION;
@@ -105,7 +115,8 @@ public class OrderViewAssembler {
                 order.getTotalCents(),
                 order.getCurrency(),
                 order.getDeliveryMethod(),
-                FulfilmentDestination.from(order),
+                // The buyer's copy names the address-book entry it came from.
+                FulfilmentDestination.forBuyer(order),
                 order.getExpiresAt(),
                 order.getCreatedAt(),
                 order.getPaidAt(),
@@ -117,12 +128,15 @@ public class OrderViewAssembler {
                                 order.getTotalCents(), order.getCurrency(), order.getExpiresAt())
                         : null,
                 FulfilmentService.rollUp(parcels),
-                toParcels(parcels, items, sellerNames, disputes, pointBySeller),
+                toParcels(order, parcels, items, sellerNames, disputes, settlements,
+                        pointBySeller),
                 toRecipient(order),
                 collection
                         ? CollectionPointViews.perSeller(items.stream()
                                 .map(MarketOrderItem::getMerchantId).toList(), pointBySeller)
-                        : null);
+                        : null,
+                // The same rule the cancel endpoint enforces: the order state machine.
+                new OrderActions(OrderStateMachine.isLegal(order.getStatus(), OrderStatus.CANCELLED)));
     }
 
     /** Present only when the order was bought for someone else — the block's
@@ -137,13 +151,21 @@ public class OrderViewAssembler {
 
     /** Each parcel carries only ITS seller's lines, so the buyer can see which
      *  of their items are coming from where. */
-    private static List<FulfilmentResponse> toParcels(List<OrderFulfilment> parcels,
-                                                      List<MarketOrderItem> items,
-                                                      Map<UUID, String> sellerNames,
-                                                      Map<UUID, DisputeResponse> disputes,
-                                                      Map<UUID, CollectionPointResponse> points) {
+    private List<FulfilmentResponse> toParcels(MarketOrder order,
+                                               List<OrderFulfilment> parcels,
+                                               List<MarketOrderItem> items,
+                                               Map<UUID, String> sellerNames,
+                                               Map<UUID, DisputeResponse> disputes,
+                                               Map<UUID, MerchantSettlement> settlements,
+                                               Map<UUID, CollectionPointResponse> points) {
         List<FulfilmentResponse> out = new ArrayList<>(parcels.size());
+        Instant now = Instant.now();
         for (OrderFulfilment parcel : parcels) {
+            // Actions and deadlines from the SAME rules the buyer endpoints
+            // enforce — see BuyerParcelRules.
+            BuyerParcelRules.BuyerParcelState state = buyerRules.stateOf(order.getStatus(),
+                    order.getDeliveryMethod(), parcel, settlements.get(parcel.getId()),
+                    disputes.containsKey(parcel.getId()), now);
             out.add(new FulfilmentResponse(
                     parcel.getId(),
                     parcel.getMerchantId(),
@@ -166,9 +188,27 @@ public class OrderViewAssembler {
                     parcel.getTrackingCode(),
                     TrackingStatus.of(parcel.getStatus()),
                     parcel.getDeliveryFeeCents(),
-                    points.get(parcel.getMerchantId())));
+                    points.get(parcel.getMerchantId()),
+                    state.actions(),
+                    state.receivedAt(),
+                    state.closedAt(),
+                    state.closedBy(),
+                    state.disputableUntil(),
+                    state.paymentReleasesAt()));
         }
         return out;
+    }
+
+    /** ONE settlement lookup for every parcel across the whole page — what the
+     *  cancel and dispute rules (and the payment-release clock) read. */
+    private Map<UUID, MerchantSettlement> settlements(List<OrderFulfilment> parcels) {
+        if (parcels.isEmpty()) {
+            return Map.of();
+        }
+        return settlementRepository.findByFulfilmentIdIn(
+                        parcels.stream().map(OrderFulfilment::getId).toList())
+                .stream()
+                .collect(Collectors.toMap(MerchantSettlement::getFulfilmentId, st -> st));
     }
 
     /** ONE dispute lookup for every parcel across the whole page — the buyer's

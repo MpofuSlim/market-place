@@ -144,7 +144,8 @@ public class OrderController {
                                           "line2": "Flat 3B",
                                           "city": "Harare",
                                           "area": "Avondale",
-                                          "landmark": "Opposite the clinic, blue gate"
+                                          "landmark": "Opposite the clinic, blue gate",
+                                          "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
                                         },
                                         "expiresAt": "2026-08-05T10:45:00Z",
                                         "createdAt": "2026-08-05T10:15:00Z",
@@ -180,7 +181,8 @@ public class OrderController {
                                             }
                                           ]
                                         },
-                                        "fulfilments": []
+                                        "fulfilments": [],
+                                        "actions": { "canCancel": true }
                                       }
                                     }
                                     """))),
@@ -353,7 +355,8 @@ public class OrderController {
                                                 "quantity": 1,
                                                 "lineTotalCents": 450
                                               }
-                                            ]
+                                            ],
+                                            "actions": { "canCancel": true }
                                           }
                                         ],
                                         "page": 0,
@@ -377,7 +380,10 @@ public class OrderController {
     public ResponseEntity<ApiResult<OrderPageResponse>> getMine(
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable) {
-        return ResponseEntity.ok(ApiResult.ok(
+        // no-store: each parcel's `actions` change with time (a dispute window
+        // closes) and with the seller's moves, so a cached copy would offer
+        // buttons the server has since stopped accepting.
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResult.ok(
                 OrderPageResponse.from(orderService.getMine(CurrentUser.get(), pageable))));
     }
 
@@ -423,7 +429,8 @@ public class OrderController {
                                                 "quantity": 1,
                                                 "lineTotalCents": 450
                                               }
-                                            ]
+                                            ],
+                                            "actions": { "canCancel": true }
                                           }
                                         ],
                                         "page": 0,
@@ -490,7 +497,8 @@ public class OrderController {
                                           "line2": "Flat 3B",
                                           "city": "Harare",
                                           "area": "Avondale",
-                                          "landmark": "Opposite the clinic, blue gate"
+                                          "landmark": "Opposite the clinic, blue gate",
+                                          "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
                                         },
                                         "expiresAt": "2026-08-05T10:45:00Z",
                                         "createdAt": "2026-08-05T10:15:00Z",
@@ -535,9 +543,19 @@ public class OrderController {
                                                 "quantity": 1,
                                                 "lineTotalCents": 450
                                               }
-                                            ]
+                                            ],
+                                            "trackingCode": "TRK-7F3K9Q2M4X",
+                                            "trackingStatus": "DISPATCHED",
+                                            "deliveryFeeCents": 200,
+                                            "actions": {
+                                              "canConfirmReceipt": true,
+                                              "canRequestCollectCode": false,
+                                              "canCancel": false,
+                                              "canDispute": true
+                                            }
                                           }
-                                        ]
+                                        ],
+                                        "actions": { "canCancel": false }
                                       }
                                     }
                                     """))),
@@ -567,7 +585,8 @@ public class OrderController {
             @Parameter(description = "Order id (UUID)",
                     example = "b4a8e2d1-7c3f-4b5a-9e6d-2f1a8c7b5d4e")
             @PathVariable("id") String id) {
-        return ResponseEntity.ok(ApiResult.ok(orderService.getOrder(CurrentUser.get(), parseOrderId(id))));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(ApiResult.ok(orderService.getOrder(CurrentUser.get(), parseOrderId(id))));
     }
 
     @PostMapping("/{id}/cancel")
@@ -609,7 +628,8 @@ public class OrderController {
                                             "quantity": 1,
                                             "lineTotalCents": 450
                                           }
-                                        ]
+                                        ],
+                                        "actions": { "canCancel": false }
                                       }
                                     }
                                     """))),
@@ -676,9 +696,23 @@ public class OrderController {
                                             "sellerName": "Sunrise Electronics",
                                             "status": "DELIVERED",
                                             "deliveredAt": "2026-08-07T14:05:00Z",
-                                            "deliveredBy": "BUYER"
+                                            "deliveredBy": "BUYER",
+                                            "trackingCode": "TRK-7F3K9Q2M4X",
+                                            "trackingStatus": "DELIVERED",
+                                            "deliveryFeeCents": 200,
+                                            "actions": {
+                                              "canConfirmReceipt": false,
+                                              "canRequestCollectCode": false,
+                                              "canCancel": false,
+                                              "canDispute": true
+                                            },
+                                            "receivedAt": "2026-08-07T14:05:00Z",
+                                            "closedAt": "2026-08-07T14:05:00Z",
+                                            "closedBy": "BUYER_CONFIRMED",
+                                            "disputableUntil": "2026-08-14T14:05:00Z"
                                           }
-                                        ]
+                                        ],
+                                        "actions": { "canCancel": false }
                                       }
                                     }
                                     """))),
@@ -751,9 +785,18 @@ public class OrderController {
                                             "unfulfilledBy": "BUYER",
                                             "trackingCode": "TRK-7F3K9Q2M4X",
                                             "trackingStatus": "CANCELLED",
-                                            "deliveryFeeCents": 800
+                                            "deliveryFeeCents": 800,
+                                            "actions": {
+                                              "canConfirmReceipt": false,
+                                              "canRequestCollectCode": false,
+                                              "canCancel": false,
+                                              "canDispute": false
+                                            },
+                                            "closedAt": "2026-09-24T10:02:00Z",
+                                            "closedBy": "BUYER_CANCELLED"
                                           }
-                                        ]
+                                        ],
+                                        "actions": { "canCancel": false }
                                       }
                                     }
                                     """))),
@@ -811,6 +854,10 @@ public class OrderController {
                     + "show it on a map with its age (`recordedAt`), and poll this endpoint every "
                     + "15-30 seconds while the map is open. It disappears once the parcel is "
                     + "delivered or cancelled.\n\n"
+                    + "`actions` says what you may do with the parcel right now (confirm receipt, "
+                    + "show a collection code, cancel, report a problem) - the same flags as on "
+                    + "the order, from the same server rules; `receivedAt`, `closedAt`, "
+                    + "`closedBy`, `disputableUntil` and `paymentReleasesAt` are there too.\n\n"
                     + "Someone else's order, or a parcel that is not on this order, is the same "
                     + "404 as one that does not exist.")
     @ApiResponses({
@@ -836,14 +883,23 @@ public class OrderController {
                                                   "recipientName": "Tariro Moyo",
                                                   "recipientMsisdn": "+263771234567",
                                                   "line1": "14 Samora Machel Ave",
+                                                  "line2": "Flat 3B",
                                                   "city": "Harare",
-                                                  "area": "Avondale"
+                                                  "area": "Avondale",
+                                                  "landmark": "Opposite the clinic, blue gate",
+                                                  "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
                                                 },
                                                 "liveLocation": {
                                                   "latitude": -17.82922,
                                                   "longitude": 31.053961,
                                                   "accuracyMeters": 12,
                                                   "recordedAt": "2026-09-24T12:14:05Z"
+                                                },
+                                                "actions": {
+                                                  "canConfirmReceipt": true,
+                                                  "canRequestCollectCode": false,
+                                                  "canCancel": false,
+                                                  "canDispute": true
                                                 }
                                               }
                                             }"""),
@@ -862,7 +918,16 @@ public class OrderController {
                                                   { "status": "RECEIVED", "at": "2026-09-24T07:02:11Z" },
                                                   { "status": "CANCELLED", "at": "2026-09-24T08:15:00Z" }
                                                 ],
-                                                "cancelledReason": "Out of stock - the last one was damaged in storage"
+                                                "cancelledReason": "Out of stock - the last one was damaged in storage",
+                                                "cancelledBy": "SELLER",
+                                                "actions": {
+                                                  "canConfirmReceipt": false,
+                                                  "canRequestCollectCode": false,
+                                                  "canCancel": false,
+                                                  "canDispute": false
+                                                },
+                                                "closedAt": "2026-09-24T08:15:00Z",
+                                                "closedBy": "CANNOT_SUPPLY"
                                               }
                                             }""")})),
             @ApiResponse(responseCode = "400", description = "Malformed order or parcel id",
@@ -993,7 +1058,9 @@ public class OrderController {
                                     {"code":"fulfilment_not_found","message":"Fulfilment not found"}
                                     """))),
             @ApiResponse(responseCode = "409", description = "Nothing to collect: a delivery "
-                    + "order, or a parcel already handed over",
+                    + "order, a parcel already handed over, or a cancelled one (declined, "
+                    + "cancelled or not collected). `actions.canRequestCollectCode` is false in "
+                    + "all three",
                     content = @Content(mediaType = "application/json",
                             examples = {
                                     @ExampleObject(name = "Delivery order", value = """
@@ -1001,6 +1068,9 @@ public class OrderController {
                                             """),
                                     @ExampleObject(name = "Already collected", value = """
                                             {"code":"illegal_fulfilment_state","message":"This parcel has already been handed over"}
+                                            """),
+                                    @ExampleObject(name = "Cancelled parcel", value = """
+                                            {"code":"illegal_fulfilment_state","message":"This parcel was cancelled - there is nothing to collect"}
                                             """)}))
     })
     public ResponseEntity<ApiResult<CollectCodeResponse>> collectCode(
