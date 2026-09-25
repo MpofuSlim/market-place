@@ -120,20 +120,42 @@ public class SellerService {
      * doing the thing that makes them a seller, rather than needing an admin to
      * pre-register them. Idempotent, and never overwrites a decision already
      * made — a suspended seller who somehow reaches create stays suspended.
+     *
+     * <p><b>Race-safe for a seller with NO row yet.</b> It used to be a
+     * find-then-save: two concurrent first writes (a double-tapped "create
+     * listing", two portal tabs saving a payout destination) both missed the
+     * row, both inserted, and the loser 500'd on the primary key — leaving a
+     * second {@code SELLER_REGISTERED} on the audit chain for a registration
+     * that rolled back. The row is now created by
+     * {@code INSERT … ON CONFLICT DO NOTHING}: the loser's insert waits for the
+     * winner and then does nothing, and only the call that actually created the
+     * row audits the registration. The read that follows runs after that wait,
+     * so under READ COMMITTED it sees the winner's committed row.
      */
     @Transactional
     public MarketplaceSeller ensureExists(UUID merchantId) {
-        return sellers.findById(merchantId).orElseGet(() -> {
-            MarketplaceSeller created = sellers.save(MarketplaceSeller.builder()
-                    .merchantId(merchantId)
-                    .status(SellerStatus.PENDING)
-                    .createdAt(Instant.now())
-                    .build());
+        if (sellers.insertIfAbsent(merchantId, Instant.now()) == 1) {
             log.info("Seller record created merchantId={} status=PENDING", merchantId);
             auditService.record(AuditEventType.SELLER_REGISTERED, null, merchantId.toString(),
                     Map.of("status", SellerStatus.PENDING.name()));
-            return created;
-        });
+        }
+        return sellers.findById(merchantId).orElseThrow(() -> new IllegalStateException(
+                "Seller record " + merchantId + " missing straight after insert-if-absent"));
+    }
+
+    /**
+     * Makes sure the seller's trust record exists and takes its row lock for
+     * the rest of the caller's transaction — for writes that keep a per-seller
+     * invariant only this service can enforce (exactly one default collection
+     * point). A lock needs a row to lock, which is why {@link #ensureExists}
+     * must be race-safe first: with a find-then-save, two first taps both
+     * inserted the seller and the loser failed before the lock could serialise
+     * anything.
+     */
+    @Transactional
+    public void ensureExistsAndLock(UUID merchantId) {
+        ensureExists(merchantId);
+        sellers.lockForUpdate(merchantId);
     }
 
     /**
@@ -274,7 +296,8 @@ public class SellerService {
                                                           UUID merchantId,
                                                           PayoutDestinationRequest body,
                                                           boolean bySeller) {
-        MarketplaceSeller seller = ensureExists(merchantId);
+        // Validate FIRST: a refused request must not create (and audit) a
+        // seller record it then rolls back.
         String accountName = requireText(body.accountName(), "accountName");
 
         String msisdn = null;
@@ -287,6 +310,7 @@ public class SellerService {
                 accountNumber = requireText(body.accountNumber(), "accountNumber");
             }
         }
+        MarketplaceSeller seller = ensureExists(merchantId);
 
         boolean replaced = seller.hasPayoutDestination();
         seller.setPayoutMethod(body.method());

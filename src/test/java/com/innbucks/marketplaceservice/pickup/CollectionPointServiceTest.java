@@ -120,9 +120,8 @@ class CollectionPointServiceTest {
         service.create(SELLER, MERCHANT, request(), true);
 
         ArgumentCaptor<CollectionPoint> saved = ArgumentCaptor.forClass(CollectionPoint.class);
-        InOrder order = inOrder(sellerService, sellers, points, hours);
-        order.verify(sellerService).ensureExists(MERCHANT);
-        order.verify(sellers).lockForUpdate(MERCHANT);
+        InOrder order = inOrder(sellerService, points, hours);
+        order.verify(sellerService).ensureExistsAndLock(MERCHANT);
         order.verify(points).countByMerchantId(MERCHANT);
         order.verify(points).saveAndFlush(saved.capture());
         order.verify(hours).saveAll(anyList());
@@ -182,6 +181,18 @@ class CollectionPointServiceTest {
         assertThat(p.getLatitude()).isEqualByComparingTo(new BigDecimal("-17.798500"));
         assertThat(p.getLatitude().scale()).isEqualTo(6);
         assertThat(p.getMerchantId()).isEqualTo(MERCHANT);
+    }
+
+    @Test
+    @DisplayName("A refused request creates no seller record: validation runs before the "
+            + "record is ensured (and audited) or locked")
+    void validationRunsBeforeTheSellerRecordIsTouched() {
+        assertThatThrownBy(() -> service.create(SELLER, MERCHANT, withPin(-17.8, null), true))
+                .satisfies(ex -> assertThat(api(ex).code()).isEqualTo("pin_incomplete"));
+
+        verify(sellerService, never()).ensureExistsAndLock(any());
+        verify(sellerService, never()).ensureExists(any());
+        verifyNoInteractions(points, hours, audit);
     }
 
     @Test

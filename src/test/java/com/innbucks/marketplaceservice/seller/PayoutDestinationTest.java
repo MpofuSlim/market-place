@@ -163,6 +163,21 @@ class PayoutDestinationTest {
     }
 
     @Test
+    @DisplayName("A refused FIRST request never creates (or audits) a seller record: validation "
+            + "runs before the record is ensured")
+    void aRefusedFirstRequestRegistersNobody() {
+        assertThatThrownBy(() -> service.setPayoutDestination(
+                SELLER, MERCHANT, wallet("12"), true))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("invalid_msisdn");
+
+        verify(sellers, never()).insertIfAbsent(any(), any());
+        verify(sellers, never()).findById(any());
+        verify(auditService, never()).record(any(), any(), any(), any());
+    }
+
+    @Test
     @DisplayName("A field that sanitizes to nothing is refused, not silently stored as markup")
     void markupOnlyFieldIsRefused() {
         existing();
@@ -250,8 +265,11 @@ class PayoutDestinationTest {
     @Test
     @DisplayName("A merchant with no trust record yet gets one — onboarding order is free")
     void readingCreatesTheRecordOnFirstSight() {
-        when(sellers.findById(MERCHANT)).thenReturn(Optional.empty());
-        when(sellers.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        // The record is created race-safely (insert-if-absent), then read back.
+        when(sellers.insertIfAbsent(eq(MERCHANT), any(Instant.class))).thenReturn(1);
+        when(sellers.findById(MERCHANT)).thenReturn(Optional.of(MarketplaceSeller.builder()
+                .merchantId(MERCHANT).status(SellerStatus.PENDING)
+                .createdAt(Instant.now()).build()));
 
         // Asking for bank details before a seller has listed anything is an
         // ordinary onboarding order; a 404 would make the screen unreachable

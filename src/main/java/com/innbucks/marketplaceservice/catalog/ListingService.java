@@ -156,10 +156,6 @@ public class ListingService {
     public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request,
                                   MultipartFile primaryImage, List<MultipartFile> additionalImages) {
         UUID merchantId = resolveCreateMerchantId(caller, request);
-        // A merchant becomes a seller by listing, so the trust record is created
-        // here rather than needing an admin to pre-register them. Idempotent,
-        // and it never overwrites a decision already made.
-        sellerService.ensureExists(merchantId);
         validateRanges(request.priceCents(), request.stockQty());
         // Resolved BEFORE the insert, like the images: a bad town refuses the
         // whole create rather than leaving a listing half-configured.
@@ -207,6 +203,12 @@ public class ListingService {
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
+        // A merchant becomes a seller by listing, so the trust record is created
+        // here rather than needing an admin to pre-register them. Idempotent,
+        // race-safe, and it never overwrites a decision already made. Only now,
+        // after every check above: a refused create must not register (and
+        // audit) a seller it then rolls back.
+        sellerService.ensureExists(merchantId);
         listingRepository.save(listing);
         insertGallery(listing.getId(), validated, now);
         saveCoverage(listing.getId(), coverage);
