@@ -47,7 +47,7 @@
              — httpcore5-h2 is a separate GA that Trivy flags independently. Drop
              on the next Boot/httpclient5 upgrade once the transitive version
              reaches 5.4.3. -->
-        <httpcore5.version>5.4.3</httpcore5.version>
+        <httpcore5.version>5.4.4</httpcore5.version>
         <!-- netty transitive (LoadBalancer/WebFlux DNS paths): four HIGH CVEs
              fixed in 4.2.15.Final+, plus CVE-2026-75595 (CRITICAL,
              io.netty:netty-handler) fixed in 4.2.17.Final. The netty-bom import
