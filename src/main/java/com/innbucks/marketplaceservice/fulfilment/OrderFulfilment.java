@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
+import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -129,6 +130,18 @@ public class OrderFulfilment {
      *  per-seller snapshot when the parcel opens. 0 on a COLLECTION order. */
     @Column(name = "delivery_fee_cents", nullable = false, updatable = false)
     private long deliveryFeeCents;
+
+    /**
+     * How THIS parcel reaches the buyer (V20), copied from its seller's
+     * {@code market_order_seller} row when the order is paid and never changed
+     * after. Null only on a parcel opened before V20 or by a V19 replica
+     * during the rollout; every such order is uniform, so the order's own
+     * method is exact for it. Readers still use the order's method until the
+     * column is backfilled and made NOT NULL.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "delivery_method", length = 16, updatable = false)
+    private DeliveryMethod deliveryMethod;
 
     /** {@code TRK-XXXXXXXXXX}: a lookup key for the seller, an operator and
      *  the buyer — never a credential. Set once, at opening. */

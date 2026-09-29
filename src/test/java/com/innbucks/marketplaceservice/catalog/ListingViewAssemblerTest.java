@@ -266,4 +266,94 @@ class ListingViewAssemblerTest {
         assertThat(json.writeValueAsString(m)).doesNotContain("priceOverrideCents");
         assertThat(json.writeValueAsString(xl)).contains("\"priceOverrideCents\":2299");
     }
+
+    // ---- V20: delivery-only sellers -------------------------------------------
+
+    @Test
+    @DisplayName("A delivery-only seller's cards say so and carry no collection towns - read "
+            + "off the seller rows the page already loads, so the flag costs no query, and the "
+            + "town lookup is asked only about sellers who collect")
+    @SuppressWarnings("unchecked")
+    void deliveryOnlySellersCardsCarryNoCollectionTowns() {
+        UUID collectingMerchant = UUID.fromString("4b1c8e2f-7a3d-4c59-9e16-2d8f0a7b3c41");
+        SellerService sellers = mock(SellerService.class);
+        CollectionPointViews points = mock(CollectionPointViews.class);
+        ListingViewAssembler withSellers = new ListingViewAssembler(mock(ListingImageRepository.class),
+                mock(CategoryRepository.class), sellers,
+                mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe(),
+                points, variantRepository);
+        // MERCHANT turned collection off; the other seller has no record at all.
+        when(sellers.findAllByMerchantIds(any())).thenReturn(Map.of(MERCHANT,
+                com.innbucks.marketplaceservice.seller.MarketplaceSeller.builder()
+                        .merchantId(MERCHANT)
+                        .status(com.innbucks.marketplaceservice.seller.SellerStatus.APPROVED)
+                        .createdAt(CREATED)
+                        .collectionEnabled(false)
+                        .build()));
+        com.innbucks.marketplaceservice.pickup.dto.CollectionTown harare =
+                new com.innbucks.marketplaceservice.pickup.dto.CollectionTown("harare", "Harare");
+        // Even if the lookup answered for the delivery-only seller, the card
+        // must not show it.
+        when(points.townsFor(any())).thenReturn(Map.of(
+                MERCHANT, List.of(harare), collectingMerchant, List.of(harare)));
+        Listing theirs = listing(LANTERN, "Solar Lantern 20W", 2599, 3, null, null);
+        theirs.setMerchantId(collectingMerchant);
+
+        List<ListingResponse> page = withSellers.toResponsePage(
+                new PageImpl<>(List.of(speaker(), theirs))).getContent();
+
+        verify(sellers, times(1)).findAllByMerchantIds(any());
+        ArgumentCaptor<Collection<UUID>> asked = ArgumentCaptor.forClass(Collection.class);
+        verify(points, times(1)).townsFor(asked.capture());
+        assertThat(asked.getValue()).containsExactly(collectingMerchant);
+        verifyNoMoreInteractions(points);
+
+        ListingResponse deliveryOnly = page.get(0);
+        assertThat(deliveryOnly.collectionEnabled()).isFalse();
+        assertThat(deliveryOnly.collectionTowns()).isNotNull().isEmpty();
+        ListingResponse collecting = page.get(1);
+        assertThat(collecting.collectionEnabled()).isTrue();
+        assertThat(collecting.collectionTowns()).containsExactly(harare);
+    }
+
+    @Test
+    @DisplayName("A single delivery-only listing asks the town lookup about nobody")
+    @SuppressWarnings("unchecked")
+    void aSingleDeliveryOnlyListingAsksForNoTowns() {
+        SellerService sellers = mock(SellerService.class);
+        CollectionPointViews points = mock(CollectionPointViews.class);
+        ListingViewAssembler withSellers = new ListingViewAssembler(mock(ListingImageRepository.class),
+                mock(CategoryRepository.class), sellers,
+                mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe(),
+                points, variantRepository);
+        when(sellers.findAllByMerchantIds(any())).thenReturn(Map.of(MERCHANT,
+                com.innbucks.marketplaceservice.seller.MarketplaceSeller.builder()
+                        .merchantId(MERCHANT)
+                        .status(com.innbucks.marketplaceservice.seller.SellerStatus.PENDING)
+                        .createdAt(CREATED)
+                        .collectionEnabled(false)
+                        .build()));
+
+        ListingResponse response = withSellers.toResponse(speaker());
+
+        ArgumentCaptor<Collection<UUID>> asked = ArgumentCaptor.forClass(Collection.class);
+        verify(points).townsFor(asked.capture());
+        // An empty ask is answered without a query (CollectionPointViews.townsFor).
+        assertThat(asked.getValue()).isEmpty();
+        assertThat(response.collectionEnabled()).isFalse();
+        assertThat(response.collectionTowns()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("collectionEnabled rides the wire after maxPriceCents, and a seller with no "
+            + "record collects")
+    void collectionEnabledIsOnTheWireLast() throws Exception {
+        ListingResponse response = assembler.toResponse(speaker());
+
+        assertThat(response.collectionEnabled()).isTrue();
+        String json = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                .addModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule()).build()
+                .writeValueAsString(response);
+        assertThat(json).endsWith("\"maxPriceCents\":4599,\"collectionEnabled\":true}");
+    }
 }

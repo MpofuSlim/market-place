@@ -268,6 +268,19 @@ public class MarketplaceMetrics {
                 .increment();
     }
 
+    /**
+     * A seller turned collection off ({@code enabled=false}: now delivery-only)
+     * or back on (V20), {@code marketplace.seller.collection_changed{enabled}}.
+     * Counts real changes only — a request that already matched is not one.
+     */
+    public void sellerCollectionChanged(boolean enabled) {
+        Counter.builder("marketplace.seller.collection_changed")
+                .description("Seller collection setting changes, by the new value")
+                .tag("enabled", Boolean.toString(enabled))
+                .register(registry)
+                .increment();
+    }
+
     /** One listing's stock moved 0 -> >0 (fired AFTER the restocking tx
      *  committed — never counts a rolled-back restock). */
     public void restockEvent() {

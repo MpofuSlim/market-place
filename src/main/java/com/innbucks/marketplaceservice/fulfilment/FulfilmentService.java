@@ -27,6 +27,8 @@ import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFee;
 import com.innbucks.marketplaceservice.order.MarketOrderDeliveryFeeRepository;
+import com.innbucks.marketplaceservice.order.MarketOrderSeller;
+import com.innbucks.marketplaceservice.order.MarketOrderSellerRepository;
 import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -78,6 +80,7 @@ public class FulfilmentService {
     private final ParcelStockReturner stockReturner;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final MarketOrderDeliveryFeeRepository deliveryFees;
+    private final MarketOrderSellerRepository orderSellers;
     private final MerchantParcelViewAssembler parcelViews;
     private final CollectionPointViews collectionPoints;
     private final BuyerParcelRules buyerRules;
@@ -115,6 +118,14 @@ public class FulfilmentService {
                 .collect(Collectors.toMap(
                         MarketOrderDeliveryFee::getMerchantId,
                         MarketOrderDeliveryFee::getFeeCents));
+        // Each seller's delivery method as recorded at order time (V20). An
+        // order created by a V19 replica during the rollout has no rows; every
+        // such order is uniform, so the order's own method is exact for each
+        // of its sellers.
+        Map<UUID, DeliveryMethod> methodByMerchant = orderSellers.findByOrderId(order.getId()).stream()
+                .collect(Collectors.toMap(
+                        MarketOrderSeller::getMerchantId,
+                        MarketOrderSeller::getDeliveryMethod));
         for (UUID merchantId : itemRepository.findByOrderId(order.getId()).stream()
                 .map(MarketOrderItem::getMerchantId)
                 .distinct()
@@ -123,9 +134,10 @@ public class FulfilmentService {
                 .toList()) {
             // A replayed confirm hits the unique index and inserts nothing, so
             // the tracking code minted for it is simply discarded.
+            DeliveryMethod method = methodByMerchant.getOrDefault(merchantId, order.getDeliveryMethod());
             opened += fulfilmentRepository.openIfAbsent(UUID.randomUUID(), order.getId(),
                     merchantId, feeByMerchant.getOrDefault(merchantId, 0L),
-                    TrackingCodes.mint(), now);
+                    method.name(), TrackingCodes.mint(), now);
         }
         if (opened > 0) {
             metrics.fulfilmentOutcome("opened", opened);

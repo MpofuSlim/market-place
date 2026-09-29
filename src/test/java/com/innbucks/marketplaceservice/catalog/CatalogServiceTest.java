@@ -457,6 +457,21 @@ class CatalogServiceTest {
                 ListingSort.NEWEST, 0, 20, null, collectsIn, availableIn);
     }
 
+    /** The V20 half of "collectable": a correlated subquery over the seller's
+     *  record matching only a seller who turned collection OFF. */
+    @SuppressWarnings("unchecked")
+    private jakarta.persistence.criteria.Subquery<Integer> optedOutSubquery(
+            Path<Object> sellerMerchant, Path<Object> collectionFlag) {
+        jakarta.persistence.criteria.Subquery<Integer> optedOut =
+                mock(jakarta.persistence.criteria.Subquery.class);
+        Root<MarketplaceSeller> seller = mock(Root.class);
+        when(optedOut.from(MarketplaceSeller.class)).thenReturn(seller);
+        when(optedOut.select(any())).thenReturn(optedOut);
+        when(seller.get("merchantId")).thenReturn(sellerMerchant);
+        when(seller.get("collectionEnabled")).thenReturn(collectionFlag);
+        return optedOut;
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void collectsInIsAnExistsOnTheSellersPointsCorrelatedOnTheMerchant() {
@@ -469,7 +484,9 @@ class CatalogServiceTest {
         Root<com.innbucks.marketplaceservice.pickup.CollectionPoint> point = mock(Root.class);
         Path<Object> pointMerchant = mock(Path.class);
         Path<Object> pointTown = mock(Path.class);
-        when(query.subquery(Integer.class)).thenReturn(points);
+        jakarta.persistence.criteria.Subquery<Integer> optedOut =
+                optedOutSubquery(mock(Path.class), mock(Path.class));
+        when(query.subquery(Integer.class)).thenReturn(points, optedOut);
         when(points.from(com.innbucks.marketplaceservice.pickup.CollectionPoint.class))
                 .thenReturn(point);
         when(points.select(any())).thenReturn(points);
@@ -486,6 +503,46 @@ class CatalogServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void collectsInExcludesADeliveryOnlySellerWithACorrelatedNotExists() {
+        // V20: a delivery-only seller keeps their points, so "has a point in
+        // the town" alone would still find them. The second half is a NOT
+        // EXISTS over the seller's record correlated on the listing's
+        // merchant — never a join — matching only a record that says FALSE,
+        // so a seller with no record still collects.
+        Path<Object> merchantPath = mock(Path.class);
+        when(root.get("merchantId")).thenReturn(merchantPath);
+        jakarta.persistence.criteria.Subquery<Integer> points =
+                mock(jakarta.persistence.criteria.Subquery.class);
+        Root<com.innbucks.marketplaceservice.pickup.CollectionPoint> point = mock(Root.class);
+        when(points.from(com.innbucks.marketplaceservice.pickup.CollectionPoint.class))
+                .thenReturn(point);
+        when(points.select(any())).thenReturn(points);
+        when(point.get(any(String.class))).thenReturn(mock(Path.class));
+        Path<Object> sellerMerchant = mock(Path.class);
+        Path<Object> collectionFlag = mock(Path.class);
+        jakarta.persistence.criteria.Subquery<Integer> optedOut =
+                optedOutSubquery(sellerMerchant, collectionFlag);
+        when(query.subquery(Integer.class)).thenReturn(points, optedOut);
+        jakarta.persistence.criteria.Predicate hasPoint =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        jakarta.persistence.criteria.Predicate isOptedOut =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        jakarta.persistence.criteria.Predicate notOptedOut =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        when(cb.exists(points)).thenReturn(hasPoint);
+        when(cb.exists(optedOut)).thenReturn(isOptedOut);
+        when(cb.not(isOptedOut)).thenReturn(notOptedOut);
+
+        Specification<Listing> spec = browseAndCaptureSpec(townFilters("harare", null));
+        spec.toPredicate(root, query, cb);
+
+        verify(cb).equal(sellerMerchant, merchantPath);
+        verify(cb).isFalse((jakarta.persistence.criteria.Expression) collectionFlag);
+        verify(cb).and(hasPoint, notOptedOut);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void availableInIsOneOrOfDeliveredThereAndCollectableThere() {
         // One OR of the two EXISTS: a listing that is both delivered to and
         // collectable in the town appears once, and a seller who only offers
@@ -495,7 +552,9 @@ class CatalogServiceTest {
                 mock(jakarta.persistence.criteria.Subquery.class);
         jakarta.persistence.criteria.Subquery<Integer> points =
                 mock(jakarta.persistence.criteria.Subquery.class);
-        when(query.subquery(Integer.class)).thenReturn(covers, points);
+        jakarta.persistence.criteria.Subquery<Integer> optedOut =
+                optedOutSubquery(mock(Path.class), mock(Path.class));
+        when(query.subquery(Integer.class)).thenReturn(covers, points, optedOut);
         Root<ListingDeliveryTown> row = mock(Root.class);
         Root<com.innbucks.marketplaceservice.pickup.CollectionPoint> point = mock(Root.class);
         when(covers.from(ListingDeliveryTown.class)).thenReturn(row);
@@ -515,13 +574,24 @@ class CatalogServiceTest {
                 mock(jakarta.persistence.criteria.Predicate.class);
         when(cb.exists(covers)).thenReturn(delivered);
         when(cb.exists(points)).thenReturn(collected);
+        // V20: the collect arm carries the delivery-only exclusion with it, so
+        // a delivery-only seller counts only by where they deliver.
+        jakarta.persistence.criteria.Predicate isOptedOut =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        jakarta.persistence.criteria.Predicate notOptedOut =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        jakarta.persistence.criteria.Predicate collectable =
+                mock(jakarta.persistence.criteria.Predicate.class);
+        when(cb.exists(optedOut)).thenReturn(isOptedOut);
+        when(cb.not(isOptedOut)).thenReturn(notOptedOut);
+        when(cb.and(collected, notOptedOut)).thenReturn(collectable);
 
         Specification<Listing> spec = browseAndCaptureSpec(townFilters(null, "mutare"));
         spec.toPredicate(root, query, cb);
 
         verify(cb).equal(rowTown, "mutare");
         verify(cb).equal(pointTown, "mutare");
-        verify(cb).or(delivered, collected);
+        verify(cb).or(delivered, collectable);
     }
 
     @Test
@@ -636,6 +706,48 @@ class CatalogServiceTest {
         assertThat(profile.ratingAvg()).isNull();
         assertThat(profile.activeListingCount()).isZero();
         assertThat(profile.collectionPoints()).isNotNull().isEmpty();
+        // V20: no record collects, like every seller who never changed it.
+        assertThat(profile.collectionEnabled()).isTrue();
+    }
+
+    @Test
+    void aDeliveryOnlySellersProfileSaysSoAndShowsNoPoints() {
+        // V20: their points are kept but hidden — and not even read, since a
+        // buyer shown where to collect would be refused at checkout.
+        UUID merchantId = UUID.randomUUID();
+        when(sellerService.findAllByMerchantIds(List.of(merchantId))).thenReturn(Map.of(merchantId,
+                MarketplaceSeller.builder()
+                        .merchantId(merchantId)
+                        .status(SellerStatus.APPROVED)
+                        .createdAt(Instant.now())
+                        .collectionEnabled(false)
+                        .build()));
+        when(reviewService.merchantRating(merchantId))
+                .thenReturn(new MerchantRatingResponse(merchantId, null, 0));
+
+        MerchantProfileResponse profile = catalogService.merchantProfile(merchantId);
+
+        assertThat(profile.collectionEnabled()).isFalse();
+        assertThat(profile.collectionPoints()).isNotNull().isEmpty();
+        verify(collectionPoints, never()).forMerchant(any());
+    }
+
+    @Test
+    void aCollectingSellersProfileSaysSo() {
+        UUID merchantId = UUID.randomUUID();
+        when(sellerService.findAllByMerchantIds(List.of(merchantId))).thenReturn(Map.of(merchantId,
+                MarketplaceSeller.builder()
+                        .merchantId(merchantId)
+                        .status(SellerStatus.PENDING)
+                        .createdAt(Instant.now())
+                        .build()));
+        when(reviewService.merchantRating(merchantId))
+                .thenReturn(new MerchantRatingResponse(merchantId, null, 0));
+
+        MerchantProfileResponse profile = catalogService.merchantProfile(merchantId);
+
+        assertThat(profile.collectionEnabled()).isTrue();
+        verify(collectionPoints).forMerchant(merchantId);
     }
 
     @Test

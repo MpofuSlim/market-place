@@ -107,6 +107,7 @@ public abstract class PostgresTestContainer {
                 TRUNCATE TABLE settlement_dispute, merchant_settlement,
                                market_order_item, market_order_event, order_fulfilment,
                                market_order_delivery_fee, market_order_collection_point,
+                               market_order_seller,
                                market_order,
                                listing_image, listing_review, listing_favorite,
                                listing_report, listing_delivery_town, cart_item,

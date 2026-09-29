@@ -105,8 +105,44 @@ public class MarketplaceSeller {
     @Column(name = "payout_updated_by")
     private UUID payoutUpdatedBy;
 
+    // ------------------------------------------------------------------
+    // Collection (V20) — whether buyers may collect from this seller.
+    //
+    // Read-only on the entity: MarketplaceSellerRepository.setCollectionEnabled
+    // is the only writer. The entity has no @Version, and decide() and the
+    // payout-destination write save the WHOLE row, so a writable field here
+    // would let either of them put back a value loaded before the seller
+    // changed it.
+    // ------------------------------------------------------------------
+
+    /** False for a delivery-only seller. TRUE is what every seller was before
+     *  V20, and it is the column default, so a row created without naming it
+     *  still collects. {@code @Builder.Default} keeps that true for a
+     *  builder-made seller too. */
+    @Builder.Default
+    @Column(name = "collection_enabled", nullable = false, updatable = false)
+    private boolean collectionEnabled = true;
+
+    /** When the seller (or an operator) last changed {@link #collectionEnabled};
+     *  null while never changed. */
+    @Column(name = "collection_updated_at", updatable = false)
+    private Instant collectionUpdatedAt;
+
+    /** Who last changed it. */
+    @Column(name = "collection_updated_by", updatable = false)
+    private UUID collectionUpdatedBy;
+
     /** Whether this seller can be paid without someone going and asking them. */
     public boolean hasPayoutDestination() {
         return payoutMethod != null;
+    }
+
+    /**
+     * Whether buyers may collect from this seller. A seller with no record
+     * collects: the record is created lazily, on the seller's first write, and
+     * every seller collected before V20.
+     */
+    public static boolean collects(MarketplaceSeller sellerOrNull) {
+        return sellerOrNull == null || sellerOrNull.isCollectionEnabled();
     }
 }

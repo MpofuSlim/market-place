@@ -63,12 +63,22 @@ public class ListingViewAssembler {
         return ListingResponse.from(listing, images, categoryName, seller,
                 sellerService.displayNames(merchantIds, sellers).get(listing.getMerchantId()),
                 coverageOf(deliveryTownRepository.findByListingId(listing.getId())),
-                collectionPoints.townsFor(merchantIds)
+                // V20: a delivery-only seller's towns are never shown, so never read.
+                collectionPoints.townsFor(collecting(merchantIds, sellers))
                         .getOrDefault(listing.getMerchantId(), List.of()),
                 // V19: options only for a listing that sells them - no query otherwise.
                 listing.isHasVariants()
                         ? variantRepository.findByListingIdOrderByPositionAsc(listing.getId())
                         : List.of());
+    }
+
+    /** The merchants whose buyers may collect (V20) — a missing record
+     *  collects, as every seller did before delivery-only existed. */
+    private static List<UUID> collecting(List<UUID> merchantIds,
+                                         Map<UUID, MarketplaceSeller> sellersByMerchant) {
+        return merchantIds.stream()
+                .filter(id -> MarketplaceSeller.collects(sellersByMerchant.get(id)))
+                .toList();
     }
 
     /**
@@ -152,8 +162,12 @@ public class ListingViewAssembler {
                 ? Map.of()
                 : deliveryTownRepository.findByListingIdIn(listingIds).stream()
                         .collect(Collectors.groupingBy(ListingDeliveryTown::getListingId));
-        // Sixth batch: each seller's collection towns (V18), one query per page.
-        Map<UUID, List<CollectionTown>> collectionTowns = collectionPoints.townsFor(merchantIds);
+        // Sixth batch: each seller's collection towns (V18), one query per page —
+        // asked only for the sellers who collect (V20). Whether a seller
+        // collects comes from the trust records already loaded above, so the
+        // flag itself costs no query.
+        Map<UUID, List<CollectionTown>> collectionTowns =
+                collectionPoints.townsFor(collecting(merchantIds, sellersByMerchant));
         // Seventh batch (V19): options, for the listings that sell them only — a
         // page of listings without options costs nothing extra.
         List<UUID> withOptions = content.stream()

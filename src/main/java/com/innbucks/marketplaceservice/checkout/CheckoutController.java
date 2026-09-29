@@ -74,7 +74,8 @@ public class CheckoutController {
                       "hasVariants": false,
                       "options": [],
                       "variants": [],
-                      "maxPriceCents": 2399
+                      "maxPriceCents": 2399,
+                      "collectionEnabled": true
                     },
                     "quantity": 2,
                     "lineTotalCents": 4798,
@@ -121,7 +122,16 @@ public class CheckoutController {
                     "description": "We send a PIN prompt to the phone on this order. Approve it to pay.",
                     "completion": "PHONE_PROMPT"
                   }
-                ]
+                ],
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "DELIVERY",
+                    "availableMethods": ["DELIVERY", "COLLECTION"],
+                    "deliveryFeeCents": 300
+                  }
+                ],
+                "availabilityTownCode": "harare"
               }
             }""";
 
@@ -168,7 +178,15 @@ public class CheckoutController {
                       "openNow": true
                     }
                   }
-                ]
+                ],
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "COLLECTION",
+                    "availableMethods": ["DELIVERY", "COLLECTION"]
+                  }
+                ],
+                "availabilityTownCode": "harare"
               }
             }""";
 
@@ -198,7 +216,8 @@ public class CheckoutController {
                       "status": "ACTIVE",
                       "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
                       "hasVariants": true,
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 1,
                     "lineTotalCents": 2299,
@@ -224,7 +243,8 @@ public class CheckoutController {
                       "stockQty": 3,
                       "status": "ACTIVE",
                       "hasVariants": false,
-                      "maxPriceCents": 1550
+                      "maxPriceCents": 1550,
+                      "collectionEnabled": true
                     },
                     "quantity": 2,
                     "lineTotalCents": 3100,
@@ -265,7 +285,16 @@ public class CheckoutController {
                     "description": "Approve the payment code in your InnBucks app.",
                     "completion": "APPROVE_IN_APP"
                   }
-                ]
+                ],
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "DELIVERY",
+                    "availableMethods": ["DELIVERY", "COLLECTION"],
+                    "deliveryFeeCents": 300
+                  }
+                ],
+                "availabilityTownCode": "harare"
               }
             }""";
 
@@ -297,7 +326,8 @@ public class CheckoutController {
                         { "name": "Size", "values": ["M", "L", "XL"] },
                         { "name": "Colour", "values": ["Black"] }
                       ],
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 1,
                     "lineTotalCents": 0,
@@ -352,7 +382,15 @@ public class CheckoutController {
                     "description": "Approve the payment code in your InnBucks app.",
                     "completion": "APPROVE_IN_APP"
                   }
-                ]
+                ],
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "DELIVERY",
+                    "availableMethods": ["DELIVERY", "COLLECTION"]
+                  }
+                ],
+                "availabilityTownCode": "harare"
               }
             }""";
 
@@ -414,7 +452,105 @@ public class CheckoutController {
                     "description": "Approve the payment code in your InnBucks app.",
                     "completion": "APPROVE_IN_APP"
                   }
-                ]
+                ],
+                "sellers": [],
+                "availabilityTownCode": "harare"
+              }
+            }""";
+
+    /**
+     * V20: a COLLECTION quote holding an item from a seller who only delivers.
+     * The speaker's seller collects, so their point is listed; the earbuds'
+     * seller does not, so their line is refused as COLLECTION_NOT_OFFERED
+     * (naming them), they are absent from {@code collectionPoints}, and their
+     * {@code availableMethods} says delivery is the way.
+     */
+    private static final String EXAMPLE_QUOTE_DELIVERY_ONLY_SELLER_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "items": [
+                  {
+                    "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    "quantity": 2,
+                    "lineTotalCents": 4798,
+                    "unitPriceCents": 2399
+                  },
+                  {
+                    "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                    "quantity": 1,
+                    "lineTotalCents": 0,
+                    "issue": {
+                      "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                      "reason": "COLLECTION_NOT_OFFERED",
+                      "message": "Wireless Earbuds is delivery only",
+                      "requestedQty": 1,
+                      "unitPriceCents": 2599,
+                      "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d"
+                    },
+                    "unitPriceCents": 2599
+                  }
+                ],
+                "lineCount": 2,
+                "totalQuantity": 3,
+                "subtotalCents": 4798,
+                "deliveryFeeCents": 0,
+                "totalCents": 4798,
+                "currency": "USD",
+                "deliveryMethod": "COLLECTION",
+                "deliveryMethods": ["DELIVERY", "COLLECTION"],
+                "rejections": [
+                  {
+                    "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                    "reason": "COLLECTION_NOT_OFFERED",
+                    "message": "Wireless Earbuds is delivery only",
+                    "requestedQty": 1,
+                    "unitPriceCents": 2599,
+                    "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d"
+                  }
+                ],
+                "checkoutReady": false,
+                "paymentMethods": [
+                  {
+                    "rail": "INNBUCKS_CODE",
+                    "label": "InnBucks app",
+                    "description": "Approve the payment code in your InnBucks app.",
+                    "completion": "APPROVE_IN_APP"
+                  }
+                ],
+                "deliveryFees": [],
+                "collectionPoints": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "collectionPoint": {
+                      "id": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e",
+                      "name": "Avondale shop",
+                      "townCode": "harare",
+                      "townName": "Harare",
+                      "line1": "14 Samora Machel Ave",
+                      "line2": "Shop 3, Avondale Shopping Centre",
+                      "area": "Avondale",
+                      "landmark": "Next to the pharmacy",
+                      "phone": "+263242123456",
+                      "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
+                      "openNow": true
+                    }
+                  }
+                ],
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "COLLECTION",
+                    "availableMethods": ["DELIVERY", "COLLECTION"]
+                  },
+                  {
+                    "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d",
+                    "deliveryMethod": "COLLECTION",
+                    "availableMethods": ["DELIVERY"]
+                  }
+                ],
+                "availabilityTownCode": "harare"
               }
             }""";
 
@@ -494,6 +630,20 @@ public class CheckoutController {
                     + "choice that is not that seller's point (removed since the screen loaded) is "
                     + "a 400 `unknown_collection_point` whose `data` names the seller; send the "
                     + "same `collectionPoints` on the order.\n\n"
+                    + "**Some sellers only deliver (V20).** `sellers` lists every seller with an "
+                    + "item on sale, in basket order: the method this quote priced them with and "
+                    + "`availableMethods` - the methods that could reach the buyer from them at all. "
+                    + "Offer Deliver / Collect per seller from it rather than working it out. A "
+                    + "COLLECTION quote holding a delivery-only seller's item lists that line in "
+                    + "`rejections` as `COLLECTION_NOT_OFFERED` (its `merchantId` says whose), and "
+                    + "that seller is never in `collectionPoints`. `NOT_DELIVERED_TO_TOWN` carries "
+                    + "`merchantId` too. `availabilityTownCode` is the town DELIVERY was judged "
+                    + "against: the destination's on a DELIVERY quote; on a COLLECTION quote the "
+                    + "named `deliveryAddressId`'s, else the buyer's default address's, looked up "
+                    + "without ever refusing the quote - absent when no town is known, and "
+                    + "DELIVERY then means \"delivers somewhere\". An unstated method is still "
+                    + "COLLECTION for the whole basket: a delivery-only seller never switches it to "
+                    + "delivery behind the shopper's back.\n\n"
                     + "**Options (V19).** A line for a listing sold in options (`hasVariants: "
                     + "true` - sizes, colours) names the chosen one as `variantId`; two sizes of "
                     + "one listing are two lines. Send each option once: the order refuses the "
@@ -539,7 +689,9 @@ public class CheckoutController {
                             @ExampleObject(name = "No size chosen",
                                     value = EXAMPLE_QUOTE_VARIANT_REQUIRED_200),
                             @ExampleObject(name = "Collection, point resolved per seller",
-                                    value = EXAMPLE_QUOTE_COLLECTION_200)})),
+                                    value = EXAMPLE_QUOTE_COLLECTION_200),
+                            @ExampleObject(name = "Collection, one seller only delivers",
+                                    value = EXAMPLE_QUOTE_DELIVERY_ONLY_SELLER_200)})),
             @ApiResponse(responseCode = "400",
                     description = "Both/neither basket source, an empty cart, a DELIVERY quote "
                             + "with no address to send to, a collection-point choice that is not "

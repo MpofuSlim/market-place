@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -145,6 +146,31 @@ public class DeliveryAddressService {
         return addressRepository.findByBuyerUuidAndDefaultAddressTrue(buyerId(buyer))
                 .orElseThrow(() -> ApiException.badRequest("delivery_address_required",
                         "Choose a delivery address, or add one first"));
+    }
+
+    /**
+     * {@link #requireForCheckout} that never refuses (V20), for a question that
+     * must not become an error: which town a COLLECTION quote judges each
+     * seller's DELIVERY availability against. The named address when it is the
+     * buyer's; with none named, their default; otherwise empty - a stale id is
+     * NOT swapped for the default, which would judge a town the shopper did
+     * not pick.
+     */
+    @Transactional(readOnly = true)
+    public Optional<DeliveryAddress> findForQuote(AuthenticatedUser buyer, UUID addressId) {
+        // A principal whose uuid is not a UUID (a token with no userUuid claim
+        // falls back to its sub) owns no address: empty, never the
+        // IllegalArgumentException buyerId would throw, which nothing maps and
+        // which would turn a COLLECTION quote into a 500.
+        UUID buyerUuid;
+        try {
+            buyerUuid = buyerId(buyer);
+        } catch (IllegalArgumentException | NullPointerException notAUuid) {
+            return Optional.empty();
+        }
+        return addressId != null
+                ? addressRepository.findByIdAndBuyerUuid(addressId, buyerUuid)
+                : addressRepository.findByBuyerUuidAndDefaultAddressTrue(buyerUuid);
     }
 
     private DeliveryAddress require(AuthenticatedUser buyer, UUID addressId) {

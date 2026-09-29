@@ -35,7 +35,9 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -48,6 +50,8 @@ class CartServiceTest {
     private static final int MAX_QTY = 10;
     private static final UUID LISTING = new UUID(0, 1);
     private static final UUID BUYER_UUID = UUID.randomUUID();
+    /** Whatever seller a stubbed listing names - the cart must not ask. */
+    private static final UUID SELLER_ANY = UUID.randomUUID();
     private static final AuthenticatedUser BUYER = new AuthenticatedUser(
             BUYER_UUID.toString(), Set.of("CUSTOMER"), null, null, "+263771234567", "ZW");
 
@@ -55,6 +59,8 @@ class CartServiceTest {
     private ListingRepository listingRepository;
     private CartVariantItemRepository variantCartRepository;
     private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
+    private ListingDeliveryTownRepository coverage;
+    private com.innbucks.marketplaceservice.seller.MarketplaceSellerRepository sellerRepository;
     private CartService service;
 
     @BeforeEach
@@ -63,11 +69,14 @@ class CartServiceTest {
         listingRepository = mock(ListingRepository.class);
         variantCartRepository = mock(CartVariantItemRepository.class);
         variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
+        coverage = mock(ListingDeliveryTownRepository.class);
+        sellerRepository = mock(com.innbucks.marketplaceservice.seller.MarketplaceSellerRepository.class);
         ListingViewAssembler listingViews = mock(ListingViewAssembler.class);
         when(listingViews.toResponsesById(any())).thenReturn(Map.of());
         service = new CartService(cartRepository, listingRepository,
-                new CheckoutPricer(listingRepository, mock(ListingDeliveryTownRepository.class),
-                        TestTowns.zimbabwe(), "USD", variantRepository),
+                new CheckoutPricer(listingRepository, coverage,
+                        TestTowns.zimbabwe(), "USD", variantRepository, sellerRepository,
+                        new com.innbucks.marketplaceservice.checkout.CheckoutProperties()),
                 new BasketViewAssembler(listingViews),
                 variantCartRepository, variantRepository,
                 TransactionOperations.withoutTransaction());
@@ -113,6 +122,30 @@ class CartServiceTest {
         assertThat(cart.lineCount()).isEqualTo(1);
         assertThat(cart.currency()).isEqualTo("USD");
         assertThat(cart.checkoutReady()).isTrue();
+    }
+
+    @Test
+    @DisplayName("The cart asks no delivery question (V20): a delivery-only seller's item is ready, and only the listings are read")
+    void cartIgnoresDeliveryMethodsEntirely() {
+        cartHolds(cartItem(LISTING, 2));
+        // The listing's OWN seller is delivery-only: were the cart to price a
+        // method (COLLECTION is what an unstated method means at checkout), this
+        // line would carry COLLECTION_NOT_OFFERED and checkoutReady would flip.
+        Listing deliveryOnly = sellable(LISTING, 1550, 10);
+        deliveryOnly.setMerchantId(SELLER_ANY);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(deliveryOnly));
+        when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of(SELLER_ANY));
+
+        CartResponse cart = service.getCart(BUYER);
+
+        // checkoutReady is exactly what it was before V20: the method is
+        // chosen at checkout, and a cart that flipped on a question the shopper
+        // has not been asked would read as "something is wrong with my item".
+        assertThat(cart.checkoutReady()).isTrue();
+        assertThat(cart.items().getFirst().issue()).isNull();
+        assertThat(cart.subtotalCents()).isEqualTo(3100);
+        verify(listingRepository, times(1)).findAllById(any());
+        verifyNoInteractions(coverage, sellerRepository);
     }
 
     @Test

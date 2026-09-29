@@ -6,7 +6,10 @@ import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.api.Msisdns;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.dto.CollectionRequiredDetails;
+import com.innbucks.marketplaceservice.seller.dto.CollectionSettingResponse;
 import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationRequest;
 import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerDecisionRequest;
@@ -15,6 +18,7 @@ import com.innbucks.marketplaceservice.seller.dto.SellerResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -23,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -55,6 +60,11 @@ public class SellerService {
     private final Msisdns msisdns;
     private final ApplicationEventPublisher eventPublisher;
     private final MerchantNameResolver merchantNameResolver;
+    private final DeliveryOnlyPolicy deliveryOnly;
+    private final MarketplaceMetrics metrics;
+
+    /** How many stranded listings a {@code collection_required} refusal names. */
+    static final int STRANDED_LISTINGS_NAMED = 20;
 
     /**
      * The name to SHOW for each of these merchants: the operator-set trading
@@ -360,6 +370,137 @@ public class SellerService {
                     field + " is required for this payout method");
         }
         return trimmed;
+    }
+
+    // ------------------------------------------------------------------
+    // Collection (V20) — whether buyers may collect from this seller
+    // ------------------------------------------------------------------
+
+    /**
+     * The seller's collection setting. A read never registers a seller: a
+     * merchant with no record collects and has never changed it, which is
+     * exactly what an absent row already says.
+     */
+    @Transactional(readOnly = true)
+    public CollectionSettingResponse collectionSetting(UUID merchantId) {
+        return CollectionSettingResponse.of(sellers.findById(merchantId).orElse(null));
+    }
+
+    /**
+     * Whether this merchant is DELIVERY-ONLY — for the listing gates, which
+     * ask it inside a listing write. A plain read that takes no lock, on
+     * purpose: a listing write that also took the seller's row lock would
+     * order the two locks the opposite way from the seller-level writes
+     * ({@code suspend} updates the seller and takes every listing down in one
+     * transaction) — the shape Postgres aborts as a deadlock. Advisory for the
+     * same reason: a seller switching collection off at that very moment can
+     * still let one item through, and checkout refuses what nobody can get to
+     * the buyer.
+     */
+    @Transactional(readOnly = true)
+    public boolean isDeliveryOnly(UUID merchantId) {
+        return sellers.findById(merchantId)
+                .map(s -> !s.isCollectionEnabled())
+                .orElse(false);
+    }
+
+    /**
+     * Turns collection on or off for a seller.
+     *
+     * <p><b>Every refusal comes before any write</b>, so a refused request
+     * never registers (and audits) a seller it then rolls back: turning
+     * collection OFF needs the cell switch (422 {@code delivery_only_disabled}),
+     * a market that delivers (422 {@code delivery_not_offered}) and no item on
+     * sale that could only be collected (409 {@code collection_required},
+     * naming them). Turning it back ON is never gated.
+     *
+     * <p><b>A request that changes nothing writes nothing and refuses
+     * nothing</b> — no row, no stamp, no audit, no gate — judged on the
+     * EFFECTIVE value, where a missing record reads as collecting. Otherwise a seller's first "keep collection on"
+     * would register them and put {@code SELLER_REGISTERED} on the audit chain
+     * for a setting that did not move.
+     *
+     * <p><b>Stranded listings are refused, never fixed for the seller.</b>
+     * Deactivating them would take goods off sale because of a settings
+     * change, and nothing would put them back.
+     *
+     * <p>The write goes through the one bulk UPDATE
+     * ({@link MarketplaceSellerRepository#setCollectionEnabled}): the entity
+     * has no {@code @Version}, and the approval and payout paths save the
+     * whole row, so the column is read-only on the entity.
+     */
+    @Transactional
+    public CollectionSettingResponse setCollectionEnabled(AuthenticatedUser caller,
+                                                          UUID merchantId,
+                                                          boolean enabled,
+                                                          boolean bySeller) {
+        // The no-op is judged FIRST, and it is a pure read. Re-saving the value a
+        // seller already has answers 200 however the gates now stand: a seller
+        // who went delivery-only keeps that when the cell switch is turned off
+        // (application.yaml says so), and a settings form that re-saves the
+        // current state must not be told that turning collection off "is not
+        // available yet" when it already is off.
+        MarketplaceSeller current = sellers.findById(merchantId).orElse(null);
+        if (MarketplaceSeller.collects(current) == enabled) {
+            return CollectionSettingResponse.of(current);
+        }
+        if (!enabled) {
+            requireDeliveryOnlyAllowed(merchantId);
+        }
+
+        // A real change. The lock serialises two concurrent toggles for one
+        // seller; the re-read is the value as the DATABASE now holds it, not
+        // the copy loaded above (the persistence context would hand that back
+        // unchanged), so the audit's "previous" is exact.
+        ensureExistsAndLock(merchantId);
+        MarketplaceSellerRepository.CollectionState locked = sellers.collectionStateOf(merchantId);
+        boolean previous = locked == null || !Boolean.FALSE.equals(locked.getCollectionEnabled());
+        if (previous == enabled) {
+            // A concurrent request made the same change first: nothing moves.
+            return new CollectionSettingResponse(previous,
+                    locked == null ? null : locked.getCollectionUpdatedAt());
+        }
+        Instant now = Instant.now();
+        sellers.setCollectionEnabled(merchantId, enabled, now, adminUuid(caller));
+
+        // The setting and who moved it — nothing typed, so nothing free-text.
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("merchantId", merchantId.toString());
+        meta.put("collectionEnabled", enabled);
+        meta.put("previous", previous);
+        meta.put("bySeller", bySeller);
+        auditService.record(AuditEventType.SELLER_COLLECTION_CHANGED,
+                caller == null ? null : caller.uuid(), merchantId.toString(), meta);
+        metrics.sellerCollectionChanged(enabled);
+        log.info("Seller collection changed merchantId={} collectionEnabled={} bySeller={}",
+                merchantId, enabled, bySeller);
+        return new CollectionSettingResponse(enabled, now);
+    }
+
+    /** The three refusals of a move to delivery-only, cheapest first; reads only. */
+    private void requireDeliveryOnlyAllowed(UUID merchantId) {
+        if (!deliveryOnly.enabled()) {
+            throw ApiException.unprocessable("delivery_only_disabled",
+                    "Turning collection off is not available yet");
+        }
+        if (!deliveryOnly.deliveryOffered()) {
+            throw ApiException.unprocessable("delivery_not_offered",
+                    "Delivery is not offered in this market, so collection cannot be turned off");
+        }
+        // One more than we name, so the refusal can say whether it named them all.
+        List<ListingRepository.ListingTitle> stranded = listings.findActiveWithoutDeliveryTowns(
+                merchantId, Limit.of(STRANDED_LISTINGS_NAMED + 1));
+        if (!stranded.isEmpty()) {
+            List<CollectionRequiredDetails.StrandedListing> named = stranded.stream()
+                    .limit(STRANDED_LISTINGS_NAMED)
+                    .map(row -> new CollectionRequiredDetails.StrandedListing(row.getId(), row.getTitle()))
+                    .toList();
+            throw ApiException.conflict("collection_required",
+                            "Some of your items on sale can only be collected - add delivery towns "
+                                    + "to them or take them off sale first")
+                    .withDetails(new CollectionRequiredDetails(
+                            named, stranded.size() > STRANDED_LISTINGS_NAMED));
+        }
     }
 
     // -------------------------------------------------------------------------

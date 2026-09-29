@@ -87,7 +87,8 @@ public class FavoriteController {
                     "hasVariants": false,
                     "options": [],
                     "variants": [],
-                    "maxPriceCents": 2399
+                    "maxPriceCents": 2399,
+                    "collectionEnabled": true
                   }
                 ],
                 "page": 0,

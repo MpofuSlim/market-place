@@ -86,6 +86,7 @@ class CollectCodeServiceTest {
                 mock(ParcelStockReturner.class),
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 mock(MarketOrderDeliveryFeeRepository.class),
+                mock(com.innbucks.marketplaceservice.order.MarketOrderSellerRepository.class),
                 TestParcelViews.over(orderRepository, itemRepository, settlementService),
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
                 new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));

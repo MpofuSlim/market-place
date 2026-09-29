@@ -142,16 +142,17 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             INSERT INTO order_fulfilment
-                (id, order_id, merchant_id, status, delivery_fee_cents, tracking_code,
-                 created_at, updated_at, version)
-            VALUES (:id, :orderId, :merchantId, 'PREPARING', :deliveryFeeCents, :trackingCode,
-                    :now, :now, 0)
+                (id, order_id, merchant_id, status, delivery_fee_cents, delivery_method,
+                 tracking_code, created_at, updated_at, version)
+            VALUES (:id, :orderId, :merchantId, 'PREPARING', :deliveryFeeCents, :deliveryMethod,
+                    :trackingCode, :now, :now, 0)
             ON CONFLICT (order_id, merchant_id) DO NOTHING
             """, nativeQuery = true)
     int openIfAbsent(@Param("id") UUID id,
                      @Param("orderId") UUID orderId,
                      @Param("merchantId") UUID merchantId,
                      @Param("deliveryFeeCents") long deliveryFeeCents,
+                     @Param("deliveryMethod") String deliveryMethod,
                      @Param("trackingCode") String trackingCode,
                      @Param("now") Instant now);
 
