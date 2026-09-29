@@ -1483,9 +1483,9 @@ public class ListingController {
             @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     schema = @Schema(type = "string", format = "uuid"))
             @PathVariable("id") String id,
-            // required=false so an absent part renders OUR 400 image_required
-            // instead of Spring's MissingServletRequestPartException falling
-            // into the catch-all as a 500.
+            // required=false so an absent part renders the published 400
+            // image_required rather than GlobalExceptionHandler's generic
+            // 400 missing_part.
             @Parameter(description = "Image file (JPEG/PNG/WEBP, max 10 MB)")
             @RequestPart(value = "image", required = false) MultipartFile image) {
         return ApiResult.ok(listingService.uploadImage(CurrentUser.get(), parseListingId(id), image));
