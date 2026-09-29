@@ -60,9 +60,10 @@ class SettlementViewAssemblerTest {
         MarketOrder order = new MarketOrder();
         order.setId(orderId);
         order.setOrderRef("MKT-9B3E7D10A4C2");
-        order.setDeliveryMethod(DeliveryMethod.DELIVERY);
+        order.setDeliverySummary(DeliveryMethod.DELIVERY);
         OrderFulfilment parcel = OrderFulfilment.builder().id(parcelId).orderId(orderId)
                 .merchantId(SELLER).status(FulfilmentStatus.UNFULFILLED).unfulfilledAt(closed)
+                .deliveryMethod(DeliveryMethod.DELIVERY)
                 .unfulfilledReason("Out of stock").build();
         MerchantSettlement refund = MerchantSettlement.builder().id(UUID.randomUUID())
                 .orderId(orderId).fulfilmentId(parcelId).merchantId(SELLER)
@@ -86,6 +87,36 @@ class SettlementViewAssemblerTest {
         verify(parcels, times(1)).findAllById(any());
         verify(items, times(1)).findByOrderIdIn(any());
         verify(disputes, times(1)).findByFulfilmentIdIn(any());
+    }
+
+    @Test
+    @DisplayName("MIXED: the earnings row of a collected parcel on a DELIVERY-summary order reads NOT_COLLECTED - the parcel's method decides (V21)")
+    void mixedCollectedParcelRowReadsNotCollected() {
+        UUID orderId = UUID.randomUUID();
+        UUID parcelId = UUID.randomUUID();
+        Instant closed = Instant.parse("2026-09-28T09:00:00Z");
+        MarketOrder order = new MarketOrder();
+        order.setId(orderId);
+        order.setOrderRef("MKT-9B3E7D10A4C2");
+        order.setDeliverySummary(DeliveryMethod.DELIVERY);   // another seller delivers
+        OrderFulfilment collected = OrderFulfilment.builder().id(parcelId).orderId(orderId)
+                .merchantId(SELLER).status(FulfilmentStatus.UNFULFILLED)
+                .deliveryMethod(DeliveryMethod.COLLECTION)
+                .dispatchedAt(closed.minusSeconds(8 * 86_400)).unfulfilledAt(closed)
+                .unfulfilledReason("Waited a week").build();
+        MerchantSettlement refund = MerchantSettlement.builder().id(UUID.randomUUID())
+                .orderId(orderId).fulfilmentId(parcelId).merchantId(SELLER)
+                .status(SettlementStatus.REFUND_DUE).grossCents(1550).netCents(1550)
+                .currency("USD").createdAt(closed).build();
+        when(orders.findAllById(any())).thenReturn(List.of(order));
+        when(parcels.findAllById(any())).thenReturn(List.of(collected));
+        when(items.findByOrderIdIn(any())).thenReturn(List.of(
+                item(orderId, SELLER, "Solar Lantern 20W", 1)));
+
+        SettlementResponse row = assembler.toResponses(List.of(refund)).getFirst();
+
+        assertThat(row.closedBy()).isEqualTo(ParcelCloseMethod.NOT_COLLECTED);
+        assertThat(row.refundReason()).isEqualTo("Waited a week");
     }
 
     @Test

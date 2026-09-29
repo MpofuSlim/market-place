@@ -50,12 +50,15 @@ public record MerchantFulfilmentResponse(
         @Schema(example = "PREPARING")
         FulfilmentStatus status,
 
-        @Schema(description = "DELIVERY means ship it to `destination`; COLLECTION means hold it "
-                + "for the buyer and mark it DISPATCHED when it is ready at the counter.",
+        @Schema(description = "How THIS parcel reaches the buyer, fixed when the order was placed: "
+                + "DELIVERY means ship it to `destination`; COLLECTION means hold it for the buyer "
+                + "and mark it DISPATCHED when it is ready at the counter. It is this parcel's own "
+                + "method - another seller on the same order may be handled the other way.",
                 example = "DELIVERY")
         DeliveryMethod deliveryMethod,
 
-        @Schema(description = "Where to send it. Absent for a COLLECTION order. This is the "
+        @Schema(description = "Where to send it. Present only on a DELIVERY parcel - absent on a "
+                + "COLLECTION parcel even when another seller on the order delivers. This is the "
                 + "destination AS IT WAS at order time — the buyer editing their address book "
                 + "afterwards does not redirect a parcel already in flight.", nullable = true)
         FulfilmentDestination destination,

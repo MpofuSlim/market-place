@@ -410,7 +410,7 @@ public class OrderService {
                 .currency(currency)
                 // The order-level summary: DELIVERY when any seller delivers.
                 // Equal to the requested method on every uniform plan.
-                .deliveryMethod(plan.summary())
+                .deliverySummary(plan.summary())
                 .expiresAt(now.plus(paymentTtlMinutes, ChronoUnit.MINUTES))
                 .stockReleased(false)
                 .idempotencyKey(keyHash)

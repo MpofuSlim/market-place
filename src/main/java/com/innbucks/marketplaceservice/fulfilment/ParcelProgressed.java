@@ -19,6 +19,10 @@ import java.util.UUID;
  *
  * <p>{@code partOfOrder} is true when the order has more than one seller, so
  * the copy says "part of your order" only when it is literally true.
+ *
+ * <p>{@code deliveryMethod} is the PARCEL's own (V21), so a mixed order's
+ * collected parcel is announced as "ready to collect" and its delivered one as
+ * on its way, whatever the order's summary says.
  */
 public record ParcelProgressed(UUID orderId,
                                String orderRef,

@@ -88,11 +88,13 @@ public class MerchantParcelViewAssembler {
                 .stream()
                 .collect(Collectors.toMap(SettlementDispute::getFulfilmentId, Function.identity()));
         // Where each COLLECTION parcel is being collected: one snapshot query
-        // for the page, never one per card.
+        // for the page, never one per card, and only for the orders of the
+        // page's COLLECTION parcels — the PARCEL's method, so the collected
+        // half of a mixed order finds its point.
         Map<UUID, Map<UUID, CollectionPointResponse>> points = collectionPoints.snapshotsFor(
-                orders.values().stream()
-                        .filter(o -> o.getDeliveryMethod() == DeliveryMethod.COLLECTION)
-                        .map(MarketOrder::getId).toList());
+                parcels.stream()
+                        .filter(p -> p.getDeliveryMethod() == DeliveryMethod.COLLECTION)
+                        .map(OrderFulfilment::getOrderId).distinct().toList());
 
         List<MerchantFulfilmentResponse> views = new ArrayList<>(parcels.size());
         for (OrderFulfilment parcel : parcels) {
@@ -104,7 +106,10 @@ public class MerchantParcelViewAssembler {
             views.add(view(parcel, order,
                     itemsByOrder.getOrDefault(order.getId(), List.of()),
                     settlements.get(parcel.getId()), disputes.get(parcel.getId()),
-                    points.getOrDefault(order.getId(), Map.of()).get(parcel.getMerchantId())));
+                    parcel.getDeliveryMethod() == DeliveryMethod.COLLECTION
+                            ? points.getOrDefault(order.getId(), Map.of())
+                                    .get(parcel.getMerchantId())
+                            : null));
         }
         return views;
     }
@@ -128,8 +133,12 @@ public class MerchantParcelViewAssembler {
                 order.getOrderRef(),
                 parcel.getMerchantId(),
                 parcel.getStatus(),
-                order.getDeliveryMethod(),
-                FulfilmentDestination.from(order),
+                // Every parcel-level fact below reads the PARCEL's method: on a
+                // mixed order the order's summary is wrong for one of them.
+                parcel.getDeliveryMethod(),
+                // A collecting seller never sees where the delivering
+                // seller's half of the order is going.
+                FulfilmentDestination.forParcel(order, parcel),
                 mine.stream().map(MerchantParcelViewAssembler::toLine).toList(),
                 subtotal,
                 order.getCurrency(),
@@ -142,10 +151,10 @@ public class MerchantParcelViewAssembler {
                 settlement == null ? null : settlement.getStatus(),
                 settlement == null ? null : settlement.getNetCents(),
                 // Only where somebody is actually coming to a counter: on a
-                // DELIVERY order the destination block already names who the
+                // DELIVERY parcel the destination block already names who the
                 // courier hands to, and a second name beside it would read as
                 // a second person.
-                order.getDeliveryMethod() == DeliveryMethod.COLLECTION
+                parcel.getDeliveryMethod() == DeliveryMethod.COLLECTION
                         ? order.getRecipientName() : null,
                 codeLive,
                 parcel.getCollectCodeRedeemedAt(),
@@ -155,7 +164,7 @@ public class MerchantParcelViewAssembler {
                 TrackingStatus.of(parcel.getStatus()),
                 parcel.getDeliveryFeeCents(),
                 ParcelLocation.of(parcel),
-                ParcelCloseMethod.of(parcel, order.getDeliveryMethod()),
+                ParcelCloseMethod.of(parcel),
                 // A clearing date only means something while the money is
                 // HELD against it; once released the date is history.
                 settlement != null && settlement.getStatus() == SettlementStatus.HELD

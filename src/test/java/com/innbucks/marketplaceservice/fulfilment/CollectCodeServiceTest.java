@@ -69,6 +69,10 @@ class CollectCodeServiceTest {
     private CollectCodeNotifier notifier;
     private SimpleMeterRegistry registry;
     private FulfilmentService service;
+    /** How the parcels this test builds travel. The helper that sets the
+     *  order's summary sets this too (a uniform order); the MIXED cases set it
+     *  apart from the summary (V21 — the parcel's method is the one read). */
+    private DeliveryMethod parcelMethod = DeliveryMethod.COLLECTION;
 
     @BeforeEach
     void setUp() {
@@ -106,10 +110,11 @@ class CollectCodeServiceTest {
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(BUYER_UUID)
                 .buyerMsisdn("+263771234567").status(OrderStatus.PAID)
                 .subtotalCents(3100).deliveryFeeCents(0).totalCents(3100).currency("USD")
-                .deliveryMethod(method)
+                .deliverySummary(method)
                 .recipientName(recipientName).recipientMsisdn(recipientMsisdn)
                 .expiresAt(now).paidAt(now).createdAt(now).updatedAt(now).build();
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(order));
+        parcelMethod = method;
         return order;
     }
 
@@ -117,6 +122,7 @@ class CollectCodeServiceTest {
         Instant now = Instant.now();
         OrderFulfilment p = OrderFulfilment.builder()
                 .id(UUID.randomUUID()).orderId(ORDER_ID).merchantId(MERCHANT_A).status(status)
+                .deliveryMethod(parcelMethod)
                 .createdAt(now).updatedAt(now).version(0L).build();
         when(fulfilmentRepository.findById(p.getId())).thenReturn(Optional.of(p));
         return p;
@@ -206,6 +212,63 @@ class CollectCodeServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(ex -> ((ApiException) ex).code())
                 .isEqualTo("fulfilment_not_found");
+    }
+
+    // ------------------------------------------------------------------
+    // A MIXED order (V21): the summary says DELIVERY, one parcel is collected
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("MIXED: the collected parcel mints a code even though the order's summary is DELIVERY")
+    void mixedCollectedParcelMintsACode() {
+        order(DeliveryMethod.DELIVERY, null, null);   // someone on the order delivers
+        parcelMethod = DeliveryMethod.COLLECTION;     // ...but not this seller
+        OrderFulfilment collected = parcel(FulfilmentStatus.DISPATCHED);
+
+        CollectCodeResponse response = service.mintCollectCode(BUYER, ORDER_ID, collected.getId());
+
+        assertThat(response.code()).hasSize(12);
+        assertThat(collected.getCollectCodeHash()).isEqualTo(CollectCodes.hash(response.code()));
+        assertThat(outcome("minted")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("MIXED: the delivered sibling mints no code - 409 worded for the parcel, and nobody is texted")
+    void mixedDeliveredSiblingMintsNoCode() {
+        order(DeliveryMethod.DELIVERY, null, null);
+        parcelMethod = DeliveryMethod.DELIVERY;
+        OrderFulfilment delivered = parcel(FulfilmentStatus.PREPARING);
+
+        assertThatThrownBy(() -> service.mintCollectCode(BUYER, ORDER_ID, delivered.getId()))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException api = (ApiException) ex;
+                    assertThat(api.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(api.code()).isEqualTo("collect_code_not_applicable");
+                    assertThat(api.getMessage()).isEqualTo(
+                            "This parcel is being delivered - there is nothing to collect in person");
+                });
+        assertThat(delivered.getCollectCodeHash()).isNull();
+        verify(notifier, never()).send(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("MIXED: a seller cannot redeem a code against a DELIVERY parcel, and no budget is spent")
+    void mixedDeliveredSiblingRedeemsNothing() {
+        order(DeliveryMethod.DELIVERY, null, null);
+        parcelMethod = DeliveryMethod.DELIVERY;
+        OrderFulfilment delivered = parcel(FulfilmentStatus.DISPATCHED);
+
+        assertThatThrownBy(() -> service.collect(SELLER, delivered.getId(),
+                new CollectRequest("AAAA-BBBB-CCCC")))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    assertThat(((ApiException) ex).code()).isEqualTo("collect_code_not_applicable");
+                    assertThat(ex.getMessage()).isEqualTo(
+                            "This parcel is being delivered - there is nothing to collect in person");
+                });
+        verify(attempts, never()).bumpAndCount(any());
+        assertThat(delivered.getStatus()).isEqualTo(FulfilmentStatus.DISPATCHED);
     }
 
     @Test

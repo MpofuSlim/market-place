@@ -34,9 +34,9 @@ public record FulfilmentResponse(
                 example = "Sunrise Electronics", nullable = true)
         String sellerName,
 
-        @Schema(description = "For a COLLECTION order read DISPATCHED as \"ready to collect\" and "
-                + "DELIVERED as \"collected\" — the order's `deliveryMethod` tells you which "
-                + "wording to use.", example = "DISPATCHED")
+        @Schema(description = "For a COLLECTION parcel read DISPATCHED as \"ready to collect\" and "
+                + "DELIVERED as \"collected\" — this parcel's own `deliveryMethod` tells you "
+                + "which wording to use.", example = "DISPATCHED")
         FulfilmentStatus status,
 
         @Schema(description = "What the seller said when they sent it — courier and waybill, or "
@@ -156,5 +156,14 @@ public record FulfilmentResponse(
                 + "collection code already released it, or the money is disputed or being "
                 + "refunded.",
                 example = "2026-09-23T15:40:00Z", nullable = true)
-        Instant paymentReleasesAt) {
+        Instant paymentReleasesAt,
+
+        @Schema(description = "How THIS parcel reaches the buyer: DELIVERY (a courier brings it) "
+                + "or COLLECTION (collected from the seller). Always present. It is the parcel's "
+                + "own method, fixed when the order was placed - on an order with several "
+                + "sellers it can differ from the order's `deliveryMethod`, which only says "
+                + "whether anything on the order is delivered. Label the parcel, choose "
+                + "\"ready to collect\" wording and show `collectionPoint` from this field.",
+                example = "DELIVERY")
+        com.innbucks.marketplaceservice.delivery.DeliveryMethod deliveryMethod) {
 }

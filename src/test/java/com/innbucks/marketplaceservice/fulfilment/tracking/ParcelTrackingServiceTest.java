@@ -66,6 +66,11 @@ class ParcelTrackingServiceTest {
     private MarketOrderItemRepository itemRepository;
     private SimpleMeterRegistry registry;
     private ParcelTrackingService service;
+    private com.innbucks.marketplaceservice.pickup.CollectionPointViews collectionPoints;
+    /** How the parcels this test builds travel. {@link #order} sets it with the
+     *  order's summary (a uniform order); the MIXED cases set it apart from the
+     *  summary (V21 — the parcel's method is the one read). */
+    private DeliveryMethod parcelMethod = DeliveryMethod.DELIVERY;
 
     @BeforeEach
     void setUp() {
@@ -73,21 +78,23 @@ class ParcelTrackingServiceTest {
         orderRepository = mock(MarketOrderRepository.class);
         itemRepository = mock(MarketOrderItemRepository.class);
         registry = new SimpleMeterRegistry();
+        collectionPoints = mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class);
         service = new ParcelTrackingService(fulfilmentRepository, orderRepository, itemRepository,
                 new TrackingProperties(), new MarketplaceMetrics(registry),
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
+                collectionPoints,
                 mock(com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.class),
                 mock(com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository.class),
                 new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
     }
 
     private MarketOrder order(DeliveryMethod method) {
+        parcelMethod = method;
         Instant now = Instant.now();
         MarketOrder order = MarketOrder.builder()
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(BUYER_UUID)
                 .buyerMsisdn("+263771234567").status(OrderStatus.PAID)
                 .subtotalCents(4798).deliveryFeeCents(800).totalCents(5598).currency("USD")
-                .deliveryMethod(method)
+                .deliverySummary(method)
                 .deliveryRecipientName(method == DeliveryMethod.DELIVERY ? "Tariro Moyo" : null)
                 .deliveryRecipientMsisdn(method == DeliveryMethod.DELIVERY ? "+263771234567" : null)
                 .deliveryLine1(method == DeliveryMethod.DELIVERY ? "14 Samora Machel Ave" : null)
@@ -102,6 +109,7 @@ class ParcelTrackingServiceTest {
         OrderFulfilment parcel = OrderFulfilment.builder()
                 .id(UUID.randomUUID()).orderId(ORDER_ID).merchantId(merchantId).status(status)
                 .trackingCode("TRK-7F3K9Q2M4X")
+                .deliveryMethod(parcelMethod)
                 .dispatchedAt(status == FulfilmentStatus.DISPATCHED ? now : null)
                 .createdAt(now.minusSeconds(3600)).updatedAt(now).version(0L).build();
         when(fulfilmentRepository.findById(parcel.getId())).thenReturn(Optional.of(parcel));
@@ -395,5 +403,91 @@ class ParcelTrackingServiceTest {
                 .satisfies(ex -> assertThat(code(ex)).isEqualTo("fulfilment_not_found"));
         assertThatThrownBy(() -> service.buyerTracking(BUYER, UUID.randomUUID(), parcel.getId()))
                 .satisfies(ex -> assertThat(code(ex)).isEqualTo("fulfilment_not_found"));
+    }
+
+    // ------------------------------------------------------------------
+    // A MIXED order (V21): summary DELIVERY, one seller's parcel collected
+    // ------------------------------------------------------------------
+
+    /** The order a mixed basket leaves: summary DELIVERY with a destination,
+     *  then a parcel that travels {@code method} regardless. */
+    private OrderFulfilment mixedParcel(UUID merchantId, DeliveryMethod method,
+                                        FulfilmentStatus status) {
+        order(DeliveryMethod.DELIVERY);
+        parcelMethod = method;
+        return parcel(merchantId, status);
+    }
+
+    @Test
+    @DisplayName("MIXED: the collected parcel takes no position even though the order's summary is DELIVERY")
+    void mixedCollectedParcelTakesNoPosition() {
+        OrderFulfilment collected = mixedParcel(ORG, DeliveryMethod.COLLECTION,
+                FulfilmentStatus.DISPATCHED);
+
+        assertThatThrownBy(() -> service.recordLocation(DRIVER, collected.getId(),
+                harare(Instant.now())))
+                .satisfies(ex -> {
+                    assertThat(code(ex)).isEqualTo("parcel_not_in_transit");
+                    assertThat(((ApiException) ex).status())
+                            .isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                });
+        verify(fulfilmentRepository, never()).recordLocation(any(), any(), any(), any(), any(),
+                anyString(), any());
+        assertThat(pings("not_in_transit")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("MIXED: the delivered sibling's position is accepted")
+    void mixedDeliveredSiblingTakesAPosition() {
+        OrderFulfilment delivered = mixedParcel(OTHER_ORG, DeliveryMethod.DELIVERY,
+                FulfilmentStatus.DISPATCHED);
+        when(fulfilmentRepository.recordLocation(any(), any(), any(), any(), any(), anyString(),
+                any())).thenReturn(1);
+
+        LocationPingResponse response = service.recordLocation(OTHER_DRIVER, delivered.getId(),
+                harare(Instant.now().minusSeconds(2)));
+
+        assertThat(response.accepted()).isTrue();
+        assertThat(pings("accepted")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("MIXED: the buyer's tracking of the collected parcel shows no destination and no pin, but its collection point")
+    void mixedCollectedParcelTrackingHasNoDestinationNorPin() {
+        OrderFulfilment collected = mixedParcel(ORG, DeliveryMethod.COLLECTION,
+                FulfilmentStatus.DISPATCHED);
+        // A stray position the reader must not rely on the CHECK to hide.
+        collected.setLastLatitude(new BigDecimal("-17.829220"));
+        collected.setLastLongitude(new BigDecimal("31.053961"));
+        collected.setLastLocationAt(Instant.now());
+
+        ParcelTrackingResponse tracking = service.buyerTracking(BUYER, ORDER_ID, collected.getId());
+
+        assertThat(tracking.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        assertThat(tracking.destination()).isNull();
+        assertThat(tracking.liveLocation()).isNull();
+        // Where to collect it is asked for; the destination is not.
+        verify(collectionPoints).snapshotFor(ORDER_ID, ORG);
+        // A collection gets a code; a receipt confirmation stays open.
+        assertThat(tracking.actions().canRequestCollectCode()).isTrue();
+    }
+
+    @Test
+    @DisplayName("MIXED: the delivered sibling's tracking carries the destination and the pin, and asks for no collection point")
+    void mixedDeliveredSiblingTrackingCarriesTheDestination() {
+        OrderFulfilment delivered = mixedParcel(OTHER_ORG, DeliveryMethod.DELIVERY,
+                FulfilmentStatus.DISPATCHED);
+        delivered.setLastLatitude(new BigDecimal("-17.829220"));
+        delivered.setLastLongitude(new BigDecimal("31.053961"));
+        delivered.setLastLocationAt(Instant.now());
+
+        ParcelTrackingResponse tracking = service.buyerTracking(BUYER, ORDER_ID, delivered.getId());
+
+        assertThat(tracking.deliveryMethod()).isEqualTo(DeliveryMethod.DELIVERY);
+        assertThat(tracking.destination()).isNotNull();
+        assertThat(tracking.destination().line1()).isEqualTo("14 Samora Machel Ave");
+        assertThat(tracking.liveLocation()).isNotNull();
+        assertThat(tracking.actions().canRequestCollectCode()).isFalse();
+        verify(collectionPoints, never()).snapshotFor(any(), any());
     }
 }

@@ -102,7 +102,7 @@ public class ParcelTrackingService {
                     order.getOrderRef(),
                     TrackingStatus.of(parcel.getStatus()),
                     parcel.getDispatchedAt(),
-                    FulfilmentDestination.from(order),
+                    FulfilmentDestination.forParcel(order, parcel),
                     itemsByOrder.getOrDefault(order.getId(), List.of()).stream()
                             .filter(item -> parcel.getMerchantId().equals(item.getMerchantId()))
                             .map(item -> new CourierParcelResponse.Item(item.getTitleSnapshot(),
@@ -134,9 +134,9 @@ public class ParcelTrackingService {
             // Another business's parcel is the same 404 as a missing one.
             throw notFound();
         }
-        MarketOrder order = orderRepository.findById(parcel.getOrderId())
-                .orElseThrow(ParcelTrackingService::notFound);
-        if (order.getDeliveryMethod() != DeliveryMethod.DELIVERY
+        // The PARCEL's method (V21): the collected half of a mixed order has no
+        // courier, whatever the order's summary says.
+        if (parcel.getDeliveryMethod() != DeliveryMethod.DELIVERY
                 || parcel.getStatus() != FulfilmentStatus.DISPATCHED) {
             metrics.trackingPing("not_in_transit");
             throw ApiException.conflict("parcel_not_in_transit",
@@ -190,12 +190,13 @@ public class ParcelTrackingService {
                 || !order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
             throw notFound();
         }
-        boolean inTransit = order.getDeliveryMethod() == DeliveryMethod.DELIVERY
-                && parcel.getStatus() == FulfilmentStatus.DISPATCHED;
+        // Every parcel-level fact reads the PARCEL's method (V21): on a mixed
+        // order the order's summary is wrong for one of them.
+        boolean delivery = parcel.getDeliveryMethod() == DeliveryMethod.DELIVERY;
+        boolean inTransit = delivery && parcel.getStatus() == FulfilmentStatus.DISPATCHED;
         // The same actions and deadlines the order view shows, from the SAME
         // rules the buyer endpoints enforce (BuyerParcelRules).
-        BuyerParcelRules.BuyerParcelState state = buyerRules.stateOf(order.getStatus(),
-                order.getDeliveryMethod(), parcel,
+        BuyerParcelRules.BuyerParcelState state = buyerRules.stateOf(order.getStatus(), parcel,
                 settlementRepository.findByFulfilmentId(parcel.getId()).orElse(null),
                 disputeRepository.findByFulfilmentId(parcel.getId()).isPresent(), Instant.now());
         return new ParcelTrackingResponse(
@@ -203,19 +204,19 @@ public class ParcelTrackingService {
                 order.getId(),
                 order.getOrderRef(),
                 parcel.getTrackingCode(),
-                order.getDeliveryMethod(),
+                parcel.getDeliveryMethod(),
                 TrackingStatus.of(parcel.getStatus()),
                 timeline(parcel),
-                // The buyer's copy names the address-book entry it came from.
-                FulfilmentDestination.forBuyer(order),
+                // The buyer's copy names the address-book entry it came from;
+                // a collected parcel is going nowhere, so it has none.
+                FulfilmentDestination.forBuyerParcel(order, parcel),
                 inTransit ? ParcelLocation.of(parcel) : null,
                 parcel.getStatus() == FulfilmentStatus.UNFULFILLED
                         ? parcel.getUnfulfilledReason() : null,
                 parcel.getStatus() == FulfilmentStatus.UNFULFILLED
                         ? parcel.getUnfulfilledBy() : null,
-                order.getDeliveryMethod() == DeliveryMethod.COLLECTION
-                        ? collectionPoints.snapshotFor(order.getId(), parcel.getMerchantId())
-                        : null,
+                delivery ? null
+                        : collectionPoints.snapshotFor(order.getId(), parcel.getMerchantId()),
                 state.actions(),
                 state.receivedAt(),
                 state.closedAt(),

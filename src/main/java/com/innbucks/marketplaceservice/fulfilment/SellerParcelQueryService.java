@@ -8,6 +8,8 @@ import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes;
 import com.innbucks.marketplaceservice.order.MarketOrder;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
@@ -25,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
@@ -41,7 +44,10 @@ import java.util.regex.Pattern;
  * <p><b>A name matches who the parcel is FOR</b>: the delivery recipient, or
  * whoever the buyer named to collect it. The platform keeps no name for a
  * buyer collecting for themselves (their account lives elsewhere), so for
- * them the phone or the reference is the search.
+ * them the phone or the reference is the search. The delivery recipient's
+ * name and phone match a DELIVERY parcel only: the seller of a collected
+ * parcel on a mixed order never sees that destination, and a search box that
+ * could test a guess against it would show it to them one yes/no at a time.
  *
  * <p><b>Built as appended Criteria predicates, never a nullable bind</b> — the
  * catalogue browse's rule, for the catalogue browse's reason (Postgres infers
@@ -93,40 +99,58 @@ public class SellerParcelQueryService {
             if (status != null) {
                 where.add(cb.equal(root.get("status"), status));
             }
-            if (search != null && search.kind() == SearchKind.TRACKING_CODE) {
-                where.add(cb.equal(root.get("trackingCode"), search.value()));
-            }
-            // Everything that lives on the ORDER rides one subquery.
-            List<Predicate> onOrder = new ArrayList<>();
-            Subquery<UUID> orders = query.subquery(UUID.class);
-            Root<MarketOrder> order = orders.from(MarketOrder.class);
+            // The PARCEL's method (V21): on a mixed order "my collections" is
+            // this seller's parcels that are collected, whatever the order's
+            // summary says.
             if (method != null) {
-                onOrder.add(cb.equal(order.get("deliveryMethod"), method));
+                where.add(cb.equal(root.get("deliveryMethod"), method));
             }
             if (search != null) {
                 switch (search.kind()) {
-                    case ORDER_REF -> onOrder.add(cb.equal(order.get("orderRef"), search.value()));
-                    case PHONE -> onOrder.add(cb.or(
-                            cb.equal(order.get("buyerMsisdn"), search.value()),
-                            cb.equal(order.get("deliveryRecipientMsisdn"), search.value()),
-                            cb.equal(order.get("recipientMsisdn"), search.value())));
+                    case TRACKING_CODE -> where.add(cb.equal(root.get("trackingCode"), search.value()));
+                    case ORDER_REF -> where.add(onOrder(root, query,
+                            order -> cb.equal(order.get("orderRef"), search.value())));
+                    // The buyer's and a gift recipient's numbers match any
+                    // parcel. The DELIVERY recipient's matches only a DELIVERY
+                    // parcel: that is who the courier hands it to, and a
+                    // collecting seller's card never shows the destination -
+                    // so on a mixed order their search box must not be a way
+                    // to test a number (or a name, below) against it.
+                    case PHONE -> where.add(cb.or(
+                            onOrder(root, query, order -> cb.or(
+                                    cb.equal(order.get("buyerMsisdn"), search.value()),
+                                    cb.equal(order.get("recipientMsisdn"), search.value()))),
+                            cb.and(isDelivery(root, cb), onOrder(root, query,
+                                    order -> cb.equal(order.get("deliveryRecipientMsisdn"),
+                                            search.value())))));
                     case NAME -> {
                         String pattern = "%" + search.value() + "%";
-                        onOrder.add(cb.or(
-                                cb.like(cb.lower(order.get("deliveryRecipientName")), pattern, '!'),
-                                cb.like(cb.lower(order.get("recipientName")), pattern, '!')));
-                    }
-                    case TRACKING_CODE -> {
-                        // Matched on the parcel above.
+                        where.add(cb.or(
+                                onOrder(root, query, order -> cb.like(
+                                        cb.lower(order.get("recipientName")), pattern, '!')),
+                                cb.and(isDelivery(root, cb), onOrder(root, query,
+                                        order -> cb.like(cb.lower(order.get("deliveryRecipientName")),
+                                                pattern, '!')))));
                     }
                 }
             }
-            if (!onOrder.isEmpty()) {
-                orders.select(order.get("id")).where(onOrder.toArray(Predicate[]::new));
-                where.add(root.get("orderId").in(orders));
-            }
             return cb.and(where.toArray(Predicate[]::new));
         };
+    }
+
+    /** The parcel is a DELIVERY — the only kind whose destination its seller sees. */
+    private static Predicate isDelivery(Root<OrderFulfilment> root, CriteriaBuilder cb) {
+        return cb.equal(root.get("deliveryMethod"), DeliveryMethod.DELIVERY);
+    }
+
+    /** "The parcel's order matches {@code condition}": one uncorrelated
+     *  {@code order_id IN (SELECT id FROM market_order WHERE ...)}. */
+    private static Predicate onOrder(Root<OrderFulfilment> root, CriteriaQuery<?> query,
+                                     Function<Root<MarketOrder>, Predicate> condition) {
+        Subquery<UUID> orders = query.subquery(UUID.class);
+        Root<MarketOrder> order = orders.from(MarketOrder.class);
+        orders.select(order.get("id")).where(condition.apply(order));
+        return root.get("orderId").in(orders);
     }
 
     enum SearchKind { ORDER_REF, TRACKING_CODE, PHONE, NAME }

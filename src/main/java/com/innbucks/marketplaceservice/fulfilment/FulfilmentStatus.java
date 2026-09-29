@@ -14,9 +14,10 @@ import io.swagger.v3.oas.annotations.media.Schema;
  * state are different questions about the same order and are stored as such.
  *
  * <p>The vocabulary is shared by both delivery methods rather than forked. A
- * collection order's {@code DISPATCHED} means "ready at the counter" and its
- * {@code DELIVERED} means "collected"; the app already knows the order's
- * {@code deliveryMethod} and labels accordingly. Two parallel vocabularies
+ * collection parcel's {@code DISPATCHED} means "ready at the counter" and its
+ * {@code DELIVERED} means "collected"; the app reads the PARCEL's own
+ * {@code deliveryMethod} (one order can hold a delivered parcel and a
+ * collected one) and labels accordingly. Two parallel vocabularies
  * would double every state machine, query and dashboard for a wording
  * difference.
  */

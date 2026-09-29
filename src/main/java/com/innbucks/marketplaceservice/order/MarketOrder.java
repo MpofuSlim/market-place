@@ -106,9 +106,23 @@ public class MarketOrder {
     // refuses one without, rather than trusting every future write path to
     // remember. A COLLECTION order has none of these set.
 
+    /**
+     * The order-level SUMMARY of how its parcels travel (V20): DELIVERY when
+     * any seller delivers, else COLLECTION. It is what keeps
+     * {@code chk_order_delivery_destination} guarding every order that ships a
+     * parcel, and it equals the requested method on every uniform order.
+     *
+     * <p>It is NOT the method of any one parcel. Each seller's method is its
+     * {@code market_order_seller} row, and each parcel carries its own copy
+     * ({@code OrderFulfilment.deliveryMethod}); on a mixed order the summary
+     * is wrong for at least one parcel. Hence the name: only the order's own
+     * rendering (OrderService, OrderViewAssembler, checkout) may read it, and
+     * {@code ParcelMethodSourceTest} fails the build if fulfilment, settlement,
+     * notify or pickup code does. The column keeps its V9 name.
+     */
     @Enumerated(EnumType.STRING)
     @Column(name = "delivery_method", nullable = false, length = 16)
-    private DeliveryMethod deliveryMethod;
+    private DeliveryMethod deliverySummary;
 
     /** Which address-book entry was chosen — provenance only. Deliberately NOT
      *  a foreign key: the buyer may delete that entry, and this order's

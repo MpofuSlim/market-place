@@ -25,8 +25,10 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -59,7 +61,7 @@ public class OrderViewAssembler {
         List<OrderFulfilment> parcels = fulfilmentService.forOrder(order.getId());
         return build(order, items, parcels, sellerNames(parcels), disputes(parcels),
                 settlements(parcels),
-                collectionPointsOf(List.of(order)).getOrDefault(order.getId(), Map.of()));
+                collectionPointsOf(List.of(order), parcels).getOrDefault(order.getId(), Map.of()));
     }
 
     /**
@@ -68,7 +70,7 @@ public class OrderViewAssembler {
      */
     public OrderResponse toResponse(MarketOrder order, List<MarketOrderItem> items) {
         return build(order, items, List.of(), Map.of(), Map.of(), Map.of(),
-                collectionPointsOf(List.of(order)).getOrDefault(order.getId(), Map.of()));
+                collectionPointsOf(List.of(order), List.of()).getOrDefault(order.getId(), Map.of()));
     }
 
     /** Page assembly: three extra queries for the whole page, never per row. */
@@ -83,20 +85,33 @@ public class OrderViewAssembler {
         Map<UUID, String> sellers = sellerNames(allParcels);
         Map<UUID, DisputeResponse> disputes = disputes(allParcels);
         Map<UUID, MerchantSettlement> settlements = settlements(allParcels);
-        Map<UUID, Map<UUID, CollectionPointResponse>> points = collectionPointsOf(page.getContent());
+        Map<UUID, Map<UUID, CollectionPointResponse>> points =
+                collectionPointsOf(page.getContent(), allParcels);
         return page.map(order -> build(order,
                 itemsByOrder.getOrDefault(order.getId(), List.of()),
                 parcelsByOrder.getOrDefault(order.getId(), List.of()),
                 sellers, disputes, settlements, points.getOrDefault(order.getId(), Map.of())));
     }
 
-    /** ONE snapshot query (plus one for live hours) for every COLLECTION order
-     *  on the page; DELIVERY orders never ask. */
-    private Map<UUID, Map<UUID, CollectionPointResponse>> collectionPointsOf(List<MarketOrder> orders) {
-        List<UUID> collection = orders.stream()
-                .filter(o -> o.getDeliveryMethod() == DeliveryMethod.COLLECTION)
-                .map(MarketOrder::getId).toList();
-        return collectionPoints.snapshotsFor(collection);
+    /**
+     * ONE snapshot query (plus one for live hours) for every order on the page
+     * that has something collected: a COLLECTION-summary order (every seller
+     * collects), or an order with a COLLECTION parcel — the PARCEL's method, so
+     * the collected half of a mixed order still finds its point. A page of
+     * delivered-only orders never asks.
+     */
+    private Map<UUID, Map<UUID, CollectionPointResponse>> collectionPointsOf(
+            List<MarketOrder> orders, List<OrderFulfilment> parcels) {
+        Set<UUID> collecting = new LinkedHashSet<>();
+        orders.stream()
+                .filter(o -> o.getDeliverySummary() == DeliveryMethod.COLLECTION)
+                .map(MarketOrder::getId)
+                .forEach(collecting::add);
+        parcels.stream()
+                .filter(p -> p.getDeliveryMethod() == DeliveryMethod.COLLECTION)
+                .map(OrderFulfilment::getOrderId)
+                .forEach(collecting::add);
+        return collectionPoints.snapshotsFor(collecting);
     }
 
     private OrderResponse build(MarketOrder order, List<MarketOrderItem> items,
@@ -105,7 +120,8 @@ public class OrderViewAssembler {
                                 Map<UUID, MerchantSettlement> settlements,
                                 Map<UUID, CollectionPointResponse> pointBySeller) {
         List<OrderResponse.Line> lines = items.stream().map(OrderViewAssembler::toLine).toList();
-        boolean collection = order.getDeliveryMethod() == DeliveryMethod.COLLECTION;
+        // The ORDER-level summary: this block renders the order, not a parcel.
+        boolean collection = order.getDeliverySummary() == DeliveryMethod.COLLECTION;
         return new OrderResponse(
                 order.getId(),
                 order.getOrderRef(),
@@ -114,7 +130,7 @@ public class OrderViewAssembler {
                 order.getDeliveryFeeCents(),
                 order.getTotalCents(),
                 order.getCurrency(),
-                order.getDeliveryMethod(),
+                order.getDeliverySummary(),
                 // The buyer's copy names the address-book entry it came from.
                 FulfilmentDestination.forBuyer(order),
                 order.getExpiresAt(),
@@ -162,9 +178,11 @@ public class OrderViewAssembler {
         Instant now = Instant.now();
         for (OrderFulfilment parcel : parcels) {
             // Actions and deadlines from the SAME rules the buyer endpoints
-            // enforce — see BuyerParcelRules.
+            // enforce — see BuyerParcelRules. Every parcel-level fact reads the
+            // PARCEL's method, never the order's summary.
+            boolean collected = parcel.getDeliveryMethod() == DeliveryMethod.COLLECTION;
             BuyerParcelRules.BuyerParcelState state = buyerRules.stateOf(order.getStatus(),
-                    order.getDeliveryMethod(), parcel, settlements.get(parcel.getId()),
+                    parcel, settlements.get(parcel.getId()),
                     disputes.containsKey(parcel.getId()), now);
             out.add(new FulfilmentResponse(
                     parcel.getId(),
@@ -188,13 +206,14 @@ public class OrderViewAssembler {
                     parcel.getTrackingCode(),
                     TrackingStatus.of(parcel.getStatus()),
                     parcel.getDeliveryFeeCents(),
-                    points.get(parcel.getMerchantId()),
+                    collected ? points.get(parcel.getMerchantId()) : null,
                     state.actions(),
                     state.receivedAt(),
                     state.closedAt(),
                     state.closedBy(),
                     state.disputableUntil(),
-                    state.paymentReleasesAt()));
+                    state.paymentReleasesAt(),
+                    parcel.getDeliveryMethod()));
         }
         return out;
     }

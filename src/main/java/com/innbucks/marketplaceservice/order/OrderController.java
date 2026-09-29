@@ -749,7 +749,8 @@ public class OrderController {
                                               "canRequestCollectCode": false,
                                               "canCancel": false,
                                               "canDispute": true
-                                            }
+                                            },
+                                            "deliveryMethod": "DELIVERY"
                                           }
                                         ],
                                         "actions": { "canCancel": false }
@@ -906,7 +907,8 @@ public class OrderController {
                                             "receivedAt": "2026-08-07T14:05:00Z",
                                             "closedAt": "2026-08-07T14:05:00Z",
                                             "closedBy": "BUYER_CONFIRMED",
-                                            "disputableUntil": "2026-08-14T14:05:00Z"
+                                            "disputableUntil": "2026-08-14T14:05:00Z",
+                                            "deliveryMethod": "DELIVERY"
                                           }
                                         ],
                                         "actions": { "canCancel": false }
@@ -990,7 +992,8 @@ public class OrderController {
                                               "canDispute": false
                                             },
                                             "closedAt": "2026-09-24T10:02:00Z",
-                                            "closedBy": "BUYER_CANCELLED"
+                                            "closedBy": "BUYER_CANCELLED",
+                                            "deliveryMethod": "DELIVERY"
                                           }
                                         ],
                                         "actions": { "canCancel": false }
@@ -1218,7 +1221,8 @@ public class OrderController {
     @PostMapping("/{id}/fulfilments/{fulfilmentId}/collect-code")
     @PreAuthorize("hasRole('CUSTOMER')")
     @Operation(summary = "Get a collection code for a parcel",
-            description = "Mints a single-parcel handover code for a COLLECTION order and returns "
+            description = "Mints a single-parcel handover code for a COLLECTION parcel (its own "
+                    + "`deliveryMethod`) and returns "
                     + "it — **this response is the only place the code is ever readable.** Show "
                     + "it, render it as a QR, or forward it to whoever is collecting; the seller "
                     + "verifies it at the counter and the parcel closes as collected.\n\n"
@@ -1255,13 +1259,13 @@ public class OrderController {
                                     {"code":"fulfilment_not_found","message":"Fulfilment not found"}
                                     """))),
             @ApiResponse(responseCode = "409", description = "Nothing to collect: a delivery "
-                    + "order, a parcel already handed over, or a cancelled one (declined, "
+                    + "parcel, a parcel already handed over, or a cancelled one (declined, "
                     + "cancelled or not collected). `actions.canRequestCollectCode` is false in "
                     + "all three",
                     content = @Content(mediaType = "application/json",
                             examples = {
-                                    @ExampleObject(name = "Delivery order", value = """
-                                            {"code":"collect_code_not_applicable","message":"This is a delivery order - there is nothing to collect in person"}
+                                    @ExampleObject(name = "Delivery parcel", value = """
+                                            {"code":"collect_code_not_applicable","message":"This parcel is being delivered - there is nothing to collect in person"}
                                             """),
                                     @ExampleObject(name = "Already collected", value = """
                                             {"code":"illegal_fulfilment_state","message":"This parcel has already been handed over"}

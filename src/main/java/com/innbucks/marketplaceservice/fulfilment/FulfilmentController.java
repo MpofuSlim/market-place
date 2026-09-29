@@ -45,8 +45,9 @@ import java.util.UUID;
                 + "cart spanning two sellers becomes two parcels, each moving on its own clock, "
                 + "and the buyer's order rolls them up to the LEAST advanced one so \"delivered\" "
                 + "always means everything arrived.\n\n"
-                + "For a COLLECTION order read DISPATCHED as \"ready to collect\" and DELIVERED as "
-                + "\"collected\" — the order's `deliveryMethod` says which wording applies.")
+                + "For a COLLECTION parcel read DISPATCHED as \"ready to collect\" and DELIVERED as "
+                + "\"collected\" — each parcel's own `deliveryMethod` says which wording applies "
+                + "(one order can have a delivered parcel and a collected one).")
 @RestController
 @RequestMapping("/marketplace/fulfilments")
 @RequiredArgsConstructor
@@ -226,9 +227,10 @@ public class FulfilmentController {
                     + "spelling: `0771234567`, `+263 77 123 4567`), or part of a name. A name "
                     + "matches who the parcel is FOR — the delivery recipient, or the person the "
                     + "buyer named to collect; a buyer collecting for themselves has no name on "
-                    + "file here, so search their phone or reference. Combine with `status` and "
-                    + "`deliveryMethod` (e.g. `status=DISPATCHED&deliveryMethod=COLLECTION` is "
-                    + "\"ready to collect\").")
+                    + "file here, so search their phone or reference. The delivery recipient's name "
+                    + "and phone match a DELIVERY parcel only. Combine with `status` and "
+                    + "`deliveryMethod` - each parcel's own - (e.g. "
+                    + "`status=DISPATCHED&deliveryMethod=COLLECTION` is \"ready to collect\").")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of the queue",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_QUEUE_200))),
@@ -410,7 +412,8 @@ public class FulfilmentController {
                     + "does releases it sooner - only an operator settling a dispute in your "
                     + "favour can. (A buyer who confirms receipt BEFORE you mark it delivered "
                     + "releases it at once.)\n\n"
-                    + "**Refused on a COLLECTION order** (`collect_code_required`), for every "
+                    + "**Refused on a COLLECTION parcel** (`collect_code_required`) - this "
+                    + "parcel's own `deliveryMethod`, whatever the rest of the order does - for every "
                     + "caller: a collection closes as delivered only with the buyer's collection "
                     + "code (`POST /{id}/collect`) or the buyer's own \"received\". If the buyer "
                     + "never came, use `POST /{id}/unfulfillable` to close it as not collected.")
@@ -453,11 +456,11 @@ public class FulfilmentController {
                     + "happened — and puts things right in one step: the units go back on your "
                     + "shelf, the buyer's money is queued for refund, and the buyer is told why "
                     + "in your words.\n\n"
-                    + "Available from PREPARING on every order. On a DELIVERY order it is refused "
+                    + "Available from PREPARING on every parcel. On a DELIVERY parcel it is refused "
                     + "once the parcel is DISPATCHED: the goods are with a courier and this is no "
                     + "longer the truth; a delivery that then fails is the buyer's dispute to "
                     + "raise, because by then the two of you can disagree about what happened.\n\n"
-                    + "**On a COLLECTION order it is also allowed from DISPATCHED** (ready at the "
+                    + "**On a COLLECTION parcel it is also allowed from DISPATCHED** (ready at the "
                     + "counter) — this is how you close a collection the buyer never came for. "
                     + "The goods go back on your shelf, the buyer's money is queued for refund, "
                     + "and the buyer is told it was not picked up. Put how long you waited in "
@@ -540,7 +543,7 @@ public class FulfilmentController {
             @ApiResponse(responseCode = "404", description = "No such parcel for this seller",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_NOT_FOUND_404))),
             @ApiResponse(responseCode = "409", description = "Nothing to redeem here: a delivery "
-                    + "order, the parcel is already closed (collected, or cancelled - never hand "
+                    + "parcel, the parcel is already closed (collected, or cancelled - never hand "
                     + "those goods over), no code issued yet, or the wrong-code budget has run "
                     + "out. A closed parcel is refused on its state before the code is looked "
                     + "at, so no code is compared and no budget is spent",
@@ -553,8 +556,8 @@ public class FulfilmentController {
                                     {"code":"collect_code_unavailable","message":"No collection code has been issued for this parcel - ask the buyer to generate one in their app"}"""),
                             @ExampleObject(name = "Locked", value = """
                                     {"code":"collect_code_locked","message":"Too many wrong codes have been tried for this parcel - ask the buyer to generate a new one"}"""),
-                            @ExampleObject(name = "Delivery order", value = """
-                                    {"code":"collect_code_not_applicable","message":"This is a delivery order - there is nothing to collect in person"}""")})),
+                            @ExampleObject(name = "Delivery parcel", value = """
+                                    {"code":"collect_code_not_applicable","message":"This parcel is being delivered - there is nothing to collect in person"}""")})),
             @ApiResponse(responseCode = "422", description = "That code is not valid for this "
                     + "parcel — counted against the parcel's budget",
                     content = @Content(examples = @ExampleObject(value = """

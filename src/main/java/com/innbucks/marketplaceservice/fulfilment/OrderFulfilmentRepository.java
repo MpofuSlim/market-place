@@ -96,14 +96,15 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
      * parcels on the road, parcels waiting on the shelf, and shelf parcels
      * waiting longer than {@code overdueBefore} — the ones to chase (or close
      * as not collected) before the operator's stale-money list finds them.
+     * Split on the PARCEL's method (V21), so a mixed order's two halves land
+     * in the counts of the two ways they actually travel.
      */
     @Query(value = """
-            SELECT COUNT(*) FILTER (WHERE o.delivery_method = 'DELIVERY')                  AS onTheWay,
-                   COUNT(*) FILTER (WHERE o.delivery_method = 'COLLECTION')                AS readyToCollect,
-                   COUNT(*) FILTER (WHERE o.delivery_method = 'COLLECTION'
+            SELECT COUNT(*) FILTER (WHERE f.delivery_method = 'DELIVERY')                  AS onTheWay,
+                   COUNT(*) FILTER (WHERE f.delivery_method = 'COLLECTION')                AS readyToCollect,
+                   COUNT(*) FILTER (WHERE f.delivery_method = 'COLLECTION'
                                       AND f.dispatched_at < :overdueBefore)               AS readyToCollectOverdue
               FROM order_fulfilment f
-              JOIN market_order o ON o.id = f.order_id
              WHERE f.merchant_id = :merchantId
                AND f.status = 'DISPATCHED'
             """, nativeQuery = true)
@@ -158,14 +159,13 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
 
     Optional<OrderFulfilment> findByTrackingCode(String trackingCode);
 
-    /** The courier's run: one organization's parcels in a status on one kind
-     *  of order, oldest first. */
+    /** The courier's run: one organization's parcels in a status that travel
+     *  one way (the PARCEL's own method, V21), oldest first. */
     @Query("""
-            SELECT f FROM OrderFulfilment f, MarketOrder o
-             WHERE o.id = f.orderId
-               AND f.merchantId = :merchantId
+            SELECT f FROM OrderFulfilment f
+             WHERE f.merchantId = :merchantId
                AND f.status = :status
-               AND o.deliveryMethod = :method
+               AND f.deliveryMethod = :method
              ORDER BY f.dispatchedAt ASC, f.createdAt ASC
             """)
     List<OrderFulfilment> findRun(@Param("merchantId") UUID merchantId,
@@ -184,8 +184,12 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
      * never write a stale position back over a fresh one.
      *
      * <p>Every condition that makes a ping meaningless is in the WHERE, so the
-     * update count IS the answer: still in transit, and newer than both the
-     * stored point and the throttle window. 0 = ignored, never an error.
+     * update count IS the answer: a DELIVERY parcel still in transit, and newer
+     * than both the stored point and the throttle window. 0 = ignored, never an
+     * error. The DELIVERY guard repeats the caller's check on purpose: a
+     * collection is never tracked (chk_fulfilment_location_on_delivery, V21),
+     * and the statement that writes a position should not need the caller to
+     * remember that.
      */
     @Modifying
     @Query(value = """
@@ -197,6 +201,7 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
                    last_location_by = :postedBy
              WHERE id = :id
                AND status = 'DISPATCHED'
+               AND delivery_method = 'DELIVERY'
                AND (last_location_at IS NULL OR last_location_at <= :notAfter)
             """, nativeQuery = true)
     int recordLocation(@Param("id") UUID id,
@@ -262,10 +267,11 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
 
     /**
      * Collections ready at the seller's counter since before {@code cutoff}
-     * and not yet alerted on (V16), oldest first. The COLLECTION filter lives
-     * on the order, so this joins it — a courier delivery that has been on the
-     * road a week is a different problem, and its seller is not the one who
-     * can end it.
+     * and not yet alerted on (V16), oldest first. COLLECTION is the PARCEL's
+     * method (V21) — a courier delivery that has been on the road a week is a
+     * different problem, and its seller is not the one who can end it, even
+     * when another seller on the same order is collected. The order is joined
+     * only for the reference the alert quotes.
      */
     @Query(value = """
             SELECT f.id            AS fulfilmentId,
@@ -277,7 +283,7 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
              WHERE f.status = 'DISPATCHED'
                AND f.collection_overdue_alerted_at IS NULL
                AND f.dispatched_at < :cutoff
-               AND o.delivery_method = 'COLLECTION'
+               AND f.delivery_method = 'COLLECTION'
              ORDER BY f.dispatched_at, f.id
              LIMIT :limit
             """, nativeQuery = true)
@@ -298,6 +304,7 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
                SET collection_overdue_alerted_at = :now
              WHERE id = :id
                AND status = 'DISPATCHED'
+               AND delivery_method = 'COLLECTION'
                AND collection_overdue_alerted_at IS NULL
             """, nativeQuery = true)
     int claimOverdueCollectionAlert(@Param("id") UUID id, @Param("now") Instant now);
