@@ -110,6 +110,7 @@ public class ListingService {
     private final DeliveryTownCatalog deliveryTowns;
     private final ListingStock listingStock;
     private final ListingVariantService variants;
+    private final ImagePixelBudget imageBudget;
     private final String cellCurrency;
     private final int maxPerMerchant;
 
@@ -124,6 +125,7 @@ public class ListingService {
                           DeliveryTownCatalog deliveryTowns,
                           ListingStock listingStock,
                           ListingVariantService variants,
+                          ImagePixelBudget imageBudget,
                           @Value("${innbucks.currency}") String cellCurrency,
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
@@ -137,6 +139,7 @@ public class ListingService {
         this.deliveryTowns = deliveryTowns;
         this.listingStock = listingStock;
         this.variants = variants;
+        this.imageBudget = imageBudget;
         this.cellCurrency = cellCurrency;
         this.maxPerMerchant = maxPerMerchant;
     }
@@ -875,7 +878,7 @@ public class ListingService {
     /** Validated upload: bytes + normalized content type, ready to store. */
     record ValidatedImage(byte[] bytes, String contentType) {}
 
-    private static ValidatedImage validateImage(MultipartFile file) {
+    private ValidatedImage validateImage(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw ApiException.badRequest("image_required",
                     "An image file part named 'image' is required");
@@ -908,6 +911,11 @@ public class ListingService {
             throw ApiException.badRequest("unsupported_image_type",
                     "Please upload a valid image file (JPG, PNG, or WEBP).");
         }
+        // Bytes bound the upload, not the decode: a few-hundred-KB PNG can
+        // declare gigabytes of raster. Header-only read, no decode — see
+        // ImagePixelBudget. Every upload path (multipart create, PUT /image,
+        // POST /images) passes through here.
+        imageBudget.requireUploadable(bytes);
         return new ValidatedImage(bytes, contentType.toLowerCase(Locale.ROOT));
     }
 
