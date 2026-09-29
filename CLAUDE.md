@@ -1699,6 +1699,14 @@ beans, real Postgres + security chain).
   (`VariantStockDriftSweeperIT`).
 * Every future external-HTTP client MUST get a standalone-WireMock contract
   test per the fleet convention.
+* **Session revocation is pinned OUTSIDE the shared IT context**, whose Redis
+  is a closed port (every IT runs the stores fail-open, so a dropped gate stays
+  green there): `JwtFilterRevocationTest` (real `JwtFilter`, mocked stores) and
+  `RedisTokenRevocationIT` (user-service's exact keys in a real Redis, 401 over
+  HTTP). The stores' own catch is what keeps revocation fail-open — if one ever
+  threw, the filter's catch would leave the request unauthenticated (401 on
+  protected paths). S2S `extend-expiry`: `OrderServiceTest.ExtendExpiry`,
+  `OrderFlowIT`, and the token-gate 404s in `SecuritySurfaceIT`.
 
 ## Swagger
 

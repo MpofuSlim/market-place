@@ -72,6 +72,9 @@ public final class TestJwts {
         private String organizationRole;
         private List<String> products;
         private String phoneNumber;
+        private String loginIdentifier;
+        private Long tokenVersion;
+        private boolean mustChangePassword;
         // Default: valid for 1 hour from now.
         private long ttlMillis = 3_600_000L;
 
@@ -116,6 +119,28 @@ public final class TestJwts {
             return this;
         }
 
+        /** The FLEET shape: {@code sub} is the login identifier (an email) and
+         *  the user's uuid rides the {@code userUuid} claim — the key
+         *  user-service publishes the shared token version under. */
+        public Builder loginIdentifier(String loginIdentifier) {
+            this.loginIdentifier = loginIdentifier;
+            return this;
+        }
+
+        /** The {@code tokenVersion} session epoch (compared against
+         *  {@code auth:tokenver:<userUuid>} in the shared Redis). */
+        public Builder tokenVersion(long tokenVersion) {
+            this.tokenVersion = tokenVersion;
+            return this;
+        }
+
+        /** The {@code mustChangePassword} claim user-service mints on a
+         *  temporary password — every fleet service refuses such a token. */
+        public Builder mustChangePassword() {
+            this.mustChangePassword = true;
+            return this;
+        }
+
         /** Issued and already expired — for expired-token tests. */
         public Builder expired() {
             this.ttlMillis = -60_000L;
@@ -125,7 +150,7 @@ public final class TestJwts {
         public String sign(String secret) {
             SecretKey key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
             var builder = Jwts.builder()
-                    .subject(subject.toString())
+                    .subject(loginIdentifier != null ? loginIdentifier : subject.toString())
                     .issuer(JwtUtil.TOKEN_ISSUER)
                     .audience().add(JwtUtil.TOKEN_AUDIENCE).and()
                     .claim("roles", roles);
@@ -146,6 +171,15 @@ public final class TestJwts {
             }
             if (phoneNumber != null) {
                 builder.claim("phoneNumber", phoneNumber);
+            }
+            if (loginIdentifier != null) {
+                builder.claim("userUuid", subject.toString());
+            }
+            if (tokenVersion != null) {
+                builder.claim("tokenVersion", tokenVersion);
+            }
+            if (mustChangePassword) {
+                builder.claim("mustChangePassword", true);
             }
             long now = System.currentTimeMillis();
             return builder

@@ -9,7 +9,9 @@ import org.springframework.http.MediaType;
 import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -246,6 +248,36 @@ class SecuritySurfaceIT extends PostgresTestContainer {
                         .header("X-Internal-Token", "definitely-not-the-internal-token"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("order_not_found"));
+    }
+
+    @Test
+    void extendExpiryWithoutTokenIsIndistinguishableFromNotFound() throws Exception {
+        // Garbage minutes on purpose: the token gate runs BEFORE the parameter
+        // is parsed, so an unauthenticated probe learns nothing from a 400.
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/extend-expiry", "MKT-000000000000")
+                        .param("minutes", "not-a-number"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("order_not_found"));
+    }
+
+    @Test
+    void extendExpiryWithWrongTokenIsIndistinguishableFromNotFoundAndAudited() throws Exception {
+        String wrongToken = "definitely-not-the-internal-token";
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/extend-expiry", "MKT-000000000000")
+                        .header("X-Internal-Token", wrongToken)
+                        .param("minutes", "15"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("order_not_found"));
+
+        // The probe is on the tamper-evident chain with its path — never the token.
+        List<String> metadata = jdbc.queryForList(
+                "SELECT metadata FROM audit_events WHERE event_type = 'INTERNAL_TOKEN_REJECTED'",
+                String.class);
+        assertThat(metadata).hasSize(1);
+        assertThat(metadata.get(0))
+                .contains("/marketplace/internal/orders/MKT-000000000000/extend-expiry")
+                .contains("PATCH")
+                .doesNotContain(wrongToken);
     }
 
     @Test
