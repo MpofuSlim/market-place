@@ -117,6 +117,30 @@ public class MarketplaceMetrics {
                 .increment();
     }
 
+    /**
+     * Order creation's recovery signals, off the lifecycle series on purpose:
+     * {@code marketplace.orders.post_commit_failures{step}} counts best-effort
+     * work that failed AFTER an order committed (the order stands and the
+     * buyer still gets it), and {@code marketplace.orders.idempotent_recoveries}
+     * counts a same-key request that found its order already committed with no
+     * stored replay body and replayed it instead of re-running. Either climbing
+     * means the post-commit window is being hit — investigate, nothing is lost.
+     */
+    public void orderPostCommitFailure(String step) {
+        Counter.builder("marketplace.orders.post_commit_failures")
+                .description("Best-effort order-creation steps that failed after the order committed")
+                .tag("step", step == null ? "unknown" : step)
+                .register(registry)
+                .increment();
+    }
+
+    public void orderIdempotentRecovery() {
+        Counter.builder("marketplace.orders.idempotent_recoveries")
+                .description("Same-key order requests that replayed an already-committed order")
+                .register(registry)
+                .increment();
+    }
+
     public void confirmMismatch() {
         confirmMismatch.increment();
     }

@@ -42,7 +42,10 @@ import java.util.Optional;
  * claims older than {@link #IN_PROGRESS_GRACE} are treated as dead and taken
  * over. The partial unique index on {@code market_order.idempotency_key} is the
  * DB backstop: even a takeover racing a not-actually-dead owner cannot create a
- * second order for the key.
+ * second order for the key. A takeover whose predecessor DID commit its order
+ * (and died before storing the body) must not reach that backstop at all: the
+ * order flow looks the key's order up first and replays it (see
+ * {@code OrderService.createOrder}).
  */
 @Slf4j
 @Service
@@ -87,6 +90,15 @@ public class IdempotencyService {
                SET status = ?, response_body = ?, updated_at = ?
              WHERE key_hash = ?
             """;
+
+    // First stored body wins: only a claim still in flight takes a body, so a
+    // late store (a slow owner, or a takeover recovering the same order) can
+    // never overwrite the bytes an earlier caller already answered with.
+    private static final String COMPLETE_IF_IN_FLIGHT_SQL = """
+            UPDATE idempotency_record
+               SET status = ?, response_body = ?, updated_at = ?
+             WHERE key_hash = ? AND status = %d
+            """.formatted(IN_PROGRESS);
 
     private static final String RELEASE_SQL = """
             DELETE FROM idempotency_record
@@ -188,6 +200,37 @@ public class IdempotencyService {
             log.warn("Idempotency key {}: complete() updated {} rows (claim lost?)",
                     keyHash, updated);
         }
+    }
+
+    /**
+     * {@link #complete} guarded on the in-flight sentinel, so the FIRST stored
+     * body wins. Two callers can legitimately hold one key's claim at once (a
+     * live-but-slow owner and the caller that took its claim over as stale);
+     * when both end up answering with the same committed order, whichever
+     * stores second must answer with what the first stored - that is the body
+     * every replay returns, and the one the first caller's client already got.
+     *
+     * @return empty when {@code responseBody} is now the stored body (or there
+     *         is no row left to store it on - the claim was released - in which
+     *         case the caller's own body is still the right answer); otherwise
+     *         the body already stored, which the caller must answer with.
+     */
+    public Optional<String> completeIfInFlight(String keyHash, int status, String responseBody) {
+        if (status == IN_PROGRESS) {
+            throw new IllegalArgumentException("status 0 is reserved for the in-progress sentinel");
+        }
+        if (jdbcTemplate.update(COMPLETE_IF_IN_FLIGHT_SQL,
+                status, responseBody, Timestamp.from(Instant.now()), keyHash) == 1) {
+            return Optional.empty();
+        }
+        ClaimRow row = lookup(keyHash).orElse(null);
+        if (row == null || row.status() == IN_PROGRESS || row.responseBody() == null) {
+            log.warn("Idempotency key {}: completeIfInFlight() stored nothing (claim lost?)", keyHash);
+            return Optional.empty();
+        }
+        log.info("Idempotency key {}: a response was already stored (status={}) - keeping it",
+                keyHash, row.status());
+        return Optional.of(row.responseBody());
     }
 
     /**

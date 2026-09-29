@@ -128,6 +128,35 @@ never change either casually.
   replays return the ORIGINAL stored status/body; same key + different body
   → 422; fresh claim in flight → 409; stale claim (>60s) taken over. DB
   backstop: partial unique index on `market_order.idempotency_key`.
+  **Once the order commits, the claim can never strand.** The replay body is
+  stored FIRST after the commit; cart clean-up then runs best-effort (caught,
+  logged by order ref, `marketplace.orders.post_commit_failures{step}`) and can
+  never turn a created order into an error. It used to run BEFORE the store,
+  unguarded: one throw there left the claim IN_PROGRESS, and after the 60s
+  takeover every retry re-ran into the unique index and answered 500 while the
+  real order held its stock until expiry. Defence in depth: a claim we own whose
+  key ALREADY has a committed order (a crash in that window, a failed store, an
+  ambiguous commit, a racing takeover) REPLAYS that order — rendered as it
+  stands now, since its original body was never stored, then stored so every
+  later retry is byte-identical — and never re-runs
+  (`marketplace.orders.idempotent_recoveries`). Business refusals
+  (`ApiException`) skip that lookup: they are thrown before commit. **The FIRST
+  stored body wins** (`IdempotencyService.completeIfInFlight`, `AND status = 0`):
+  a slow owner and the caller that took its claim over can both end up
+  answering with the same order, and the second to store answers with the
+  first's bytes rather than overwriting what a client already saw. A recovery
+  is audited `ORDER_CREATE_RECOVERED`, never a second `ORDER_CREATED` — a crash
+  in the window wrote no creation audit, and that row is then the order's only
+  entry on the chain. **Known edge:** a key whose order committed but whose
+  claim row was RELEASED — every key stranded before this fix (the old
+  takeover loop ended in `release()`), or a failed commit whose own lookup also
+  failed — has no fingerprint left. A same-body retry replays the order
+  correctly; a DIFFERENT body also replays it (201, not 422) and its fingerprint
+  becomes the key's, so the original body then gets 422. The order stores no
+  request fingerprint, so this cannot be told apart. Pinned by
+  `OrderServiceTest$PostCommitWindow`, `IdempotencyServiceIT` and
+  `OrderIdempotencyRecoveryIT` (faults injected by Postgres triggers, so the
+  wiring under test is production's).
 * **The payer is the CALLER**: `OrderService.resolveBuyerMsisdn` takes the
   order's `buyerMsisdn` from the JWT's `phoneNumber` claim whenever the token
   carries one (every real CUSTOMER login does) and reads the body field ONLY
