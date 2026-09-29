@@ -51,6 +51,9 @@ class CollectionToggleFlowIT extends PostgresTestContainer {
     @Value("${jwt.secret}")
     private String jwtSecret;
 
+    @Value("${innbucks.internal-api-token}")
+    private String internalToken;
+
     private UUID merchantId;
     private String merchantToken;
     private String adminToken;
@@ -237,6 +240,98 @@ class CollectionToggleFlowIT extends PostgresTestContainer {
     }
 
     // ------------------------------------------------------------------
+    // Checkout follows the setting; an order already paid does not
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("After the opt-out, checkout refuses collection from this seller (quote 200 "
+            + "naming the line, order 422 reserving nothing, cart untouched) - while a "
+            + "collection PAID before it still mints a code and closes")
+    void checkoutFollowsTheSettingButAPaidCollectionCompletes() throws Exception {
+        String listingId = publishListing(merchantToken, "[{\"townCode\":\"harare\",\"feeCents\":300}]");
+        String customer = TestJwts.forUser(UUID.randomUUID())
+                .role("CUSTOMER").phoneNumber("+263771234567").sign(jwtSecret);
+
+        // --- A collection ordered and paid while the seller still collects ---
+        String created = mockMvc.perform(post("/marketplace/orders")
+                        .header("Authorization", "Bearer " + customer)
+                        .header("Idempotency-Key", "toggle-before-opt-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"items":[{"listingId":"%s","quantity":1}],"deliveryMethod":"COLLECTION"}"""
+                                .formatted(listingId)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+        String orderRef = JsonPath.read(created, "$.data.orderRef");
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentRef\":\"INB-PAY-%s\",\"amountCents\":1550}".formatted(orderRef)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PAID"));
+        String paid = mockMvc.perform(get("/marketplace/orders/{id}", orderId)
+                        .header("Authorization", "Bearer " + customer))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String fulfilmentId = JsonPath.read(paid, "$.data.fulfilments[0].id");
+        assertThat(jdbc.queryForObject("SELECT delivery_method FROM order_fulfilment WHERE id = ?::uuid",
+                String.class, fulfilmentId)).isEqualTo("COLLECTION");
+
+        // --- The seller opts out ---------------------------------------------
+        change(merchantToken, false).andExpect(status().isOk());
+
+        // --- New checkouts follow the setting --------------------------------
+        mockMvc.perform(post("/marketplace/cart/items")
+                        .header("Authorization", "Bearer " + customer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"listingId\":\"%s\",\"quantity\":1}".formatted(listingId)))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/marketplace/cart").header("Authorization", "Bearer " + customer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkoutReady").value(true))
+                .andExpect(jsonPath("$.data.items[0].issue").doesNotExist());
+        mockMvc.perform(post("/marketplace/checkout/quote")
+                        .header("Authorization", "Bearer " + customer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromCart\":true,\"deliveryMethod\":\"COLLECTION\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkoutReady").value(false))
+                .andExpect(jsonPath("$.data.rejections[0].reason").value("COLLECTION_NOT_OFFERED"))
+                .andExpect(jsonPath("$.data.rejections[0].merchantId").value(merchantId.toString()))
+                .andExpect(jsonPath("$.data.sellers[0].merchantId").value(merchantId.toString()))
+                .andExpect(jsonPath("$.data.sellers[0].availableMethods", hasSize(1)))
+                .andExpect(jsonPath("$.data.sellers[0].availableMethods[0]").value("DELIVERY"));
+        int stockBefore = listingStock(listingId);
+        mockMvc.perform(post("/marketplace/orders")
+                        .header("Authorization", "Bearer " + customer)
+                        .header("Idempotency-Key", "toggle-after-opt-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fromCart\":true,\"deliveryMethod\":\"COLLECTION\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("collection_not_offered"))
+                .andExpect(jsonPath("$.message")
+                        .value("Solar Lantern 20W is delivery only. Choose delivery or remove it."));
+        assertThat(listingStock(listingId)).isEqualTo(stockBefore);
+
+        // --- ...but the collection already paid for completes ----------------
+        // The parcel snapshot, not the live setting, decides: a seller opting
+        // out must not strand goods a buyer has paid to collect.
+        String minted = mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/collect-code",
+                        orderId, fulfilmentId)
+                        .header("Authorization", "Bearer " + customer))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String code = JsonPath.read(minted, "$.data.code");
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/collect", fulfilmentId)
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"%s\"}".formatted(code)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("DELIVERED"));
+    }
+
+    // ------------------------------------------------------------------
     // The operator override
     // ------------------------------------------------------------------
 
@@ -361,6 +456,11 @@ class CollectionToggleFlowIT extends PostgresTestContainer {
     private int auditCount(String type) {
         return jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE event_type = ?",
                 Integer.class, type);
+    }
+
+    private int listingStock(String listingId) {
+        return jdbc.queryForObject("SELECT stock_qty FROM listing WHERE id = ?::uuid",
+                Integer.class, listingId);
     }
 
     private String listingStatus(String listingId) {

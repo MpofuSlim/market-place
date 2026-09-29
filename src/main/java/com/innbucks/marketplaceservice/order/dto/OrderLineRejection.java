@@ -36,8 +36,10 @@ public record OrderLineRejection(
                 * `INSUFFICIENT_STOCK` — fewer units remain than were asked for; `availableQty` \
                 says how many. Zero means sold out.
                 * `NOT_DELIVERED_TO_TOWN` — the order is for DELIVERY and this listing's seller does \
-                not deliver to the address's town. Remedy: choose COLLECTION, another address, or \
-                drop the line.
+                not deliver to the address's town. `merchantId` names the seller. Remedy: another \
+                address, or drop the line - or COLLECTION, but only when that seller offers it \
+                (the quote's `sellers[].availableMethods` for this `merchantId`; a delivery-only \
+                seller never does, V20).
                 * `VARIANT_REQUIRED` — the listing sells options (sizes, colours) and the line named \
                 none. Remedy: let the shopper pick one (the listing's `variants`).
                 * `VARIANT_UNAVAILABLE` — the option named no longer exists, or is not an option of \

@@ -158,7 +158,16 @@ public class DeliveryAddressService {
      */
     @Transactional(readOnly = true)
     public Optional<DeliveryAddress> findForQuote(AuthenticatedUser buyer, UUID addressId) {
-        UUID buyerUuid = buyerId(buyer);
+        // A principal whose uuid is not a UUID (a token with no userUuid claim
+        // falls back to its sub) owns no address: empty, never the
+        // IllegalArgumentException buyerId would throw, which nothing maps and
+        // which would turn a COLLECTION quote into a 500.
+        UUID buyerUuid;
+        try {
+            buyerUuid = buyerId(buyer);
+        } catch (IllegalArgumentException | NullPointerException notAUuid) {
+            return Optional.empty();
+        }
         return addressId != null
                 ? addressRepository.findByIdAndBuyerUuid(addressId, buyerUuid)
                 : addressRepository.findByBuyerUuidAndDefaultAddressTrue(buyerUuid);

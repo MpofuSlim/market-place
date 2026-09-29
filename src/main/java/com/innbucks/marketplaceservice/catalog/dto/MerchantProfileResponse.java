@@ -81,10 +81,12 @@ public record MerchantProfileResponse(
                 + "for an unknown merchant.")
         List<CollectionPointResponse> collectionPoints,
 
-        @Schema(description = "V20: whether buyers may collect from this seller. False for a "
-                + "DELIVERY-ONLY seller - offer no collection, and `collectionPoints` is empty. "
-                + "True for an unknown merchant, like every seller who has never changed it. "
-                + "Always present.", example = "true")
+        @Schema(description = "V20: the SELLER's collection setting. False for a DELIVERY-ONLY "
+                + "seller - offer no collection, and `collectionPoints` is empty. True for an "
+                + "unknown merchant, like every seller who has never changed it. True does not by "
+                + "itself mean collection is possible: the market must offer it too "
+                + "(`GET /marketplace/checkout/options` `deliveryMethods`). Always present.",
+                example = "true")
         boolean collectionEnabled
 ) {
 }

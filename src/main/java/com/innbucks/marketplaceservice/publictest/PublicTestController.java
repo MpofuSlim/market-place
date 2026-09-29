@@ -495,7 +495,10 @@ public class PublicTestController {
             description = "Reserves NOTHING and creates no order. A basket with problems is a "
                     + "**200** with `checkoutReady: false` and every failing line in "
                     + "`rejections` — the shopper has to see the basket to fix it. Only a "
-                    + "malformed request or a missing address is an error.")
+                    + "malformed request or a missing address is an error. Same body as "
+                    + "`POST /marketplace/checkout/quote`, including `sellers[]` (each seller's "
+                    + "`availableMethods`, so Deliver / Collect can be greyed out before the "
+                    + "shopper picks) and `availabilityTownCode` (V20).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The quote, ready or not"),
             @ApiResponse(responseCode = "400", description = "Malformed request, DELIVERY with no "

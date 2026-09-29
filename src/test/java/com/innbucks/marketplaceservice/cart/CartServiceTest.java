@@ -128,8 +128,12 @@ class CartServiceTest {
     @DisplayName("The cart asks no delivery question (V20): a delivery-only seller's item is ready, and only the listings are read")
     void cartIgnoresDeliveryMethodsEntirely() {
         cartHolds(cartItem(LISTING, 2));
-        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(LISTING, 1550, 10)));
-        // Were the cart to ask, this seller would refuse collection.
+        // The listing's OWN seller is delivery-only: were the cart to price a
+        // method (COLLECTION is what an unstated method means at checkout), this
+        // line would carry COLLECTION_NOT_OFFERED and checkoutReady would flip.
+        Listing deliveryOnly = sellable(LISTING, 1550, 10);
+        deliveryOnly.setMerchantId(SELLER_ANY);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(deliveryOnly));
         when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of(SELLER_ANY));
 
         CartResponse cart = service.getCart(BUYER);

@@ -19,8 +19,8 @@ import java.util.UUID;
  *
  * @param method            the method this checkout priced the seller with
  * @param deliveryFeeCents  the seller's fee to the town when they deliver and
- *                          at least one of their lines is delivered there; null
- *                          otherwise
+ *                          at least one of their BUYABLE lines (no other issue)
+ *                          is delivered there; null otherwise
  * @param collectionOffered false for a delivery-only seller
  * @param availableMethods  the cell's methods this seller can be reached by, in
  *                          the cell's order

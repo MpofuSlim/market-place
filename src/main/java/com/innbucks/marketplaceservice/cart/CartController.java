@@ -100,7 +100,8 @@ public class CartController {
                           "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                           "stockQty": 6 }
                       ],
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 2,
                     "lineTotalCents": 3998,
@@ -145,7 +146,8 @@ public class CartController {
                       "hasVariants": false,
                       "options": [],
                       "variants": [],
-                      "maxPriceCents": 2399
+                      "maxPriceCents": 2399,
+                      "collectionEnabled": true
                     },
                     "quantity": 2,
                     "lineTotalCents": 4798,
@@ -181,7 +183,8 @@ public class CartController {
                       "hasVariants": false,
                       "options": [],
                       "variants": [],
-                      "maxPriceCents": 1550
+                      "maxPriceCents": 1550,
+                      "collectionEnabled": true
                     },
                     "quantity": 5,
                     "lineTotalCents": 0,
@@ -230,7 +233,8 @@ public class CartController {
                       "stockQty": 10,
                       "status": "ACTIVE",
                       "hasVariants": true,
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 1,
                     "lineTotalCents": 0,
@@ -266,7 +270,8 @@ public class CartController {
                       "stockQty": 10,
                       "status": "ACTIVE",
                       "hasVariants": true,
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 1,
                     "lineTotalCents": 0,

@@ -74,7 +74,8 @@ public class CheckoutController {
                       "hasVariants": false,
                       "options": [],
                       "variants": [],
-                      "maxPriceCents": 2399
+                      "maxPriceCents": 2399,
+                      "collectionEnabled": true
                     },
                     "quantity": 2,
                     "lineTotalCents": 4798,
@@ -215,7 +216,8 @@ public class CheckoutController {
                       "status": "ACTIVE",
                       "imageUrl": "/marketplace/catalog/e3a91c57-2b4d-4f8e-9a16-7c5d0b2e8f41/image",
                       "hasVariants": true,
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 1,
                     "lineTotalCents": 2299,
@@ -241,7 +243,8 @@ public class CheckoutController {
                       "stockQty": 3,
                       "status": "ACTIVE",
                       "hasVariants": false,
-                      "maxPriceCents": 1550
+                      "maxPriceCents": 1550,
+                      "collectionEnabled": true
                     },
                     "quantity": 2,
                     "lineTotalCents": 3100,
@@ -323,7 +326,8 @@ public class CheckoutController {
                         { "name": "Size", "values": ["M", "L", "XL"] },
                         { "name": "Colour", "values": ["Black"] }
                       ],
-                      "maxPriceCents": 2299
+                      "maxPriceCents": 2299,
+                      "collectionEnabled": true
                     },
                     "quantity": 1,
                     "lineTotalCents": 0,

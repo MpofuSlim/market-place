@@ -2,7 +2,9 @@ package com.innbucks.marketplaceservice.checkout;
 
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -19,7 +21,11 @@ import java.util.UUID;
  * the pricer asks, and {@link #needsDestination} / {@link #summary} are the
  * only way order creation asks. When {@code bySeller} is non-empty it names
  * EVERY seller in the basket; when it is empty, {@code basketDefault} applies
- * to all of them.
+ * to all of them. Build a per-seller plan only through {@link #forSellers},
+ * which makes that true by construction: with a PARTIAL map, a seller left to
+ * the default could deliver while {@link #needsDestination} (which reads the
+ * map) said nobody does, and the order would be priced for a delivery with no
+ * address to send it to.
  *
  * <p>{@link #NONE} is the cart's plan: no method chosen at all. The pricer then
  * reads neither delivery coverage nor seller settings, so the cart's
@@ -53,6 +59,30 @@ public record DeliveryPlan(DeliveryMethod basketDefault,
             throw new IllegalArgumentException("A checkout plan needs a delivery method");
         }
         return new DeliveryPlan(method, Map.of(), offered);
+    }
+
+    /**
+     * A per-seller plan naming EVERY seller in {@code sellers}: each takes its
+     * entry in {@code choices}, or {@code basketDefault} when it has none. A
+     * choice for a seller not in {@code sellers} (no longer in the basket) is
+     * dropped. With no choices this is exactly {@link #uniform}.
+     */
+    public static DeliveryPlan forSellers(DeliveryMethod basketDefault,
+                                          Map<UUID, DeliveryMethod> choices,
+                                          Collection<UUID> sellers,
+                                          Set<DeliveryMethod> offered) {
+        if (choices == null || choices.isEmpty()) {
+            return uniform(basketDefault, offered);
+        }
+        if (basketDefault == null) {
+            throw new IllegalArgumentException("A checkout plan needs a delivery method");
+        }
+        Map<UUID, DeliveryMethod> every = new LinkedHashMap<>();
+        for (UUID seller : sellers) {
+            every.put(seller, choices.getOrDefault(seller, basketDefault));
+        }
+        return every.isEmpty() ? uniform(basketDefault, offered)
+                : new DeliveryPlan(basketDefault, every, offered);
     }
 
     /** True for the cart's plan, which prices goods and nothing else. */

@@ -462,6 +462,16 @@ class CheckoutServiceTest {
         // A stale id is NOT swapped for the default.
         verify(addresses).findByIdAndBuyerUuid(eq(stale), any());
         verify(addresses, times(1)).findByBuyerUuidAndDefaultAddressTrue(any());
+
+        // A principal whose uuid is not a UUID (a token with no userUuid claim
+        // falls back to its sub) owns no address: the COLLECTION quote still
+        // answers, with no town, instead of a 500 from UUID.fromString.
+        AuthenticatedUser subOnly = new AuthenticatedUser(
+                "tariro@example.com", Set.of("CUSTOMER"), null, null, "+263771234567", "ZW");
+        CheckoutQuoteResponse legacy = service.quote(subOnly, quoteOf(DeliveryMethod.COLLECTION));
+        assertThat(legacy.checkoutReady()).isTrue();
+        assertThat(legacy.availabilityTownCode()).isNull();
+        verify(addresses, times(1)).findByBuyerUuidAndDefaultAddressTrue(any());
     }
 
     @Test

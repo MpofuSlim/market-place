@@ -414,9 +414,9 @@ public class SellerService {
      * sale that could only be collected (409 {@code collection_required},
      * naming them). Turning it back ON is never gated.
      *
-     * <p><b>A request that changes nothing writes nothing</b> — no row, no
-     * stamp, no audit — judged on the EFFECTIVE value, where a missing record
-     * reads as collecting. Otherwise a seller's first "keep collection on"
+     * <p><b>A request that changes nothing writes nothing and refuses
+     * nothing</b> — no row, no stamp, no audit, no gate — judged on the
+     * EFFECTIVE value, where a missing record reads as collecting. Otherwise a seller's first "keep collection on"
      * would register them and put {@code SELLER_REGISTERED} on the audit chain
      * for a setting that did not move.
      *
@@ -434,12 +434,18 @@ public class SellerService {
                                                           UUID merchantId,
                                                           boolean enabled,
                                                           boolean bySeller) {
-        if (!enabled) {
-            requireDeliveryOnlyAllowed(merchantId);
-        }
+        // The no-op is judged FIRST, and it is a pure read. Re-saving the value a
+        // seller already has answers 200 however the gates now stand: a seller
+        // who went delivery-only keeps that when the cell switch is turned off
+        // (application.yaml says so), and a settings form that re-saves the
+        // current state must not be told that turning collection off "is not
+        // available yet" when it already is off.
         MarketplaceSeller current = sellers.findById(merchantId).orElse(null);
         if (MarketplaceSeller.collects(current) == enabled) {
             return CollectionSettingResponse.of(current);
+        }
+        if (!enabled) {
+            requireDeliveryOnlyAllowed(merchantId);
         }
 
         // A real change. The lock serialises two concurrent toggles for one

@@ -121,7 +121,10 @@ public record CheckoutQuoteResponse(
 
             @Schema(description = "DELIVERY only: this seller's fee to the town (their dearest "
                     + "item's, never the sum) - the same figure as in `deliveryFees`. Absent for "
-                    + "COLLECTION, and when none of their items is delivered there.",
+                    + "COLLECTION, and when none of their BUYABLE items (those with no other issue, "
+                    + "such as out of stock or an option to pick) is delivered there - so a seller "
+                    + "can list DELIVERY in `availableMethods` with no fee until those lines are "
+                    + "fixed.",
                     example = "300", nullable = true)
             Long deliveryFeeCents) {
     }

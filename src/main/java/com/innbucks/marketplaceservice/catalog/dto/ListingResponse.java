@@ -137,10 +137,12 @@ public record ListingResponse(
                 + "22.99\").", example = "2599")
         long maxPriceCents,
 
-        @Schema(description = "V20: whether buyers may collect this item from the seller. False "
-                + "for a DELIVERY-ONLY seller: only delivery is offered, so show no \"collect\" "
-                + "option, and `collectionTowns` is empty. The quote says per seller which "
-                + "methods are available for a given basket.", example = "true")
+        @Schema(description = "V20: the SELLER's collection setting. False for a DELIVERY-ONLY "
+                + "seller: show no \"collect\" option for this item, and `collectionTowns` is "
+                + "empty. True does not by itself mean collection is possible: the market must "
+                + "offer it too (`GET /marketplace/checkout/options` `deliveryMethods`), and for a "
+                + "given basket the quote's `sellers[].availableMethods` is the answer.",
+                example = "true")
         boolean collectionEnabled
 ) {
 

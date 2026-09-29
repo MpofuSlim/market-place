@@ -330,6 +330,29 @@ class SellerCollectionTest {
         assertNothingWritten();
     }
 
+    @Test
+    @DisplayName("Re-saving delivery-only answers 200 however the gates now stand: switch off, "
+            + "no delivery in the market, a stranded item")
+    void aRepeatedOptOutIsNeverRefused() {
+        // The cell switch was turned off after this seller opted out (the
+        // documented way back: an opted-out seller stays so), the market
+        // stopped delivering, and an item on sale lost its towns. A settings
+        // form re-saving the current state must still get 200, not be told
+        // that turning collection off "is not available yet".
+        MarketplaceSeller already = seller(false);
+        when(sellers.findById(MERCHANT)).thenReturn(Optional.of(already));
+        when(listings.findActiveWithoutDeliveryTowns(eq(MERCHANT), any()))
+                .thenReturn(List.of(titled(UUID.randomUUID(), "Wireless Earbuds")));
+
+        CollectionSettingResponse out =
+                service(false, false).setCollectionEnabled(SELLER, MERCHANT, false, true);
+
+        assertThat(out.collectionEnabled()).isFalse();
+        assertThat(out.updatedAt()).isEqualTo(already.getCollectionUpdatedAt());
+        verify(listings, never()).findActiveWithoutDeliveryTowns(any(), any());
+        assertNothingWritten();
+    }
+
     // ---- real changes -------------------------------------------------------------
 
     @Test
