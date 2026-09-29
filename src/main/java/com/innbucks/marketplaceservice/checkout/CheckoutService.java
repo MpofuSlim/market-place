@@ -20,6 +20,7 @@ import com.innbucks.marketplaceservice.pickup.dto.CollectionPointChoice;
 import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
 import com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -94,7 +95,7 @@ public class CheckoutService {
      * me just see the total" cost a merchant a hold on their inventory, and a
      * shopper comparing delivery against collection placed two orders to do it.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public CheckoutQuoteResponse quote(AuthenticatedUser buyer, CheckoutQuoteRequest request) {
         List<BasketLine> basket = resolveBasket(buyer, request.sourcedFromCart(),
                 request.items() == null ? List.of()

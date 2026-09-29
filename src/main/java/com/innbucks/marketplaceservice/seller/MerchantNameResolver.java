@@ -28,6 +28,12 @@ import java.util.UUID;
  * the map, which every caller already renders as "no name", exactly as today.
  * An implementation that throws would turn a cosmetic dependency into an
  * outage on the catalogue.
+ *
+ * <p><b>Cheap, always — including when the registry is not.</b> An
+ * implementation that goes over the network must not do so while a
+ * transaction is active (it would hold a pooled connection for the whole
+ * call), must bound its own latency, and must stop asking for a while after a
+ * failure. {@link UserServiceOrganizationNameResolver} does all three.
  */
 public interface MerchantNameResolver {
 

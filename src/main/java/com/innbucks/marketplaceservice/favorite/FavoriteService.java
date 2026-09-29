@@ -5,6 +5,7 @@ import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingViewAssembler;
 import com.innbucks.marketplaceservice.catalog.dto.ListingPageResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -51,7 +52,7 @@ public class FavoriteService {
         favoriteRepository.remove(UUID.fromString(caller.uuid()), listingId);
     }
 
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public ListingPageResponse listMine(AuthenticatedUser caller, int page, int size) {
         // UNSORTED pageable — the newest-favorited-first ordering lives in the
         // repository query (sorting by a Listing property here would fight it).

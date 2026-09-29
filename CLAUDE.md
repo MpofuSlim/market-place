@@ -1410,6 +1410,28 @@ never change either casually.
     budget, and since this service has no name-write path it is the complete
     invalidation story — **if one is ever added, it must evict**. Do NOT widen
     this into a general cache in front of user-service.
+  * **The lookup never holds a pooled connection.** It used to run inside
+    the catalogue's read transaction, so every in-flight call pinned one of
+    20 connections for up to the old 2s+5s timeouts, and a user-service stall
+    was pool exhaustion for orders and payment confirms too — from a PUBLIC
+    endpoint. Now: (1) the resolver answers from its cache alone whenever a
+    transaction is active (write paths render cached names; metered
+    `outcome=in_transaction`, which such writes hit on every cold miss, so
+    its RATE against `resolved` is the signal, never its level); (2) the
+    reads that want fresh names are `@NameResolvingRead` and NOT
+    `@Transactional` — their queries commit one by one, then the call is
+    made — and so are the cart's add/set/remove, which commit their write
+    through a `TransactionOperations` and render the cart after (the shopper's
+    main screen must not go nameless on a cold cache); (3) **`spring.jpa.open-in-view: false`** —
+    measured, with it on a read with no transaction at all still held its
+    connection across the call (the request-bound EntityManager keeps it
+    until the response is written). Safe because no entity has a lazy
+    association. Plus its own timeouts (`marketplace.merchant-names.
+    connect-timeout-ms`/`read-timeout-ms`, 500/1000) and a **backoff after
+    any failure** (`failure-backoff-seconds`, 30: no call until it lapses,
+    then ONE probe) — a backoff on the CALL, never a cached "no name".
+    Metric `marketplace.merchant_names{outcome=resolved|failed|backoff|
+    in_transaction}`.
   * The registry side is user-service's `GET /users/internal/organizations/
     names?ids=` (`ticketing-system`), `ApiResult` body with `data:
     [{organizationId, name}]`, unknown ids omitted rather than 404ing the
@@ -1418,9 +1440,14 @@ never change either casually.
     `user-internal-deny`. (It read loyalty's `merchants/names` while a seller
     id was a loyalty merchant id; that endpoint is gone.)
   * Pinned by `MerchantNameResolutionTest` (local-wins, gap-scoping, batching,
-    absent-not-placeholder) and `UserServiceOrganizationNameResolverContractTest`
-    (the wire shape, every failure mode, the cache, and `verify(0, ...)` on a
-    blank token).
+    absent-not-placeholder, the name-rendering reads staying
+    non-transactional, and no `@Transactional` anywhere on the assemblers or
+    `displayNames(List, Map)` the lookup passes through) and `UserServiceOrganizationNameResolverContractTest`
+    (the wire shape, every failure mode backing off, the timeout, the cache,
+    and `verify(0, ...)` on a blank token and inside a transaction), and
+    `NameLookupHoldsNoConnectionIT` (Hikari's active count is 0 while a slow
+    lookup is on the wire, for browse, detail, the seller profile and add to
+    cart).
 * **An unauthenticated PRE-CHECKOUT surface, for building the app before login
   exists (`/marketplace/public/**`).** Super-app customers authenticate at the
   InnBucks middleware, which does not yet sign the assertion user-service trades
@@ -1682,6 +1709,14 @@ beans, real Postgres + security chain).
   V19 an image upload's `touch`, a status change or a moderation takedown
   saved whatever stock the entity was loaded with and silently undid a
   reservation made in between.
+* **`spring.jpa.open-in-view` is OFF — do not re-enable it.** With it on, a
+  request keeps the connection of its first query until the response is
+  written, transaction or not, so any remote call made while rendering pins a
+  pooled connection (the seller-name lookup did; pinned by
+  `NameLookupHoldsNoConnectionIT`). The cost: a lazy association touched
+  outside a transaction throws, and a detached entity is not flushed by any
+  request-scoped EntityManager. Read any new lazy association inside a
+  transaction (or fetch it eagerly in the query).
 
 ## Tests
 

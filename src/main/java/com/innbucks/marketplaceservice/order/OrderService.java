@@ -31,6 +31,7 @@ import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -565,7 +566,7 @@ public class OrderService {
         }
     }
 
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Page<OrderResponse> getMine(AuthenticatedUser buyer, Pageable pageable) {
         return withItems(orderRepository.findByBuyerUuid(UUID.fromString(buyer.uuid()), pageable));
     }
@@ -575,7 +576,7 @@ public class OrderService {
      * controller's pageable, optionally narrowed to one buyer. Role gating is
      * the controller's {@code @PreAuthorize}; nothing here is owner-scoped.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Page<OrderResponse> getAll(UUID buyerUuidFilter, Pageable pageable) {
         Page<MarketOrder> page = buyerUuidFilter == null
                 ? orderRepository.findAll(pageable)
@@ -588,7 +589,7 @@ public class OrderService {
      * exists but belongs to someone else is the same 404 as a nonexistent id);
      * SUPER_ADMIN reads ANY order by id — fleet oversight, so no masking.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public OrderResponse getOrder(AuthenticatedUser caller, UUID orderId) {
         MarketOrder order = caller.isSuperAdmin()
                 ? orderRepository.findById(orderId)
