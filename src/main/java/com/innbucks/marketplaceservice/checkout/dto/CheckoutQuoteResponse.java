@@ -80,8 +80,51 @@ public record CheckoutQuoteResponse(
         @Schema(description = "COLLECTION only: where each seller's goods would be collected — "
                 + "the point the buyer chose, else the seller's default. A seller with no "
                 + "collection point is listed without one: say \"arrange collection with the "
-                + "seller\". Absent for DELIVERY.", nullable = true)
-        List<SellerCollectionPoint> collectionPoints) {
+                + "seller\". Only sellers who OFFER collection are listed (V20): a delivery-only "
+                + "seller is never here, and their lines are in `rejections` as "
+                + "`COLLECTION_NOT_OFFERED`. Absent for DELIVERY.", nullable = true)
+        List<SellerCollectionPoint> collectionPoints,
+
+        @Schema(description = "V20: every seller with an item on sale in the basket, in basket "
+                + "order - the method this quote priced them with, and the methods that could "
+                + "reach the buyer from them at all (`availableMethods`). Render Deliver / "
+                + "Collect per seller from `availableMethods` instead of working it out: "
+                + "COLLECTION is listed when the cell offers it and the seller collects; DELIVERY "
+                + "when the cell offers it and every one of the seller's items on sale is "
+                + "delivered to `availabilityTownCode` (with no town known, delivered somewhere). "
+                + "Always present on a quote; empty when nothing in the basket is on sale.")
+        List<QuoteSeller> sellers,
+
+        @Schema(description = "V20: the town `sellers[].availableMethods` judged DELIVERY against "
+                + "- the destination's town on a DELIVERY quote; on a COLLECTION quote the town of "
+                + "the named `deliveryAddressId`, else of the buyer's default address. Absent when "
+                + "no town is known (no saved address, or one saved before towns existed); DELIVERY "
+                + "then means \"delivers somewhere\".", example = "harare", nullable = true)
+        String availabilityTownCode) {
+
+    /** One seller's share of the quote (V20). */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @Schema(description = "One seller in the basket: how this quote delivers their goods, and how "
+            + "it could.")
+    public record QuoteSeller(
+            @Schema(example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54") java.util.UUID merchantId,
+
+            @Schema(description = "The method this quote priced the seller's goods with",
+                    example = "DELIVERY")
+            DeliveryMethod deliveryMethod,
+
+            @Schema(description = "The methods that could reach the buyer from this seller, in the "
+                    + "cell's order. A delivery-only seller never lists COLLECTION; a seller who does "
+                    + "not deliver every item to the town never lists DELIVERY. Empty when neither "
+                    + "can - drop their items.", example = "[\"DELIVERY\"]")
+            List<DeliveryMethod> availableMethods,
+
+            @Schema(description = "DELIVERY only: this seller's fee to the town (their dearest "
+                    + "item's, never the sum) - the same figure as in `deliveryFees`. Absent for "
+                    + "COLLECTION, and when none of their items is delivered there.",
+                    example = "300", nullable = true)
+            Long deliveryFeeCents) {
+    }
 
     @Schema(description = "One seller's delivery fee on this checkout")
     public record SellerDeliveryFee(

@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingStatus;
 import com.innbucks.marketplaceservice.catalog.variant.ListingVariant;
 import com.innbucks.marketplaceservice.order.dto.OrderLineRejection;
+import com.innbucks.marketplaceservice.seller.MarketplaceSellerRepository;
 import com.innbucks.marketplaceservice.support.TestTowns;
 import com.innbucks.marketplaceservice.catalog.ListingDeliveryTown;
 import com.innbucks.marketplaceservice.catalog.ListingDeliveryTownRepository;
@@ -16,8 +17,10 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,6 +30,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -43,6 +47,8 @@ class CheckoutPricerTest {
     private ListingRepository listingRepository;
     private com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository variantRepository;
     private ListingDeliveryTownRepository coverage;
+    private MarketplaceSellerRepository sellerRepository;
+    private CheckoutProperties properties;
     private CheckoutPricer pricer;
 
     @BeforeEach
@@ -50,8 +56,10 @@ class CheckoutPricerTest {
         listingRepository = mock(ListingRepository.class);
         coverage = mock(ListingDeliveryTownRepository.class);
         variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
+        sellerRepository = mock(MarketplaceSellerRepository.class);
+        properties = new CheckoutProperties();
         pricer = new CheckoutPricer(listingRepository, coverage, TestTowns.zimbabwe(), "USD",
-                variantRepository);
+                variantRepository, sellerRepository, properties);
     }
 
     private static Listing listing(UUID id, long priceCents, int stock, ListingStatus status,
@@ -347,16 +355,23 @@ class CheckoutPricerTest {
     }
 
     @Test
-    @DisplayName("COLLECTION prices goods only and never reads coverage")
-    void collectionIgnoresCoverage() {
-        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(A, 1550, 10)));
+    @DisplayName("COLLECTION prices goods only - no fee, no issue for a seller who collects")
+    void collectionPricesGoodsOnly() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellableBy(A, seller, 1550)));
+        when(coverage.findByListingIdIn(any()))
+                .thenReturn(List.of(new ListingDeliveryTown(A, "harare", 300)));
 
         PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1)),
                 DeliveryMethod.COLLECTION, null);
 
         assertThat(priced.checkoutReady()).isTrue();
         assertThat(priced.deliveryFeeCents()).isZero();
-        verify(coverage, times(0)).findByListingIdIn(any());
+        assertThat(priced.deliveryFeesByMerchant()).isEmpty();
+        // Coverage IS read now (V20), once, but only to say what else this
+        // seller could do - never to price a collection.
+        assertThat(priced.seller(seller).method()).isEqualTo(DeliveryMethod.COLLECTION);
+        assertThat(priced.seller(seller).deliveryFeeCents()).isNull();
     }
 
     @Test
@@ -698,6 +713,8 @@ class CheckoutPricerTest {
         assertThat(priced.issues()).singleElement().satisfies(issue -> {
             assertThat(issue.reason()).isEqualTo(OrderLineRejection.REASON_NOT_DELIVERED_TO_TOWN);
             assertThat(issue.message()).isEqualTo("Cotton Crew Tee is not delivered to Bulawayo");
+            // V20: the seller, so the app knows whose items to move.
+            assertThat(issue.merchantId()).isEqualTo(SELLER);
             assertThat(issue.variantId()).isEqualTo(XL_BLACK);
             assertThat(issue.variantLabel()).isEqualTo("XL - Black");
             assertThat(issue.unitPriceCents()).isEqualTo(2299);
@@ -737,5 +754,341 @@ class CheckoutPricerTest {
         assertThat(priced.subtotalCents()).isEqualTo(3550);
         verify(listingRepository, times(1)).findAllById(any());
         verify(variantRepository, never()).findAllById(any());
+    }
+
+    // ------------------------------------------------------------------
+    // Delivery-only sellers + per-seller availability (V20)
+    // ------------------------------------------------------------------
+
+    private static final Set<DeliveryMethod> BOTH =
+            EnumSet.of(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION);
+
+    private PricedBasket checkout(DeliveryMethod method, String townCode, BasketLine... lines) {
+        return pricer.price(pricer.load(List.of(lines)), DeliveryPlan.uniform(method, BOTH), townCode);
+    }
+
+    private void deliveryOnly(UUID... sellers) {
+        when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of(sellers));
+    }
+
+    @Test
+    @DisplayName("A COLLECTION line from a delivery-only seller is COLLECTION_NOT_OFFERED, priced, echoed and naming the seller")
+    void collectionNotOfferedIsALineIssue() {
+        when(listingRepository.findAllById(any())).thenReturn(List.of(tee()));
+        when(variantRepository.findAllById(any())).thenReturn(List.of(xlBlack()));
+        when(coverage.findByListingIdIn(any()))
+                .thenReturn(List.of(new ListingDeliveryTown(TEE, "harare", 300)));
+        deliveryOnly(SELLER);
+
+        PricedBasket priced = checkout(DeliveryMethod.COLLECTION, null,
+                new BasketLine(TEE, 2, XL_BLACK));
+
+        assertThat(priced.checkoutReady()).isFalse();
+        assertThat(priced.issues()).singleElement().satisfies(issue -> {
+            assertThat(issue.reason()).isEqualTo(OrderLineRejection.REASON_COLLECTION_NOT_OFFERED);
+            assertThat(issue.message()).isEqualTo("Cotton Crew Tee is delivery only");
+            assertThat(issue.listingId()).isEqualTo(TEE);
+            assertThat(issue.requestedQty()).isEqualTo(2);
+            assertThat(issue.availableQty()).isNull();
+            // The OPTION's price, like every other issue on an option line.
+            assertThat(issue.unitPriceCents()).isEqualTo(2299);
+            assertThat(issue.variantId()).isEqualTo(XL_BLACK);
+            assertThat(issue.variantLabel()).isEqualTo("XL - Black");
+            assertThat(issue.merchantId()).isEqualTo(SELLER);
+        });
+        // The line keeps its listing and option (the app shows it, priced, to
+        // be switched to delivery) but contributes nothing.
+        PricedLine line = priced.lines().getFirst();
+        assertThat(line.listing()).isNotNull();
+        assertThat(line.variant()).isNotNull();
+        assertThat(line.lineTotalCents()).isZero();
+        assertThat(priced.subtotalCents()).isZero();
+        assertThat(priced.deliveryFeeCents()).isZero();
+        SellerPricing share = priced.seller(SELLER);
+        assertThat(share.collectionOffered()).isFalse();
+        assertThat(share.method()).isEqualTo(DeliveryMethod.COLLECTION);
+        // Delivered somewhere, and no town was asked about: DELIVERY is open.
+        assertThat(share.availableMethods()).containsExactly(DeliveryMethod.DELIVERY);
+    }
+
+    @Test
+    @DisplayName("A seller with no record collects: only the delivery-only ones are ever asked for")
+    void absentSellerRowCollects() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellableBy(A, seller, 1550)));
+        // findCollectionDisabledAmong answers with nobody: the seller has no
+        // marketplace_seller row at all, which reads as collecting.
+        when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of());
+
+        PricedBasket priced = checkout(DeliveryMethod.COLLECTION, null, new BasketLine(A, 1));
+
+        assertThat(priced.checkoutReady()).isTrue();
+        assertThat(priced.seller(seller).collectionOffered()).isTrue();
+        // Nothing delivered anywhere: collection is the only way.
+        assertThat(priced.seller(seller).availableMethods()).containsExactly(DeliveryMethod.COLLECTION);
+    }
+
+    @Test
+    @DisplayName("An older reason wins on a line: the method is only asked about a line classify accepted")
+    void olderReasonWinsOnALine() {
+        UUID shortId = new UUID(0, 3);
+        Listing scarce = sellableBy(shortId, SELLER, 450);
+        scarce.setStockQty(1);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(tee(), scarce));
+        when(variantRepository.findAllById(any())).thenReturn(List.of(lBlack()));
+        deliveryOnly(SELLER);
+
+        PricedBasket collected = checkout(DeliveryMethod.COLLECTION, null,
+                new BasketLine(TEE, 1),              // no option chosen
+                new BasketLine(TEE, 1, L_BLACK),     // option sold out
+                new BasketLine(shortId, 3));         // listing short
+
+        assertThat(collected.issues()).extracting(OrderLineRejection::reason).containsExactly(
+                OrderLineRejection.REASON_VARIANT_REQUIRED,
+                OrderLineRejection.REASON_INSUFFICIENT_STOCK,
+                OrderLineRejection.REASON_INSUFFICIENT_STOCK);
+        // Older reasons carry no seller - their bytes are the pre-V20 ones.
+        assertThat(collected.issues()).extracting(OrderLineRejection::merchantId).containsOnlyNulls();
+
+        // The same holds for DELIVERY: a short line nobody delivers to the town
+        // is still INSUFFICIENT_STOCK.
+        PricedBasket delivered = checkout(DeliveryMethod.DELIVERY, "harare", new BasketLine(shortId, 3));
+        assertThat(delivered.issues()).extracting(OrderLineRejection::reason)
+                .containsExactly(OrderLineRejection.REASON_INSUFFICIENT_STOCK);
+    }
+
+    @Test
+    @DisplayName("A delivering seller priced without a town is a programming error, refused before any read")
+    void deliveringSellerWithoutTownIsAProgrammingError() {
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(A, 1550, 10)));
+
+        assertThatThrownBy(() -> checkout(DeliveryMethod.DELIVERY, null, new BasketLine(A, 1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("no destination town");
+        verifyNoInteractions(coverage, sellerRepository);
+    }
+
+    @Test
+    @DisplayName("A DELIVERY basket with nothing on sale needs no town - nobody delivers")
+    void deliveryWithNothingOnSaleNeedsNoTown() {
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(listing(A, 1550, 10, ListingStatus.INACTIVE, "USD")));
+
+        PricedBasket priced = checkout(DeliveryMethod.DELIVERY, null, new BasketLine(A, 1));
+
+        assertThat(priced.issues()).extracting(OrderLineRejection::reason)
+                .containsExactly(OrderLineRejection.REASON_UNAVAILABLE);
+        assertThat(priced.sellers()).isEmpty();
+        verifyNoInteractions(coverage, sellerRepository);
+    }
+
+    @Test
+    @DisplayName("A checkout reads coverage for every ON-SALE listing once, and seller settings for the on-sale sellers once")
+    void checkoutReadsCoverageAndFlagsOnceEach() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        UUID offSaleSeller = UUID.randomUUID();
+        UUID c = new UUID(0, 3);
+        Listing offSale = sellableBy(c, offSaleSeller, 100);
+        offSale.setStatus(ListingStatus.INACTIVE);
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, first, 100), sellableBy(B, second, 100), offSale));
+
+        for (DeliveryMethod method : DeliveryMethod.values()) {
+            org.mockito.Mockito.clearInvocations(coverage, sellerRepository, listingRepository);
+
+            checkout(method, "harare", new BasketLine(A, 1), new BasketLine(c, 1),
+                    new BasketLine(B, 1));
+
+            verify(listingRepository, times(1)).findAllById(any());
+            // Off-sale lines are asked about by nobody: they name no seller.
+            verify(coverage, times(1)).findByListingIdIn(List.of(A, B));
+            verify(sellerRepository, times(1)).findCollectionDisabledAmong(List.of(first, second));
+        }
+    }
+
+    @Test
+    @DisplayName("The cart reads no coverage and no seller setting, and a delivery-only seller's item is not an issue there")
+    void cartReadsNoCoverageNorFlags() {
+        UUID seller = UUID.randomUUID();
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellableBy(A, seller, 1550)));
+        deliveryOnly(seller);
+
+        PricedBasket priced = pricer.price(List.of(new BasketLine(A, 1)));
+
+        assertThat(priced.checkoutReady()).isTrue();
+        assertThat(priced.sellers()).isEmpty();
+        assertThat(priced.deliveryFeeCents()).isZero();
+        verify(listingRepository, times(1)).findAllById(any());
+        verifyNoInteractions(coverage, sellerRepository);
+    }
+
+    @Test
+    @DisplayName("Each seller's share comes back in basket order, with the fee on the delivering ones only")
+    void sellerSharesInBasketOrder() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, second, 1550), sellableBy(B, first, 450)));
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(A, "harare", 300), new ListingDeliveryTown(B, "harare", 150)));
+
+        PricedBasket delivered = checkout(DeliveryMethod.DELIVERY, "harare",
+                new BasketLine(B, 1), new BasketLine(A, 1));
+
+        assertThat(delivered.sellers().keySet()).containsExactly(first, second);
+        assertThat(delivered.seller(first)).isEqualTo(new SellerPricing(first,
+                DeliveryMethod.DELIVERY, 150L, true,
+                List.of(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION)));
+        assertThat(delivered.seller(second).deliveryFeeCents()).isEqualTo(300L);
+
+        PricedBasket collected = checkout(DeliveryMethod.COLLECTION, "harare",
+                new BasketLine(B, 1), new BasketLine(A, 1));
+        assertThat(collected.sellers().values()).allSatisfy(share -> {
+            assertThat(share.method()).isEqualTo(DeliveryMethod.COLLECTION);
+            assertThat(share.deliveryFeeCents()).isNull();
+        });
+    }
+
+    @Test
+    @DisplayName("DELIVERY is available only when EVERY on-sale line of the seller is delivered there")
+    void deliveryNeedsEveryLineCovered() {
+        UUID offSale = new UUID(0, 3);
+        Listing gone = sellableBy(offSale, SELLER, 100);
+        gone.setStatus(ListingStatus.INACTIVE);
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, SELLER, 100), sellableBy(B, SELLER, 100), gone));
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(A, "harare", 300), new ListingDeliveryTown(B, "bulawayo", 300)));
+
+        // B is not delivered to Harare, so the seller cannot deliver the basket there...
+        assertThat(checkout(DeliveryMethod.COLLECTION, "harare", new BasketLine(A, 1),
+                new BasketLine(B, 1)).seller(SELLER).availableMethods())
+                .containsExactly(DeliveryMethod.COLLECTION);
+        // ...but with no town known, "delivers somewhere" is enough for both lines,
+        assertThat(checkout(DeliveryMethod.COLLECTION, null, new BasketLine(A, 1),
+                new BasketLine(B, 1)).seller(SELLER).availableMethods())
+                .containsExactly(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION);
+        // and an off-sale line of the seller is never counted against them.
+        assertThat(checkout(DeliveryMethod.COLLECTION, "harare", new BasketLine(A, 1),
+                new BasketLine(offSale, 1)).seller(SELLER).availableMethods())
+                .containsExactly(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION);
+    }
+
+    @Test
+    @DisplayName("availableMethods never lists a method the cell does not offer")
+    void availableMethodsAreTheCellsOnly() {
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellableBy(A, SELLER, 100)));
+        when(coverage.findByListingIdIn(any()))
+                .thenReturn(List.of(new ListingDeliveryTown(A, "harare", 300)));
+
+        PricedBasket priced = pricer.price(pricer.load(List.of(new BasketLine(A, 1))),
+                DeliveryPlan.uniform(DeliveryMethod.COLLECTION, EnumSet.of(DeliveryMethod.COLLECTION)),
+                "harare");
+
+        assertThat(priced.seller(SELLER).availableMethods()).containsExactly(DeliveryMethod.COLLECTION);
+    }
+
+    /**
+     * THE parity pin: for lines classify accepts and methods the cell offers, a
+     * method is in a seller's {@code availableMethods} exactly when pricing that
+     * seller with it raises no method issue. Walks every cell offer x each
+     * seller's collection setting x how much of their basket reaches the town,
+     * for two sellers at once so one seller's answer cannot leak into the other's.
+     */
+    @Test
+    @DisplayName("availableMethods matches what pricing with each method actually refuses, across the whole matrix")
+    void availableMethodsParity() {
+        UUID x = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+        UUID y = UUID.fromString("00000000-0000-0000-0000-00000000000b");
+        UUID x1 = new UUID(1, 1);
+        UUID x2 = new UUID(1, 2);
+        UUID y1 = new UUID(2, 1);
+        UUID y2 = new UUID(2, 2);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(
+                sellableBy(x1, x, 100), sellableBy(x2, x, 100),
+                sellableBy(y1, y, 100), sellableBy(y2, y, 100)));
+        List<BasketLine> basket = List.of(new BasketLine(x1, 1), new BasketLine(y1, 1),
+                new BasketLine(x2, 1), new BasketLine(y2, 1));
+        List<Set<DeliveryMethod>> cells = List.of(BOTH, EnumSet.of(DeliveryMethod.DELIVERY),
+                EnumSet.of(DeliveryMethod.COLLECTION));
+        int checked = 0;
+        for (Set<DeliveryMethod> offered : cells) {
+            for (int xCoverage = 0; xCoverage < 3; xCoverage++) {
+                for (int yCoverage = 0; yCoverage < 3; yCoverage++) {
+                    for (boolean xCollects : new boolean[]{true, false}) {
+                        for (boolean yCollects : new boolean[]{true, false}) {
+                            when(coverage.findByListingIdIn(any())).thenReturn(java.util.stream.Stream
+                                    .concat(covered(xCoverage, x1, x2).stream(),
+                                            covered(yCoverage, y1, y2).stream())
+                                    .toList());
+                            Set<UUID> disabled = new java.util.HashSet<>();
+                            if (!xCollects) {
+                                disabled.add(x);
+                            }
+                            if (!yCollects) {
+                                disabled.add(y);
+                            }
+                            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(disabled);
+                            LoadedBasket loaded = pricer.load(basket);
+                            Map<UUID, List<DeliveryMethod>> advertised = null;
+                            for (DeliveryMethod m : offered) {
+                                PricedBasket priced = pricer.price(loaded,
+                                        DeliveryPlan.uniform(m, offered), "harare");
+                                Map<UUID, List<DeliveryMethod>> available = Map.of(
+                                        x, priced.seller(x).availableMethods(),
+                                        y, priced.seller(y).availableMethods());
+                                // Whatever the plan's method, the answer is the same.
+                                if (advertised == null) {
+                                    advertised = available;
+                                }
+                                assertThat(available).isEqualTo(advertised);
+                                for (UUID seller : List.of(x, y)) {
+                                    boolean refused = priced.issues().stream().anyMatch(issue ->
+                                            seller.equals(issue.merchantId()));
+                                    String where = "cell=" + offered + " m=" + m + " seller=" + seller
+                                            + " xCov=" + xCoverage + " yCov=" + yCoverage
+                                            + " xCollects=" + xCollects + " yCollects=" + yCollects;
+                                    assertThat(available.get(seller).contains(m))
+                                            .as(where).isEqualTo(!refused);
+                                    assertThat(available.get(seller)).as(where).isSubsetOf(offered);
+                                    checked++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assertThat(checked).isEqualTo(2 * (2 + 1 + 1) * 3 * 3 * 2 * 2);
+    }
+
+    /** 0 = neither listing delivered to Harare, 1 = only the first, 2 = both. */
+    private static List<ListingDeliveryTown> covered(int howMany, UUID first, UUID second) {
+        return switch (howMany) {
+            case 0 -> List.of(new ListingDeliveryTown(first, "bulawayo", 100));
+            case 1 -> List.of(new ListingDeliveryTown(first, "harare", 100),
+                    new ListingDeliveryTown(second, "bulawayo", 100));
+            default -> List.of(new ListingDeliveryTown(first, "harare", 100),
+                    new ListingDeliveryTown(second, "harare", 250));
+        };
+    }
+
+    @Test
+    @DisplayName("load names only the sellers of lines on sale, once each, in basket order")
+    void loadNamesOnlyOnSaleSellers() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        UUID c = new UUID(0, 3);
+        Listing foreign = sellableBy(c, UUID.randomUUID(), 100);
+        foreign.setCurrency("ZWG");
+        when(listingRepository.findAllById(any()))
+                .thenReturn(List.of(sellableBy(A, second, 100), sellableBy(B, first, 100), foreign));
+
+        LoadedBasket loaded = pricer.load(List.of(new BasketLine(B, 1), new BasketLine(c, 1),
+                new BasketLine(A, 1), new BasketLine(new UUID(9, 9), 1)));
+
+        assertThat(loaded.sellers()).containsExactly(first, second);
+        verifyNoInteractions(coverage, sellerRepository);
     }
 }

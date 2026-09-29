@@ -14,8 +14,11 @@ import com.innbucks.marketplaceservice.catalog.util.TextSanitizer;
 import com.innbucks.marketplaceservice.checkout.BasketLine;
 import com.innbucks.marketplaceservice.checkout.CheckoutPricer;
 import com.innbucks.marketplaceservice.checkout.CheckoutService;
+import com.innbucks.marketplaceservice.checkout.DeliveryPlan;
 import com.innbucks.marketplaceservice.checkout.LineKey;
+import com.innbucks.marketplaceservice.checkout.LoadedBasket;
 import com.innbucks.marketplaceservice.checkout.PricedBasket;
+import com.innbucks.marketplaceservice.checkout.SellerPricing;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.FulfilmentService;
@@ -94,9 +97,15 @@ public class OrderService {
     static final int MIN_EXTEND_MINUTES = 1;
     static final int MAX_EXTEND_MINUTES = 60;
 
+    /** {@link #refusalFor}'s safety-net message (422 {@code order_line_refused}):
+     *  customer-safe, says what to do, names no field or endpoint. */
+    static final String ORDER_LINE_REFUSED_MESSAGE =
+            "Some items in this order cannot be bought as they are. Change or remove them and try again.";
+
     private final MarketOrderRepository orderRepository;
     private final MarketOrderItemRepository itemRepository;
     private final MarketOrderDeliveryFeeRepository deliveryFeeRepository;
+    private final MarketOrderSellerRepository orderSellerRepository;
     private final ListingStock listingStock;
     private final OrderTransitionService transitions;
     private final IdempotencyService idempotencyService;
@@ -120,6 +129,7 @@ public class OrderService {
     public OrderService(MarketOrderRepository orderRepository,
                         MarketOrderItemRepository itemRepository,
                         MarketOrderDeliveryFeeRepository deliveryFeeRepository,
+                        MarketOrderSellerRepository orderSellerRepository,
                         ListingStock listingStock,
                         OrderTransitionService transitions,
                         IdempotencyService idempotencyService,
@@ -141,6 +151,7 @@ public class OrderService {
         this.orderRepository = orderRepository;
         this.itemRepository = itemRepository;
         this.deliveryFeeRepository = deliveryFeeRepository;
+        this.orderSellerRepository = orderSellerRepository;
         this.listingStock = listingStock;
         this.transitions = transitions;
         this.idempotencyService = idempotencyService;
@@ -344,30 +355,36 @@ public class OrderService {
         validateBasket(basket);
 
         String buyerMsisdn = msisdns.normalize(resolveBuyerMsisdn(buyer, request), "buyerMsisdn");
-        DeliveryMethod deliveryMethod = checkoutService.resolveMethod(request.deliveryMethod());
+        DeliveryMethod requestedMethod = checkoutService.resolveMethod(request.deliveryMethod());
+        // Load, then plan, then price (V20) - the quote's order of operations,
+        // so a quote and the order made from it resolve the same basket the
+        // same way.
+        LoadedBasket loaded = pricer.load(basket);
+        DeliveryPlan plan = checkoutService.resolvePlan(requestedMethod);
         // Resolved BEFORE any stock is touched: a buyer with no saved address
-        // must be refused having reserved nothing.
+        // must be refused having reserved nothing. Only when some seller
+        // delivers - a collection needs no destination.
         DeliveryAddress destination =
-                checkoutService.resolveAddress(buyer, deliveryMethod, request.deliveryAddressId());
+                checkoutService.resolveAddress(buyer, plan.summary(), request.deliveryAddressId());
 
         // Availability, pricing and the subtotal all come from the SAME
         // resolver the cart and the quote use, so the three screens a shopper
         // sees in a row cannot disagree about what is buyable. Still ADVISORY:
         // reserveStock below is the authoritative guard.
-        // Delivery coverage and each seller's fee to the buyer's town are part
-        // of the same resolution - a line nobody delivers there is refused
-        // here, before any stock is held.
-        PricedBasket priced = pricer.price(basket, deliveryMethod,
+        // Each seller's method is part of the same resolution - a line nobody
+        // delivers to the buyer's town, or a line to collect from a seller who
+        // only delivers, is refused here, before any stock is held.
+        PricedBasket priced = pricer.price(loaded, plan,
                 destination == null ? null : destination.getTownCode());
         if (!priced.issues().isEmpty()) {
-            throw refusalFor(priced.issues()).withDetails(OrderRejectionDetails.of(priced.issues()));
+            throw refusalFor(priced.issues(), priced.sellers())
+                    .withDetails(OrderRejectionDetails.of(priced.issues()));
         }
-        // Where each seller's goods are collected (COLLECTION only), by the
-        // same resolver the quote used - and before any stock is held, so a
-        // choice that is not the seller's refuses the order having reserved
-        // nothing.
+        // Where each collecting seller's goods are collected, by the same
+        // resolver the quote used - and before any stock is held, so a choice
+        // that is not the seller's refuses the order having reserved nothing.
         Map<UUID, CollectionPoint> collectionPoints = checkoutService.resolveCollectionPoints(
-                deliveryMethod, priced, request.collectionPoints());
+                priced, request.collectionPoints());
 
         long deliveryFee = priced.deliveryFeeCents();
         long totalCents;
@@ -391,14 +408,16 @@ public class OrderService {
                 .deliveryFeeCents(deliveryFee)
                 .totalCents(totalCents)
                 .currency(currency)
-                .deliveryMethod(deliveryMethod)
+                // The order-level summary: DELIVERY when any seller delivers.
+                // Equal to the requested method on every uniform plan.
+                .deliveryMethod(plan.summary())
                 .expiresAt(now.plus(paymentTtlMinutes, ChronoUnit.MINUTES))
                 .stockReleased(false)
                 .idempotencyKey(keyHash)
                 .createdAt(now)
                 .updatedAt(now)
                 .build();
-        applyDestination(order, destination);
+        applyDestination(order, plan.summary(), destination);
         applyRecipient(order, request.recipient());
         orderRepository.save(order);
 
@@ -422,21 +441,34 @@ public class OrderService {
                         .build())
                 .toList();
         itemRepository.saveAll(items);
-        // Each seller's fee, fixed now: the buyer pays what they were quoted
-        // even if the seller reprices a town before the order is paid.
+        // Each seller's method, recorded now for EVERY seller on the order
+        // (V20): what each parcel copies when the order is paid, and the only
+        // per-seller record that exists before there are parcels. Keyed on the
+        // items' own merchant snapshot, so every parcel the payment opens has
+        // its row.
+        orderSellerRepository.saveAll(items.stream()
+                .map(MarketOrderItem::getMerchantId)
+                .distinct()
+                .map(merchantId -> new MarketOrderSeller(order.getId(), merchantId,
+                        plan.methodFor(merchantId)))
+                .toList());
+        // Each DELIVERING seller's fee, fixed now: the buyer pays what they were
+        // quoted even if the seller reprices a town before the order is paid.
+        // A collecting seller has no row.
         if (!priced.deliveryFeesByMerchant().isEmpty()) {
             deliveryFeeRepository.saveAll(priced.deliveryFeesByMerchant().entrySet().stream()
                     .map(e -> new MarketOrderDeliveryFee(order.getId(), e.getKey(), e.getValue()))
                     .toList());
         }
-        // Each seller's collection point, COPIED now: a seller who later moves
-        // or removes the point must not move goods the buyer was told to fetch.
+        // Each collecting seller's collection point, COPIED now: a seller who
+        // later moves or removes the point must not move goods the buyer was
+        // told to fetch.
         checkoutService.recordCollectionPoints(order.getId(), collectionPoints);
         transitions.journalCreation(order);
         log.info("order created id={} ref={} lines={} subtotalCents={} deliveryFeeCents={} "
                         + "totalCents={} delivery={}",
                 order.getId(), order.getOrderRef(), items.size(), priced.subtotalCents(),
-                deliveryFee, totalCents, deliveryMethod);
+                deliveryFee, totalCents, plan.summary());
         return views.toResponse(order, items);
     }
 
@@ -517,7 +549,15 @@ public class OrderService {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private static void applyDestination(MarketOrder order, DeliveryAddress address) {
+    private static void applyDestination(MarketOrder order, DeliveryMethod summary,
+                                         DeliveryAddress address) {
+        // A destination exactly when some seller delivers: the V9 CHECK refuses
+        // a DELIVERY order without one, and a COLLECTION order carrying one
+        // would show the seller an address nobody is shipping to.
+        if ((address != null) != (summary == DeliveryMethod.DELIVERY)) {
+            throw new IllegalStateException("Order destination does not match its delivery method "
+                    + summary);
+        }
         if (address == null) {
             return; // COLLECTION — no destination by construction
         }
@@ -547,10 +587,21 @@ public class OrderService {
      *       first in request order. {@code reserveStock} iterates sorted by id
      *       (deadlock avoidance), and it was the thrower.</li>
      * </ul>
+     * Every newer reason ranks after every older one, so a refusal that also
+     * has an older reason still headlines it: V14's {@code not_delivered_to_town},
+     * then V19's {@code variant_unavailable} and {@code variant_required}, then
+     * V20's {@code collection_not_offered}. Behind them a safety net answers any
+     * reason this ranking does not know with 422 {@code order_line_refused}, so a
+     * reason added later can never surface as a 500.
      * The {@code rejections} list itself stays in REQUEST order, which is what
      * a client renders.
+     *
+     * @param sellers each seller's share of the pricing - the
+     *                {@code not_delivered_to_town} remedy offers collection only
+     *                when that seller collects
      */
-    private static ApiException refusalFor(List<OrderLineRejection> rejections) {
+    static ApiException refusalFor(List<OrderLineRejection> rejections,
+                                   Map<UUID, SellerPricing> sellers) {
         return rejections.stream()
                 .filter(r -> OrderLineRejection.REASON_UNAVAILABLE.equals(r.reason()))
                 .findFirst()
@@ -565,14 +616,18 @@ public class OrderService {
                                         Comparator.nullsFirst(Comparator.naturalOrder())))
                         .map(r -> ApiException.conflict("insufficient_stock",
                                 insufficientStockMessage(r.listingId(), r.variantId()))))
-                // V14, last: a line nobody delivers to the buyer's town. Ranked
-                // after availability and stock so every pre-V14 refusal stays
-                // byte-identical; the details name every line either way.
+                // V14: a line nobody delivers to the buyer's town. Ranked after
+                // availability and stock so every pre-V14 refusal stays
+                // byte-identical; the details name every line either way. The
+                // remedy names collection only when THAT seller offers it (V20)
+                // - otherwise the pre-V20 text, byte for byte.
                 .or(() -> rejections.stream()
                         .filter(r -> OrderLineRejection.REASON_NOT_DELIVERED_TO_TOWN.equals(r.reason()))
                         .findFirst()
                         .map(r -> ApiException.unprocessable("not_delivered_to_town",
-                                r.message() + ". Choose collection or another address.")))
+                                r.message() + (collects(sellers, r.merchantId())
+                                        ? ". Choose collection or another address."
+                                        : ". Choose another address or remove it."))))
                 // V19, after everything older so every earlier refusal stays
                 // byte-identical: a named option that is gone, then a line that
                 // named none on a listing that sells options.
@@ -587,8 +642,24 @@ public class OrderService {
                         .findFirst()
                         .map(r -> ApiException.unprocessable("variant_required",
                                 "Listing " + r.listingId() + " needs an option chosen")))
-                .orElseThrow(() -> new IllegalStateException(
-                        "refusalFor called with no rejections"));
+                // V20, last: a line to collect from a seller who only delivers.
+                .or(() -> rejections.stream()
+                        .filter(r -> OrderLineRejection.REASON_COLLECTION_NOT_OFFERED.equals(r.reason()))
+                        .findFirst()
+                        .map(r -> ApiException.unprocessable("collection_not_offered",
+                                r.message() + ". Choose delivery or remove it.")))
+                // Safety net: a reason nothing above ranks. Refused like any
+                // other line problem - never an IllegalStateException, which
+                // would answer a shopper's fixable basket with a 500.
+                .orElseGet(() -> ApiException.unprocessable("order_line_refused",
+                        ORDER_LINE_REFUSED_MESSAGE));
+    }
+
+    /** Whether the seller offers collection; a seller the pricing does not name
+     *  reads as collecting, which every seller did before V20. */
+    private static boolean collects(Map<UUID, SellerPricing> sellers, UUID merchantId) {
+        SellerPricing seller = merchantId == null ? null : sellers.get(merchantId);
+        return seller == null || seller.collectionOffered();
     }
 
     /**

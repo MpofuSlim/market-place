@@ -99,7 +99,19 @@ public class OrderController {
                     + "`variant_unavailable`; both rank after every older reason, so an order that fails "
                     + "for an older reason as well still reports that one at the top. Each created line "
                     + "carries `variantId` and `variantLabel` (\"XL - Black\") as they were at order "
-                    + "time - show `titleSnapshot` and `variantLabel` as two strings, verbatim.",
+                    + "time - show `titleSnapshot` and `variantLabel` as two strings, verbatim."
+                    + "\n\n**Some sellers only deliver (V20).** A COLLECTION order holding an item "
+                    + "from a seller who has turned collection off is refused 422 "
+                    + "`collection_not_offered` before anything is reserved; its rejection "
+                    + "(`COLLECTION_NOT_OFFERED`) and every `NOT_DELIVERED_TO_TOWN` one carry the "
+                    + "seller's `merchantId`. Ask the quote first - its `sellers[].availableMethods` "
+                    + "says what each seller can do. `not_delivered_to_town` keeps its message, "
+                    + "except that for a seller who does not collect it ends \"Choose another address "
+                    + "or remove it.\" instead of offering collection. Refusals rank oldest reason "
+                    + "first, `collection_not_offered` last, and a line reason this version does not "
+                    + "know is 422 `order_line_refused` (\"Some items in this order cannot be bought "
+                    + "as they are. Change or remove them and try again.\") with the same "
+                    + "`data.rejections`.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = CreateOrderRequest.class),
@@ -364,8 +376,9 @@ public class OrderController {
             @ApiResponse(responseCode = "422", description = "Listing unavailable, a DELIVERY line "
                     + "its seller does not deliver to the address's town, an address with no town, a "
                     + "line with no option chosen on a listing sold in options, a chosen option that is "
-                    + "gone, or the key was reused with a different body. An unavailability refusal "
-                    + "carries `data.rejections` — EVERY failing line, whatever the mix of reasons.",
+                    + "gone, a COLLECTION line from a seller who only delivers, or the key was reused "
+                    + "with a different body. An unavailability refusal carries `data.rejections` — "
+                    + "EVERY failing line, whatever the mix of reasons.",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "Listing unavailable (mixed reasons, all listed)", value = """
                                     {
@@ -402,7 +415,46 @@ public class OrderController {
                                             "reason": "NOT_DELIVERED_TO_TOWN",
                                             "message": "Solar Lantern 20W is not delivered to Mutare",
                                             "requestedQty": 1,
-                                            "unitPriceCents": 1550
+                                            "unitPriceCents": 1550,
+                                            "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """),
+                            @ExampleObject(name = "Not delivered to the town, and the seller only delivers",
+                                    value = """
+                                    {
+                                      "code": "not_delivered_to_town",
+                                      "message": "Wireless Earbuds is not delivered to Mutare. Choose another address or remove it.",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                                            "reason": "NOT_DELIVERED_TO_TOWN",
+                                            "message": "Wireless Earbuds is not delivered to Mutare",
+                                            "requestedQty": 1,
+                                            "unitPriceCents": 2599,
+                                            "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                    """),
+                            @ExampleObject(name = "A COLLECTION line from a seller who only delivers",
+                                    value = """
+                                    {
+                                      "code": "collection_not_offered",
+                                      "message": "Wireless Earbuds is delivery only. Choose delivery or remove it.",
+                                      "data": {
+                                        "rejections": [
+                                          {
+                                            "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                                            "reason": "COLLECTION_NOT_OFFERED",
+                                            "message": "Wireless Earbuds is delivery only",
+                                            "requestedQty": 1,
+                                            "unitPriceCents": 2599,
+                                            "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d"
                                           }
                                         ]
                                       }

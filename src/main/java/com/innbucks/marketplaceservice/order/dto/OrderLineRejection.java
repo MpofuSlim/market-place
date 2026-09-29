@@ -42,10 +42,13 @@ public record OrderLineRejection(
                 none. Remedy: let the shopper pick one (the listing's `variants`).
                 * `VARIANT_UNAVAILABLE` — the option named no longer exists, or is not an option of \
                 this listing. Remedy: pick another option, or drop the line.
+                * `COLLECTION_NOT_OFFERED` — the order is for COLLECTION and this listing's seller \
+                only delivers (V20). `merchantId` names the seller. Remedy: choose DELIVERY, or drop \
+                the line.
                 A client that does not recognise a reason should show the message and drop the line.""",
                 example = "INSUFFICIENT_STOCK",
                 allowableValues = {"LISTING_UNAVAILABLE", "INSUFFICIENT_STOCK", "NOT_DELIVERED_TO_TOWN",
-                        "VARIANT_REQUIRED", "VARIANT_UNAVAILABLE"})
+                        "VARIANT_REQUIRED", "VARIANT_UNAVAILABLE", "COLLECTION_NOT_OFFERED"})
         String reason,
 
         @Schema(description = "Human-readable explanation, safe to show a customer.",
@@ -73,7 +76,16 @@ public record OrderLineRejection(
         @Schema(description = "The option's label when it could be read (\"L - Black\"). "
                 + "Absent without an option, or when the option no longer exists.",
                 example = "L - Black", nullable = true)
-        String variantLabel
+        String variantLabel,
+
+        @Schema(description = "The seller whose delivery method refused this line (V20). Present "
+                + "only on `NOT_DELIVERED_TO_TOWN` and `COLLECTION_NOT_OFFERED`, so the app knows "
+                + "WHICH seller's items to move to another method. Absent on every other reason.",
+                example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54", nullable = true)
+        // Component-level NON_NULL as well as the class's: every older reason
+        // must serialise to exactly the bytes it did before V20.
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        UUID merchantId
 ) {
 
     /** A line without an option — the pre-V19 shape. */
@@ -82,33 +94,34 @@ public record OrderLineRejection(
         this(listingId, reason, message, requestedQty, availableQty, unitPriceCents, null, null);
     }
 
+    /** A line naming no seller — every reason except the two method ones (pre-V20 shape). */
+    public OrderLineRejection(UUID listingId, String reason, String message, Integer requestedQty,
+                              Integer availableQty, Long unitPriceCents, UUID variantId,
+                              String variantLabel) {
+        this(listingId, reason, message, requestedQty, availableQty, unitPriceCents, variantId,
+                variantLabel, null);
+    }
+
     /**
      * Reasons are STRINGS, not an enum, for the same reason user-service's
      * notification types are: a client that meets an unrecognised one must
      * render it, not choke on it, and adding a reason here should never be a
-     * breaking change. The two constants below are what the service emits
-     * today.
+     * breaking change. The constants below are what the service emits today;
+     * {@code OrderService.refusalFor} has a branch for each, and a safety net
+     * for any it does not know.
      */
     public static final String REASON_UNAVAILABLE = "LISTING_UNAVAILABLE";
     public static final String REASON_INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK";
     public static final String REASON_NOT_DELIVERED_TO_TOWN = "NOT_DELIVERED_TO_TOWN";
     public static final String REASON_VARIANT_REQUIRED = "VARIANT_REQUIRED";
     public static final String REASON_VARIANT_UNAVAILABLE = "VARIANT_UNAVAILABLE";
+    /** V20: a COLLECTION basket holding a line from a delivery-only seller. */
+    public static final String REASON_COLLECTION_NOT_OFFERED = "COLLECTION_NOT_OFFERED";
 
     /** Missing, not ACTIVE, or priced in another currency — one remedy: drop the line. */
     public static OrderLineRejection unavailable(UUID listingId, int requestedQty) {
         return new OrderLineRejection(listingId, REASON_UNAVAILABLE,
                 "Listing " + listingId + " is not available", requestedQty, null, null);
-    }
-
-    /** A DELIVERY order to a town this listing's seller does not deliver to.
-     *  Carries the price so the app can keep the line on screen while the
-     *  shopper picks collection or another address. */
-    public static OrderLineRejection notDeliveredToTown(UUID listingId, String title,
-                                                        int requestedQty, long unitPriceCents,
-                                                        String townName) {
-        return new OrderLineRejection(listingId, REASON_NOT_DELIVERED_TO_TOWN,
-                title + " is not delivered to " + townName, requestedQty, null, unitPriceCents);
     }
 
     public static OrderLineRejection insufficientStock(UUID listingId, String title, int requestedQty,
@@ -142,14 +155,36 @@ public record OrderLineRejection(
                 variantId, variantLabel);
     }
 
-    /** {@link #notDeliveredToTown} on a line that named an option. */
+    /**
+     * A DELIVERY order to a town this listing's seller does not deliver to.
+     * Carries the price (the option's, when one was chosen) so the app can keep
+     * the line on screen while the shopper picks collection or another address,
+     * the option echo so it can find the line, and (V20) the seller, so it
+     * knows whose items to move. {@code variantId}/{@code variantLabel} are
+     * null on a line without an option.
+     */
     public static OrderLineRejection notDeliveredToTown(UUID listingId, String title,
                                                         int requestedQty, long unitPriceCents,
                                                         String townName, UUID variantId,
-                                                        String variantLabel) {
+                                                        String variantLabel, UUID merchantId) {
         return new OrderLineRejection(listingId, REASON_NOT_DELIVERED_TO_TOWN,
                 title + " is not delivered to " + townName, requestedQty, null, unitPriceCents,
-                variantId, variantLabel);
+                variantId, variantLabel, merchantId);
+    }
+
+    /**
+     * A COLLECTION order holding a line from a seller who only delivers (V20).
+     * Shaped like {@link #notDeliveredToTown}: the price (the option's, when one
+     * was chosen) and the option echo keep the line on screen, and the seller
+     * tells the app whose items need delivery instead.
+     */
+    public static OrderLineRejection collectionNotOffered(UUID listingId, String title,
+                                                          int requestedQty, long unitPriceCents,
+                                                          UUID variantId, String variantLabel,
+                                                          UUID merchantId) {
+        return new OrderLineRejection(listingId, REASON_COLLECTION_NOT_OFFERED,
+                title + " is delivery only", requestedQty, null, unitPriceCents,
+                variantId, variantLabel, merchantId);
     }
 
     /**

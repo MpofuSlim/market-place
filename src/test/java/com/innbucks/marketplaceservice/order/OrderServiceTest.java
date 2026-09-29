@@ -120,6 +120,9 @@ class OrderServiceTest {
     private com.innbucks.marketplaceservice.settlement.SettlementService settlementService;
     private DeliveryAddressService addressService;
     private CheckoutProperties checkoutProperties;
+    private com.innbucks.marketplaceservice.seller.MarketplaceSellerRepository sellerRepository;
+    private MarketOrderSellerRepository orderSellerRepository;
+    private com.innbucks.marketplaceservice.pickup.CollectionPointResolver collectionPointResolver;
     private OrderService service;
 
     @BeforeEach
@@ -143,11 +146,14 @@ class OrderServiceTest {
         addressService = mock(DeliveryAddressService.class);
         checkoutProperties = new CheckoutProperties();
         variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
+        sellerRepository = mock(com.innbucks.marketplaceservice.seller.MarketplaceSellerRepository.class);
+        orderSellerRepository = mock(MarketOrderSellerRepository.class);
+        collectionPointResolver = mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class);
         CheckoutPricer pricer = new CheckoutPricer(listingRepository, coverage,
-                TestTowns.zimbabwe(), "USD", variantRepository);
+                TestTowns.zimbabwe(), "USD", variantRepository, sellerRepository, checkoutProperties);
         CheckoutService checkoutService = new CheckoutService(checkoutProperties, pricer,
                 mock(BasketViewAssembler.class), cartService, addressService,
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointResolver.class),
+                collectionPointResolver,
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), "USD");
         settlementService = mock(com.innbucks.marketplaceservice.settlement.SettlementService.class);
         OrderViewAssembler views = new OrderViewAssembler(itemRepository, fulfilmentService,
@@ -160,6 +166,7 @@ class OrderServiceTest {
         // The REAL stock mover over the mocked repositories, so these tests
         // still pin the exact statements an order issues.
         service = new OrderService(orderRepository, itemRepository, deliveryFeeRepository,
+                orderSellerRepository,
                 new com.innbucks.marketplaceservice.catalog.ListingStock(listingRepository,
                         variantRepository, eventPublisher, new MarketplaceMetrics(registry)),
                 transitions, idempotencyService, auditService,
@@ -1316,7 +1323,9 @@ class OrderServiceTest {
             service.createOrder(BUYER, req("0771234567", item(listingId, 1)), RAW_KEY);
 
             verify(deliveryFeeRepository, never()).saveAll(any());
-            verifyNoInteractions(coverage);
+            // Coverage IS read once now (V20) - the pricing says what each
+            // seller could do - but nothing is priced or recorded from it.
+            verify(coverage, times(1)).findByListingIdIn(List.of(listingId));
         }
 
         @Test
@@ -1507,6 +1516,304 @@ class OrderServiceTest {
                     new ConfirmPaymentRequest("INB-PAY-1", order.getTotalCents() * 100)));
 
             verify(fulfilmentService, never()).openForOrder(any());
+        }
+    }
+
+    // ==================================================================
+    // Delivery-only sellers + per-seller methods (V20)
+    // ==================================================================
+
+    @Nested
+    class DeliveryOnlySellers {
+
+        private final UUID lantern = UUID.fromString("9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d");
+        private final UUID earbuds = UUID.fromString("5e7a9b1c-3d2f-4a6b-8c9d-1e2f3a4b5c6d");
+        private final UUID collects = UUID.fromString("7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54");
+        private final UUID deliversOnly = UUID.fromString("4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d");
+
+        private Listing by(UUID id, UUID merchantId, String title, long priceCents) {
+            Listing listing = listing(id, priceCents, title);
+            listing.setMerchantId(merchantId);
+            return listing;
+        }
+
+        /** The lantern (a seller who collects) and the earbuds (a delivery-only
+         *  seller), both delivered to Harare and nowhere else. */
+        private void twoSellersOnSale() {
+            when(listingRepository.findAllById(any())).thenReturn(List.of(
+                    by(lantern, collects, "Solar Lantern 20W", 1550),
+                    by(earbuds, deliversOnly, "Wireless Earbuds", 2599)));
+            when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(1);
+            when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                    new ListingDeliveryTown(lantern, "harare", 200),
+                    new ListingDeliveryTown(earbuds, "harare", 500)));
+            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of(deliversOnly));
+        }
+
+        private DeliveryAddress harare() {
+            Instant now = Instant.now();
+            return DeliveryAddress.builder()
+                    .id(UUID.randomUUID()).buyerUuid(BUYER_UUID).label("Home")
+                    .recipientName("Tariro Moyo").recipientMsisdn("+263771234567")
+                    .line1("14 Samora Machel Ave").city("Harare").townCode("harare")
+                    .defaultAddress(true).createdAt(now).updatedAt(now).version(0L).build();
+        }
+
+        private DeliveryAddress bulawayo() {
+            DeliveryAddress address = harare();
+            address.setCity("Bulawayo");
+            address.setTownCode("bulawayo");
+            return address;
+        }
+
+        private CreateOrderRequest order(DeliveryMethod method, CreateOrderRequest.Item... items) {
+            return new CreateOrderRequest("0771234567", null, List.of(items), method, null, null);
+        }
+
+        /** Nothing reserved, nothing written, the claim released. */
+        private void nothingMoved() {
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+            verify(listingRepository, never()).lockForStock(any());
+            verify(variantRepository, never()).reserve(any(), any(), anyInt());
+            verify(orderRepository, never()).save(any());
+            verifyNoInteractions(orderSellerRepository, deliveryFeeRepository);
+            verify(idempotencyService).release(KEY_HASH);
+        }
+
+        private List<MarketOrderSeller> savedSellerRows() {
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<MarketOrderSeller>> captor = ArgumentCaptor.forClass(List.class);
+            verify(orderSellerRepository).saveAll(captor.capture());
+            return captor.getValue();
+        }
+
+        @Test
+        @DisplayName("A COLLECTION order with a delivery-only seller's item is 422 collection_not_offered, reserving nothing")
+        void collectionFromADeliveryOnlySellerIsRefusedBeforeAnyStockMoves() {
+            twoSellersOnSale();
+
+            ApiException ex = createFails(order(DeliveryMethod.COLLECTION,
+                    item(lantern, 1), item(earbuds, 1)));
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("collection_not_offered", ex.code());
+            assertEquals("Wireless Earbuds is delivery only. Choose delivery or remove it.",
+                    ex.getMessage());
+            List<OrderLineRejection> rejections = ((OrderRejectionDetails) ex.details()).rejections();
+            assertEquals(1, rejections.size());
+            OrderLineRejection r = rejections.getFirst();
+            assertEquals(OrderLineRejection.REASON_COLLECTION_NOT_OFFERED, r.reason());
+            assertEquals(earbuds, r.listingId());
+            assertEquals(deliversOnly, r.merchantId());
+            assertEquals(2599L, r.unitPriceCents());
+            nothingMoved();
+        }
+
+        @Test
+        @DisplayName("A DELIVERY order from a delivery-only seller goes through, recording the seller's method")
+        void deliveryFromADeliveryOnlySellerSucceeds() {
+            twoSellersOnSale();
+            when(addressService.requireForCheckout(any(), any())).thenReturn(harare());
+
+            OrderResponse response = service.createOrder(BUYER,
+                    order(DeliveryMethod.DELIVERY, item(earbuds, 1)), RAW_KEY);
+
+            assertEquals(DeliveryMethod.DELIVERY, response.deliveryMethod());
+            assertEquals(3099, response.totalCents());
+            List<MarketOrderSeller> rows = savedSellerRows();
+            assertEquals(1, rows.size());
+            assertEquals(deliversOnly, rows.getFirst().getMerchantId());
+            assertEquals(DeliveryMethod.DELIVERY, rows.getFirst().getDeliveryMethod());
+            assertEquals(response.id(), rows.getFirst().getOrderId());
+        }
+
+        @Test
+        @DisplayName("Every seller on the order gets a row carrying the plan's method; fee rows only for delivering sellers")
+        void sellerRowsForEverySellerFeeRowsForDeliveringOnly() {
+            twoSellersOnSale();
+            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of());
+            when(addressService.requireForCheckout(any(), any())).thenReturn(harare());
+
+            service.createOrder(BUYER, order(DeliveryMethod.DELIVERY,
+                    item(earbuds, 1), item(lantern, 2)), RAW_KEY);
+
+            // Item order: the earbuds' seller first.
+            assertEquals(List.of(new MarketOrderSeller(createdOrderId(), deliversOnly,
+                            DeliveryMethod.DELIVERY),
+                    new MarketOrderSeller(createdOrderId(), collects, DeliveryMethod.DELIVERY)),
+                    savedSellerRows());
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<MarketOrderDeliveryFee>> fees = ArgumentCaptor.forClass(List.class);
+            verify(deliveryFeeRepository).saveAll(fees.capture());
+            assertEquals(2, fees.getValue().size());
+            // Nobody collects, so no collection point is resolved, and none recorded.
+            verify(collectionPointResolver, never()).resolve(any(), any());
+            verify(collectionPointResolver).record(any(), eq(Map.of()));
+        }
+
+        @Test
+        @DisplayName("A COLLECTION order records a COLLECTION row per seller, no fee rows, and resolves points for the collecting sellers")
+        void collectionOrderRecordsSellerRowsAndPoints() {
+            twoSellersOnSale();
+            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of());
+
+            service.createOrder(BUYER, order(DeliveryMethod.COLLECTION,
+                    item(lantern, 1), item(earbuds, 1)), RAW_KEY);
+
+            UUID orderId = createdOrderId();
+            assertEquals(List.of(new MarketOrderSeller(orderId, collects, DeliveryMethod.COLLECTION),
+                    new MarketOrderSeller(orderId, deliversOnly, DeliveryMethod.COLLECTION)),
+                    savedSellerRows());
+            verify(deliveryFeeRepository, never()).saveAll(any());
+            verify(collectionPointResolver).resolve(List.of(collects, deliversOnly), null);
+            verify(collectionPointResolver).record(eq(orderId), any());
+        }
+
+        @Test
+        @DisplayName("not_delivered_to_town keeps its pre-V20 suffix for a seller who collects, and drops the collection hint for one who does not")
+        void notDeliveredToTownSuffixFollowsTheSeller() {
+            twoSellersOnSale();
+            when(addressService.requireForCheckout(any(), any())).thenReturn(bulawayo());
+
+            ApiException collecting = createFails(order(DeliveryMethod.DELIVERY, item(lantern, 1)));
+            assertEquals("not_delivered_to_town", collecting.code());
+            assertEquals("Solar Lantern 20W is not delivered to Bulawayo. Choose collection or "
+                    + "another address.", collecting.getMessage());
+
+            ApiException deliveryOnly = createFails(order(DeliveryMethod.DELIVERY, item(earbuds, 1)));
+            assertEquals("not_delivered_to_town", deliveryOnly.code());
+            assertEquals("Wireless Earbuds is not delivered to Bulawayo. Choose another address or "
+                    + "remove it.", deliveryOnly.getMessage());
+            OrderLineRejection r = ((OrderRejectionDetails) deliveryOnly.details()).rejections().getFirst();
+            assertEquals(deliversOnly, r.merchantId());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+        }
+
+        @Test
+        @DisplayName("Every older reason outranks collection_not_offered at the top level")
+        void collectionNotOfferedRanksLast() {
+            UUID offSale = new UUID(0, 42);
+            UUID scarce = new UUID(0, 43);
+            UUID tee = new UUID(0, 44);
+            Listing gone = by(offSale, collects, "Gone", 100);
+            gone.setStatus(ListingStatus.INACTIVE);
+            Listing few = by(scarce, collects, "Phone Charger", 450);
+            few.setStockQty(1);
+            Listing sized = by(tee, collects, "Cotton Crew Tee", 1999);
+            sized.setHasVariants(true);
+            sized.setOption1Name("Size");
+            Listing earbudsListing = by(earbuds, deliversOnly, "Wireless Earbuds", 2599);
+            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of(deliversOnly));
+
+            when(listingRepository.findAllById(any())).thenReturn(List.of(earbudsListing, gone));
+            assertEquals("listing_unavailable", createFails(order(DeliveryMethod.COLLECTION,
+                    item(earbuds, 1), item(offSale, 1))).code());
+            when(listingRepository.findAllById(any())).thenReturn(List.of(earbudsListing, few));
+            assertEquals("insufficient_stock", createFails(order(DeliveryMethod.COLLECTION,
+                    item(earbuds, 1), item(scarce, 3))).code());
+            when(listingRepository.findAllById(any())).thenReturn(List.of(earbudsListing, sized));
+            assertEquals("variant_required", createFails(order(DeliveryMethod.COLLECTION,
+                    item(earbuds, 1), item(tee, 1))).code());
+            when(variantRepository.findAllById(any())).thenReturn(List.of());
+            assertEquals("variant_unavailable", createFails(order(DeliveryMethod.COLLECTION,
+                    item(earbuds, 1), new CreateOrderRequest.Item(tee, 1, new UUID(0, 45)))).code());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+        }
+
+        private UUID createdOrderId() {
+            ArgumentCaptor<MarketOrder> captor = ArgumentCaptor.forClass(MarketOrder.class);
+            verify(orderRepository).save(captor.capture());
+            return captor.getValue().getId();
+        }
+    }
+
+    // ==================================================================
+    // refusalFor: every reason ranked, and a net behind them (V20)
+    // ==================================================================
+
+    @Nested
+    class RefusalRanking {
+
+        private final UUID listingId = UUID.fromString("9c2e8a4d-6b1f-4e3a-9d5c-7f8e2a1b3c4d");
+
+        private OrderLineRejection rejection(String reason) {
+            return new OrderLineRejection(listingId, reason, "Solar Lantern 20W is " + reason, 1,
+                    0, 1550L, new UUID(0, 7), "M", new UUID(0, 8));
+        }
+
+        @Test
+        @DisplayName("Every REASON_* constant has its own branch - none falls through to the safety net")
+        void everyReasonHasABranch() throws Exception {
+            List<String> reasons = new java.util.ArrayList<>();
+            for (java.lang.reflect.Field field : OrderLineRejection.class.getDeclaredFields()) {
+                if (field.getName().startsWith("REASON_")
+                        && java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    reasons.add((String) field.get(null));
+                }
+            }
+            // The six the service emits today; a new constant must add a branch.
+            assertEquals(6, reasons.size(), reasons.toString());
+            Set<String> codes = new java.util.HashSet<>();
+            for (String reason : reasons) {
+                ApiException ex = OrderService.refusalFor(List.of(rejection(reason)), Map.of());
+                assertFalse("order_line_refused".equals(ex.code()),
+                        reason + " fell through to the safety net");
+                codes.add(ex.code());
+            }
+            assertEquals(Set.of("listing_unavailable", "insufficient_stock", "not_delivered_to_town",
+                    "variant_unavailable", "variant_required", "collection_not_offered"), codes);
+        }
+
+        @Test
+        @DisplayName("A reason nothing ranks is 422 order_line_refused - never a 500")
+        void unknownReasonHitsTheSafetyNet() {
+            ApiException ex = OrderService.refusalFor(List.of(rejection("SOMETHING_NEW")), Map.of());
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("order_line_refused", ex.code());
+            assertEquals("Some items in this order cannot be bought as they are. Change or remove "
+                    + "them and try again.", ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("collection_not_offered heads the refusal only when nothing older is present")
+        void collectionNotOfferedIsLastAmongKnownReasons() {
+            OrderLineRejection notOffered = OrderLineRejection.collectionNotOffered(listingId,
+                    "Wireless Earbuds", 1, 2599, null, null, new UUID(0, 8));
+            for (String older : List.of(OrderLineRejection.REASON_UNAVAILABLE,
+                    OrderLineRejection.REASON_INSUFFICIENT_STOCK,
+                    OrderLineRejection.REASON_NOT_DELIVERED_TO_TOWN,
+                    OrderLineRejection.REASON_VARIANT_UNAVAILABLE,
+                    OrderLineRejection.REASON_VARIANT_REQUIRED)) {
+                assertFalse("collection_not_offered".equals(OrderService.refusalFor(
+                        List.of(notOffered, rejection(older)), Map.of()).code()), older);
+            }
+            ApiException alone = OrderService.refusalFor(List.of(notOffered,
+                    rejection("SOMETHING_NEW")), Map.of());
+            assertEquals("collection_not_offered", alone.code());
+            assertEquals("Wireless Earbuds is delivery only. Choose delivery or remove it.",
+                    alone.getMessage());
+        }
+
+        @Test
+        @DisplayName("The not_delivered_to_town suffix is chosen by the SELLER's collection setting")
+        void notDeliveredSuffixFollowsTheSeller() {
+            UUID seller = new UUID(0, 8);
+            OrderLineRejection r = OrderLineRejection.notDeliveredToTown(listingId,
+                    "Solar Lantern 20W", 1, 1550, "Mutare", null, null, seller);
+            var collects = new com.innbucks.marketplaceservice.checkout.SellerPricing(seller,
+                    DeliveryMethod.DELIVERY, null, true, List.of(DeliveryMethod.COLLECTION));
+            var deliveryOnly = new com.innbucks.marketplaceservice.checkout.SellerPricing(seller,
+                    DeliveryMethod.DELIVERY, null, false, List.of());
+
+            assertEquals("Solar Lantern 20W is not delivered to Mutare. Choose collection or another "
+                    + "address.", OrderService.refusalFor(List.of(r), Map.of(seller, collects)).getMessage());
+            // A seller the pricing never named reads as collecting: the pre-V20 bytes.
+            assertEquals("Solar Lantern 20W is not delivered to Mutare. Choose collection or another "
+                    + "address.", OrderService.refusalFor(List.of(r), Map.of()).getMessage());
+            assertEquals("Solar Lantern 20W is not delivered to Mutare. Choose another address or "
+                    + "remove it.", OrderService.refusalFor(List.of(r), Map.of(seller, deliveryOnly))
+                    .getMessage());
         }
     }
 

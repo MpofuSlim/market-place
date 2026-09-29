@@ -2,7 +2,6 @@ package com.innbucks.marketplaceservice.checkout;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.cart.CartService;
-import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutOptionsResponse;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteRequest;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteResponse;
@@ -29,7 +28,6 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -104,15 +102,25 @@ public class CheckoutService {
                                         item.variantId()))
                                 .toList());
         DeliveryMethod method = resolveMethod(request.deliveryMethod());
+        // Load, then plan, then price (V20) - in the same order as the order.
+        LoadedBasket loaded = pricer.load(basket);
+        DeliveryPlan plan = resolvePlan(method);
         // Resolved even when the basket turns out unbuyable: a shopper fixing a
         // sold-out line must not ALSO lose the address they just picked.
-        DeliveryAddress address = resolveAddress(buyer, method, request.deliveryAddressId());
+        DeliveryAddress address = resolveAddress(buyer, plan.summary(), request.deliveryAddressId());
+        // With nobody delivering there is no destination to price against, but
+        // the shopper still needs to know which sellers COULD deliver, and
+        // where: judged against the address they named, else their default -
+        // looked up leniently, because a collection quote must never be
+        // refused over an address it does not use.
+        String availabilityTown = address != null ? address.getTownCode()
+                : lenientTownFor(buyer, request.deliveryAddressId());
 
-        PricedBasket priced = pricer.price(basket, method,
-                address == null ? null : address.getTownCode());
+        PricedBasket priced = pricer.price(loaded, plan, availabilityTown);
         long deliveryFee = priced.deliveryFeeCents();
         long total = Math.addExact(priced.subtotalCents(), deliveryFee);
         List<PricedLineResponse> lines = basketViews.toLines(priced, Map.of());
+        DeliveryMethod summary = plan.summary();
 
         return new CheckoutQuoteResponse(
                 lines,
@@ -122,7 +130,7 @@ public class CheckoutService {
                 deliveryFee,
                 total,
                 currency,
-                method,
+                summary,
                 List.copyOf(offeredMethods()),
                 address == null ? null : AddressResponse.from(address),
                 priced.issues().isEmpty() ? null : priced.issues(),
@@ -131,28 +139,50 @@ public class CheckoutService {
                 priced.deliveryFeesByMerchant().entrySet().stream()
                         .map(e -> new CheckoutQuoteResponse.SellerDeliveryFee(e.getKey(), e.getValue()))
                         .toList(),
-                method == DeliveryMethod.COLLECTION
-                        ? collectionView(priced, resolveCollectionPoints(method, priced,
+                summary == DeliveryMethod.COLLECTION
+                        ? collectionView(priced, resolveCollectionPoints(priced,
                                 request.collectionPoints()))
-                        : null);
+                        : null,
+                priced.sellers().values().stream()
+                        .map(seller -> new CheckoutQuoteResponse.QuoteSeller(seller.merchantId(),
+                                seller.method(), seller.availableMethods(),
+                                seller.deliveryFeeCents()))
+                        .toList(),
+                availabilityTown);
     }
 
     /**
-     * Where each seller's goods are collected, for a COLLECTION basket — the
-     * ONE definition the quote and the order share, so the point a buyer was
-     * quoted is the point their order records. Empty for DELIVERY. Resolved
-     * BEFORE any stock is touched: a bad choice refuses the order cleanly.
+     * The town of the address a COLLECTION quote would deliver to if the
+     * shopper switched - the named one, else their default - or null. Never
+     * throws a buyer error: see {@link DeliveryAddressService#findForQuote}.
+     */
+    private String lenientTownFor(AuthenticatedUser buyer, UUID addressId) {
+        return addressService.findForQuote(buyer, addressId)
+                .map(DeliveryAddress::getTownCode)
+                .orElse(null);
+    }
+
+    /**
+     * Where each COLLECTING seller's goods are collected - the ONE definition
+     * the quote and the order share, so the point a buyer was quoted is the
+     * point their order records. Only sellers the plan has collecting AND who
+     * still offer collection are asked about (V20): a delivery-only seller is
+     * never "arrange collection with the seller" - their lines are refused as
+     * {@code COLLECTION_NOT_OFFERED} instead, and a choice naming them is
+     * ignored like one naming a seller no longer in the basket. Empty when
+     * nobody collects. Resolved BEFORE any stock is touched: a bad choice
+     * refuses the order cleanly.
      *
      * @throws ApiException 400 {@code unknown_collection_point} /
      *         {@code duplicate_collection_point_choice}
      */
-    public Map<UUID, CollectionPoint> resolveCollectionPoints(DeliveryMethod method,
-                                                              PricedBasket priced,
+    public Map<UUID, CollectionPoint> resolveCollectionPoints(PricedBasket priced,
                                                               List<CollectionPointChoice> choices) {
-        if (method != DeliveryMethod.COLLECTION) {
+        List<UUID> collecting = collectingSellersOf(priced);
+        if (collecting.isEmpty()) {
             return Map.of();
         }
-        return collectionPoints.resolve(sellersOf(priced), choices);
+        return collectionPoints.resolve(collecting, choices);
     }
 
     /** Copies each resolved point onto the order (V18 snapshot). No-op for none. */
@@ -160,7 +190,7 @@ public class CheckoutService {
         collectionPoints.record(orderId, resolved);
     }
 
-    /** Every seller in the basket, in basket order, with where they are collected. */
+    /** Every collecting seller in the basket, in basket order, with where they are collected. */
     private List<SellerCollectionPoint> collectionView(PricedBasket priced,
                                                        Map<UUID, CollectionPoint> resolved) {
         List<CollectionPoint> chosen = List.copyOf(resolved.values());
@@ -169,15 +199,20 @@ public class CheckoutService {
         for (int i = 0; i < chosen.size(); i++) {
             byId.put(chosen.get(i).getMerchantId(), rendered.get(i));
         }
-        return CollectionPointViews.perSeller(sellersOf(priced), byId);
+        return CollectionPointViews.perSeller(collectingSellersOf(priced), byId);
     }
 
-    private static List<UUID> sellersOf(PricedBasket priced) {
-        return priced.lines().stream()
-                .map(PricedLine::listing)
-                .filter(Objects::nonNull)
-                .map(Listing::getMerchantId)
-                .distinct()
+    /**
+     * The sellers whose goods the buyer would collect: priced with COLLECTION
+     * and offering it, in basket order. Every seller with an item on sale has a
+     * {@link SellerPricing}, so this is the pre-V20 "sellers of the lines that
+     * kept their listing" narrowed to those who collect.
+     */
+    private static List<UUID> collectingSellersOf(PricedBasket priced) {
+        return priced.sellers().values().stream()
+                .filter(seller -> seller.method() == DeliveryMethod.COLLECTION
+                        && seller.collectionOffered())
+                .map(SellerPricing::merchantId)
                 .toList();
     }
 
@@ -248,6 +283,19 @@ public class CheckoutService {
                     requested + " is not available in this market");
         }
         return requested;
+    }
+
+    /**
+     * The delivery plan for a basket: which method each seller's goods travel
+     * by. Shared by the quote and order creation so the two cannot plan the
+     * same basket differently. Today it is always {@link DeliveryPlan#uniform}
+     * - the basket's one method for every seller - over the methods this cell
+     * offers, which is what every order meant before V20.
+     *
+     * @param method the basket's method, already through {@link #resolveMethod}
+     */
+    public DeliveryPlan resolvePlan(DeliveryMethod method) {
+        return DeliveryPlan.uniform(method, offeredMethods());
     }
 
     /**
