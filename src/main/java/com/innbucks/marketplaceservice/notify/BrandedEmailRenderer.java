@@ -14,6 +14,16 @@ package com.innbucks.marketplaceservice.notify;
  * falls back to a CSS-drawn four-dot roundel + wordmark so the header is still
  * branded without a hosted asset.
  *
+ * <p><b>The header row is brand navy, not white, and must stay that way.</b>
+ * The hosted logo asset ({@code NOTIFY_LOGO_URL}) is the dark-background
+ * lockup: its "InnBucks" / "MicroBank Limited" lettering is WHITE. On the white
+ * header it used to sit on, only the four coloured dots were visible and the
+ * wordmark vanished (seen in Gmail on staging, 2026-09-29). The navy is set
+ * twice on the header cell — inline {@code background} (Gmail, Apple Mail) and
+ * the {@code bgcolor} attribute (Outlook, which ignores many inline
+ * backgrounds) — using the same {@code NAVY} as the footer, and the CSS
+ * fallback lockup is drawn in light colours to match.
+ *
  * <p>The caller's body is plain text (the same string the plain-text path
  * sends), so it is HTML-escaped here and its blank-line-separated paragraphs
  * become {@code <p>} blocks — no HTML is ever taken from the message content,
@@ -55,8 +65,9 @@ public final class BrandedEmailRenderer {
             + "<table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" "
             +   "style=\"width:600px;max-width:100%;background:#ffffff;border-radius:12px;overflow:hidden;"
             +   "font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;\">"
-            // header
-            + "<tr><td style=\"padding:26px 34px 20px;\">" + logo + "</td></tr>"
+            // header — navy, because the hosted logo's lettering is white (see class javadoc)
+            + "<tr><td bgcolor=\"" + NAVY + "\" style=\"background:" + NAVY + ";padding:26px 34px 20px;\">"
+            +   logo + "</td></tr>"
             // accent bar
             + "<tr><td style=\"font-size:0;line-height:0;\">"
             +   "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>"
@@ -88,10 +99,12 @@ public final class BrandedEmailRenderer {
 
     /**
      * CSS/table-drawn brand lockup — the four-dot roundel + "InnBucks" wordmark
-     * + "MicroBank Limited" tagline, all in solid brand colours. Used as the
-     * header when no hosted logo URL is set: it renders crisply in every client
-     * with no image to load (or wash out), unlike a hosted PNG that can proxy
-     * faintly on a white ground.
+     * + "MicroBank Limited" tagline. Used as the header when no hosted logo URL
+     * is set: it renders crisply in every client with no image to load. It sits
+     * on the navy header row, so it is drawn like the hosted dark-background
+     * logo: the four dots keep their brand colours, the wordmark is white and
+     * the tagline a light slate ({@code #b9c6d8}, the footer's body text colour)
+     * — a navy wordmark here would disappear into the header.
      */
     private static String cssRoundel() {
         String dot = "width:16px;height:16px;border-radius:50%;font-size:0;line-height:0;"
@@ -105,9 +118,9 @@ public final class BrandedEmailRenderer {
             +   "<tr><td style=\"background:" + TEAL + ";" + dot + "\"></td>"
             +     "<td style=\"background:#e11b22;" + dot + "\"></td></tr></table></td>"
             + "<td style=\"vertical-align:middle;" + face + "\">"
-            +   "<div style=\"font-size:28px;font-weight:800;color:" + NAVY + ";letter-spacing:-.5px;"
+            +   "<div style=\"font-size:28px;font-weight:800;color:#ffffff;letter-spacing:-.5px;"
             +     "line-height:1;\">InnBucks</div>"
-            +   "<div style=\"font-size:12px;font-weight:600;color:#5d6b7b;letter-spacing:.4px;"
+            +   "<div style=\"font-size:12px;font-weight:600;color:#b9c6d8;letter-spacing:.4px;"
             +     "margin-top:3px;\">MicroBank Limited</div>"
             + "</td></tr></table>";
     }
