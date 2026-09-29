@@ -12,19 +12,50 @@
 --   * Run it ONLY once the V20 (PR A) image is 100% rolled out - no V19
 --     replica left anywhere in the cell. A V19 replica confirming a payment
 --     after this runs fails the parcel INSERT on NOT NULL, inside the confirm
---     transaction, after the buyer's money has already been collected.
---   * Once it has run, the PR A image is the OLDEST image that can run. A
---     rollback to V19 is no longer possible: roll forward instead.
---   * The PR A image keeps working on this schema: it writes a
---     market_order_seller row for every seller at order creation, and copies
---     that row's method onto the parcel at PAID (V21MigrationIT replays its
---     statements).
+--     transaction, after the buyer's money has already been collected. A cell
+--     still on the V19 image takes the PR A image FIRST, never straight to
+--     this one. Check before deploying that no marketplace pod runs an older
+--     image: kubectl -n ticketing get pods -l app=marketplace-service
+--     -o jsonpath='{..image}'.
+--     If it slips anyway, orders a V19 replica created afterwards have no
+--     seller rows and their payment confirms fail until repaired: re-run
+--     step 1's INSERT below by hand; payment-service's confirm retry then
+--     opens the parcels normally.
+--   * Once it has run, the PR A image is the OLDEST image that can run, and
+--     only while every order is uniform. A rollback to V19 is no longer
+--     possible: roll forward instead.
+--   * The PR A image keeps working on this schema WHILE EVERY ORDER IS
+--     UNIFORM (per-seller methods off): it writes a market_order_seller row
+--     for every seller at order creation, and copies that row's method onto
+--     the parcel at PAID (V21MigrationIT replays its statements). It reads the
+--     ORDER's method for every parcel, so a MIXED order on a PR A pod would let
+--     a seller self-close a collection, list it on the courier run, show the
+--     buyer's delivery address on the collecting seller's card, and refuse the
+--     buyer a collection code. Hence:
+--   * marketplace.delivery.per-seller-methods-enabled
+--     (MARKETPLACE_PER_SELLER_DELIVERY_METHODS_ENABLED) is switched on ONLY as
+--     a separate step, after this image is 100% rolled out - never in the same
+--     change as the image (a PR A pod silently ignores sellerDeliveryMethods
+--     and would create a uniform order from the basket default).
+--   * Once any mixed order exists, THIS image is the oldest that can run: roll
+--     forward. Before any rollback to PR A, switch the flag off and confirm no
+--     mixed order is still open:
+--       SELECT o.order_ref FROM market_order o
+--         JOIN order_fulfilment f ON f.order_id = o.id
+--        WHERE f.delivery_method <> o.delivery_method
+--          AND f.status IN ('PREPARING', 'DISPATCHED');
+--     must return no rows (unpaid mixed orders: SELECT order_id FROM
+--     market_order_seller GROUP BY order_id HAVING count(DISTINCT
+--     delivery_method) > 1, joined to PENDING_PAYMENT orders, must be empty or
+--     cancelled first).
 --
 -- WHAT IT DOES (one Flyway transaction on Postgres, so the table is never
 -- without its constraints):
---   1. A seller row for every (order, seller) that has items but no row - the
---      orders the V19 image created during the V20 rollout. Every such order is
---      uniform, so the order's own method is exact for each of its sellers.
+--   1. A seller row for every (order, seller) that has items but no row -
+--      EVERY order placed before V20 (V20 backfilled nothing), plus any a V19
+--      replica created during the V20 rollout. Every such order is uniform, so
+--      the order's own method is exact for each of its sellers. This is the
+--      whole historical order table; pre-flight (f) sizes it.
 --   2. Guards: refuses to run if backfilling would put a delivery fee on a
 --      COLLECTION parcel (money is never rewritten by a migration).
 --   3. The parcel's method for every parcel opened without one: its seller
@@ -41,7 +72,7 @@
 --   7. NOT NULL, the (order, seller, method) key, the parcel -> seller-row
 --      foreign key, and the two CHECKs step 6 makes addable.
 --
--- PRE-FLIGHT (run on the cell BEFORE deploying; each must return 0 - a hit on
+-- PRE-FLIGHT (run on the cell BEFORE deploying; (a)-(e) must return 0 - a hit on
 -- (a) or (b) makes this migration refuse to run, a hit on (c) or (d) is cleared
 -- by it with a WARNING, a hit on (e) is repaired by step 4):
 --
@@ -69,6 +100,13 @@
 --   SELECT count(*) FROM order_fulfilment f
 --    WHERE NOT EXISTS (SELECT 1 FROM market_order_item i
 --                       WHERE i.order_id = f.order_id AND i.merchant_id = f.merchant_id);
+--   -- (f) NOT a must-be-0: how many seller rows step 1 will insert (the size
+--   --     of the write inside this migration's transaction)
+--   SELECT count(*) FROM (SELECT DISTINCT i.order_id, i.merchant_id
+--                           FROM market_order_item i
+--                          WHERE NOT EXISTS (SELECT 1 FROM market_order_seller s
+--                                             WHERE s.order_id = i.order_id
+--                                               AND s.merchant_id = i.merchant_id)) t;
 --
 -- Every CHECK here spells out its NULL case: a CHECK that evaluates to UNKNOWN
 -- passes (the V17 / V16 lesson). V20's two parcel CHECKs keep their
@@ -76,7 +114,8 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- 1. Seller rows for the orders the V19 image created during the V20 rollout.
+-- 1. Seller rows for every order placed before V20 (and any a V19 replica
+--    created during the V20 rollout).
 --    Every order, whatever its status: the order view reads them before there
 --    are parcels, and a PENDING_PAYMENT order can still be paid.
 -- ---------------------------------------------------------------------------
@@ -176,8 +215,11 @@ $$;
 --      governed by the CHECK, and a redemption stamp would be the only trace
 --      of whatever produced the row.
 --    * A courier position on a COLLECTION parcel: the position is the latest
---      only, nothing ever shows it on a collection, and all five columns go
---      together (chk_fulfilment_location_complete).
+--      only and nothing ever shows it on a collection. All five columns are
+--      cleared together, because chk_fulfilment_location_on_delivery below
+--      refuses any of them on a non-DELIVERY parcel (V14's
+--      chk_fulfilment_location_complete ties only latitude, longitude and
+--      location_at).
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE

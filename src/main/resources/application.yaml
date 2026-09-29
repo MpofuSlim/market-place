@@ -226,6 +226,12 @@ marketplace:
     # both methods. Turning delivery-only sellers on with this off logs a WARN
     # at boot: a basket mixing a delivery-only and a collection-only seller
     # then cannot be checked out as one order.
+    # ROLLOUT: switch this on ONLY as a separate step, after the V21 image is
+    # 100% rolled out - never in the same change as the image. A pod on the
+    # previous image ignores sellerDeliveryMethods (and so creates a uniform
+    # order from the basket default), and reads the ORDER's method for every
+    # parcel, which is wrong for a mixed order. Once a mixed order exists,
+    # roll forward only; the rollback check is in V21's header.
     per-seller-methods-enabled: ${MARKETPLACE_PER_SELLER_DELIVERY_METHODS_ENABLED:false}
     # There is no flat delivery fee any more (V14): each listing names the towns
     # it delivers to and the fee for each, and a DELIVERY order pays each
