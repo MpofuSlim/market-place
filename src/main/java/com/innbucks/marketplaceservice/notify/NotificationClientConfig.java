@@ -15,7 +15,7 @@ import java.time.Duration;
  * public notification API (email + SMS, authed — X-Api-Key + bearer from
  * /auth/third-party, handled in {@link EmailNotificationClient}) and the
  * WhatsApp gateway. Both are external services reached by an explicit
- * {@code base-url} (not Eureka), with the same correlation-ID propagation the
+ * {@code base-url} (not the discovery map), with the same correlation-ID propagation the
  * fleet uses so an order's traceId follows the notification across the wire.
  *
  * <p>Graceful degradation (booking-service posture): blank credentials mean

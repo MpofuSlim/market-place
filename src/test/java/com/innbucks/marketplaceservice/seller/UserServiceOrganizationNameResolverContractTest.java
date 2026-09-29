@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * <p>Pure JUnit + WireMock, no {@code @SpringBootTest}: the resolver is built
  * exactly as its bean is, just pointed at WireMock's port. Production passes
  * the {@code @LoadBalanced} builder so {@code user-service} resolves through
- * Eureka; a plain builder with an absolute base URL runs identical code.
+ * the discovery map; a plain builder with an absolute base URL runs identical code.
  */
 class UserServiceOrganizationNameResolverContractTest {
 

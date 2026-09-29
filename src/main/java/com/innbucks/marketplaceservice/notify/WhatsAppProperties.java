@@ -5,7 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * Config for the external WhatsApp notification gateway used as the FALLBACK
- * channel for buyer order-paid alerts. Third-party service (not in Eureka), so
+ * channel for buyer order-paid alerts. Third-party service (not in the discovery map), so
  * consumed via a plain RestClient with an explicit {@code base-url}. Same
  * {@code WHATSAPP_*} env-var convention as booking/user/payment/loyalty, so
  * the marketplace reads the same values the cell already provisions.
