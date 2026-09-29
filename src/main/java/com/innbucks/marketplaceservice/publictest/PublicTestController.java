@@ -748,11 +748,16 @@ public class PublicTestController {
     @PostMapping("/buyers/{handle}/listings/{listingId}/reviews")
     @Operation(summary = "[TEST] Review something this handle bought",
             description = "Verified purchase only: the handle needs a PAID order containing this "
-                    + "listing, or it is a 403. That gate is the same query the authenticated "
-                    + "surface runs, so a handle can only review what it actually paid for.")
+                    + "listing whose parcel has been DELIVERED, or it is a 403 "
+                    + "review_requires_purchase. That gate is the same query the authenticated "
+                    + "surface runs, so a handle can only review what it actually received.")
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Review posted"),
-            @ApiResponse(responseCode = "403", description = "No paid order of this handle contains the listing"),
+            @ApiResponse(responseCode = "403",
+                    description = "No paid order of this handle containing the listing has been delivered",
+                    content = @Content(examples = @ExampleObject(value = """
+                            {"code":"review_requires_purchase","message":"You can review this item once your order of it has been delivered"}
+                            """))),
             @ApiResponse(responseCode = "404", description = "Surface off, cell ungated, or no such listing",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
             @ApiResponse(responseCode = "409", description = "This handle has already reviewed this listing")

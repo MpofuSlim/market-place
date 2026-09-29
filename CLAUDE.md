@@ -288,10 +288,21 @@ never change either casually.
   computable, and the profile now carries it — see the seller-stats bullet
   below.
 * **Verified-purchase reviews (V5)**: a review may ONLY be created by a
-  CUSTOMER with a **PAID order containing the listing** — the gate queries
-  `market_order` ⋈ `market_order_item` (status pinned to PAID in the JPQL,
-  never a parameter) and stores the qualifying `order_id` on the review as
-  provenance; no paid order → 403 `review_requires_purchase`. One review per
+  CUSTOMER with a **PAID order containing the listing whose parcel was
+  DELIVERED** — the gate queries `market_order` ⋈ `market_order_item` ⋈
+  `order_fulfilment` (joined on the line's SNAPSHOT `merchant_id`; PAID and
+  DELIVERED both pinned in the JPQL, never parameters) and stores the
+  qualifying `order_id` on the review as provenance; otherwise 403
+  `review_requires_purchase` ("You can review this item once your order of it
+  has been delivered" — the code is what clients branch on). **Paid is not
+  received:** keyed on PAID alone, a parcel the seller declined, the buyer
+  cancelled or nobody collected — money queued for refund — still reviewed as
+  "Verified buyer", rating a seller for goods never shipped. DELIVERED covers
+  all three kinds of handover evidence (buyer, redeemed code, seller's own
+  close), and in a two-seller order only THAT seller's parcel counts. The gate
+  runs on CREATE only: edit and delete never re-ask it, so reviews written
+  under the paid-only rule stay their authors'. Pinned by the delivery cases in
+  `ReviewFlowIT` and `PublicTestOrderRailIT`, and `ReviewServiceTest`. One review per
   buyer per listing (`existsBy` + the V5 unique index as race backstop, both
   surfacing 409 `review_already_exists` — the insert is `saveAndFlush`ed
   inside a catch so losing the race is never a 500). ANY listing status is

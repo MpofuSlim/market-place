@@ -39,7 +39,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * Pure-Mockito unit tests for {@link ReviewService}: the verified-purchase
- * gate (no PAID order containing the listing = 403, nothing persisted), the
+ * gate (no DELIVERED paid order containing the listing = 403, nothing
+ * persisted; the gate runs on create only, never on edit/delete), the
  * one-review-per-buyer rule, the ATOMIC aggregate discipline (bulk-update
  * deltas, never entity writes), comment sanitization, delete authorization
  * (author or SUPER_ADMIN only), and the stable anonymized handle.
@@ -85,8 +86,8 @@ class ReviewServiceTest {
                 .build();
     }
 
-    private void buyerHasPaidOrder() {
-        when(orderRepository.findPaidOrderIdsContainingListing(
+    private void buyerHasDeliveredOrder() {
+        when(orderRepository.findDeliveredOrderIdsContainingListing(
                 eq(BUYER_UUID), eq(LISTING_ID), any(Pageable.class)))
                 .thenReturn(List.of(ORDER_ID));
     }
@@ -105,8 +106,8 @@ class ReviewServiceTest {
     // ------------------------------------------------------------------
 
     @Test
-    void createWithoutPaidOrderIs403AndPersistsNothing() {
-        when(orderRepository.findPaidOrderIdsContainingListing(
+    void createWithoutDeliveredOrderIs403AndPersistsNothing() {
+        when(orderRepository.findDeliveredOrderIdsContainingListing(
                 eq(BUYER_UUID), eq(LISTING_ID), any(Pageable.class)))
                 .thenReturn(List.of());
 
@@ -115,6 +116,9 @@ class ReviewServiceTest {
 
         assertEquals(HttpStatus.FORBIDDEN, ex.status());
         assertEquals("review_requires_purchase", ex.code());
+        // Customer-safe copy: says what unlocks the button, names no status.
+        assertEquals("You can review this item once your order of it has been delivered",
+                ex.getMessage());
         verify(reviewRepository, never()).saveAndFlush(any());
         verify(listingRepository, never()).adjustRatingAggregates(any(), eq(5L), eq(1));
         assertEquals(1.0, registry.counter("marketplace.reviews",
@@ -123,7 +127,7 @@ class ReviewServiceTest {
 
     @Test
     void createStoresQualifyingOrderSanitizesCommentAndAdjustsAggregatesAtomically() {
-        buyerHasPaidOrder();
+        buyerHasDeliveredOrder();
 
         ReviewResponse response = service.create(BUYER, LISTING_ID,
                 new ReviewRequest(4, "  Nice <script>alert(1)</script> lantern  "));
@@ -144,7 +148,7 @@ class ReviewServiceTest {
 
     @Test
     void duplicateReviewIs409() {
-        buyerHasPaidOrder();
+        buyerHasDeliveredOrder();
         when(reviewRepository.existsByListingIdAndBuyerUuid(LISTING_ID, BUYER_UUID))
                 .thenReturn(true);
 
@@ -165,7 +169,7 @@ class ReviewServiceTest {
                 () -> service.create(BUYER, unknown, new ReviewRequest(5, null)));
 
         assertEquals("listing_not_found", ex.code());
-        verify(orderRepository, never()).findPaidOrderIdsContainingListing(any(), any(), any());
+        verify(orderRepository, never()).findDeliveredOrderIdsContainingListing(any(), any(), any());
     }
 
     @Test
@@ -202,6 +206,24 @@ class ReviewServiceTest {
 
         verify(listingRepository, never()).adjustRatingAggregates(
                 any(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void editAndDeleteNeverReRunTheGateSoAnExistingReviewStaysItsAuthors() {
+        // A review written under an earlier gate (paid, never delivered) is
+        // still its author's to edit and delete: the gate decides who may
+        // CREATE a review, and is never asked again afterwards.
+        ListingReview review = existing(5);
+        when(reviewRepository.findByListingIdAndBuyerUuid(LISTING_ID, BUYER_UUID))
+                .thenReturn(Optional.of(review));
+        when(reviewRepository.findByIdAndListingId(review.getId(), LISTING_ID))
+                .thenReturn(Optional.of(review));
+
+        service.updateMine(BUYER, LISTING_ID, new ReviewRequest(2, "never arrived"));
+        service.delete(BUYER, LISTING_ID, review.getId());
+
+        verify(reviewRepository).delete(review);
+        verify(orderRepository, never()).findDeliveredOrderIdsContainingListing(any(), any(), any());
     }
 
     @Test

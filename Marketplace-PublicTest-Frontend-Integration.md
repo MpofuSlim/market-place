@@ -358,8 +358,11 @@ All under `/marketplace/public/buyers/{handle}`, all gated like §7.
   again mints a fresh one and kills the previous, which is the recovery path
   for a lost code. **It sends an SMS**, so it costs money per call.
 - **`dispute`** freezes that parcel's money. One per parcel, ever.
-- **`reviews`** needs a PAID order of this handle containing the listing, or it
-  is a `403 review_requires_purchase`. `{"rating": 5, "comment": "…"}`.
+- **`reviews`** needs a PAID order of this handle containing the listing **whose
+  parcel from that seller is `DELIVERED`** — e.g. after `POST …/fulfilments/{f}/received`,
+  a redeemed collection code, or the seller marking it delivered. Paid but not yet
+  delivered (or declined / cancelled / not collected) is a
+  `403 review_requires_purchase`. `{"rating": 5, "comment": "…"}`.
 
 ---
 
@@ -371,7 +374,7 @@ All under `/marketplace/public/buyers/{handle}`, all gated like §7.
 | `400 VALIDATION_ERROR` | A body field failed validation; `data` names the fields |
 | `400 invalid_msisdn` | The handle looked like a phone but is not dialable; or a demo-handle order had no/invalid `buyerMsisdn` |
 | `401` | The cell gates this prefix and your `x-api-key` was missing or wrong |
-| `403 review_requires_purchase` | Reviewing something this handle has not paid for |
+| `403 review_requires_purchase` | Reviewing something whose parcel has not been delivered to this handle — "You can review this item once your order of it has been delivered" |
 | `404` | **The surface is not enabled**, or **the order half is off because the cell has no api-key**, or the thing does not exist, or belongs to another handle |
 | `409` | The cart is full, or an order has moved past the state you asked for |
 | `422` | Lines unavailable or short-stocked — `data.rejections` names every one |

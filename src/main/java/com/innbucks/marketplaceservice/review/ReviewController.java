@@ -37,9 +37,10 @@ import java.util.UUID;
  */
 @Tag(name = "Reviews",
         description = "Verified-purchase reviews: only a CUSTOMER with a PAID order containing the "
-                + "listing may review it, once per listing. Rating aggregates appear on every "
-                + "listing read (ratingAvg/reviewCount); public review reads are on the catalog "
-                + "surface. Any listing status is reviewable — a delisted product was still bought.")
+                + "listing, whose parcel has been DELIVERED, may review it, once per listing. "
+                + "Rating aggregates appear on every listing read (ratingAvg/reviewCount); public "
+                + "review reads are on the catalog surface. Any listing status is reviewable — a "
+                + "delisted product was still bought.")
 @RestController
 @RequestMapping("/marketplace/listings/{listingId}/reviews")
 @RequiredArgsConstructor
@@ -93,8 +94,12 @@ public class ReviewController {
     @PreAuthorize("hasRole('CUSTOMER')")
     @Operation(summary = "Review a listing (verified purchase only)",
             description = "Creates the caller's review of the listing. THE gate: the caller must "
-                    + "have a PAID order containing this listing — otherwise 403 "
-                    + "review_requires_purchase. One review per buyer per listing (409 on repeat; "
+                    + "have a PAID order containing this listing whose parcel from this seller is "
+                    + "DELIVERED (the buyer confirmed receipt, a collection code was redeemed, or "
+                    + "the seller marked it delivered) — otherwise 403 review_requires_purchase. "
+                    + "Paid but not yet delivered, or declined / cancelled / not collected, does "
+                    + "not qualify. Editing or deleting an existing review never re-checks this. "
+                    + "One review per buyer per listing (409 on repeat; "
                     + "edit via PUT /mine instead). The comment is HTML-stripped before storage. "
                     + "The listing's ratingAvg/reviewCount update atomically in the same "
                     + "transaction.",
@@ -120,11 +125,12 @@ public class ReviewController {
             @ApiResponse(responseCode = "401", description = "Missing/invalid JWT",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(value = EXAMPLE_401))),
-            @ApiResponse(responseCode = "403", description = "Not a CUSTOMER, or no qualifying paid order",
+            @ApiResponse(responseCode = "403",
+                    description = "Not a CUSTOMER, or no paid order of this listing has been delivered",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "Not a customer", value = EXAMPLE_ROLE_403),
                             @ExampleObject(name = "No verified purchase", value = """
-                                    {"code":"review_requires_purchase","message":"Only buyers with a paid order containing this listing may review it"}
+                                    {"code":"review_requires_purchase","message":"You can review this item once your order of it has been delivered"}
                                     """)})),
             @ApiResponse(responseCode = "404", description = "Unknown listing id",
                     content = @Content(mediaType = "application/json",
