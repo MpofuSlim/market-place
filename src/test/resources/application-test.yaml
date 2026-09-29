@@ -19,7 +19,10 @@ spring:
       # RevokedTokenDenylist and TokenVersionStore FAIL OPEN on any Redis error
       # (a blip must never 401 every request — the short token TTL is the
       # backstop), so JWT auth in these tests exercises exactly that documented
-      # degraded mode. Nothing in the ITs asserts revocation behaviour.
+      # degraded mode. The shared IT context asserts no revocation behaviour;
+      # RedisTokenRevocationIT boots its own context against a real Redis
+      # container for that, and JwtFilterRevocationTest pins the gates over
+      # mocked stores.
       host: localhost
       port: 6379
       password: ""

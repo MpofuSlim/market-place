@@ -49,6 +49,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -970,6 +971,116 @@ class OrderServiceTest {
             ApiException ex = assertThrows(ApiException.class,
                     () -> service.confirmPayment("MKT-000000000000",
                             new ConfirmPaymentRequest("PAY-REF-1", 3550L)));
+
+            assertEquals(HttpStatus.NOT_FOUND, ex.status());
+            assertEquals("order_not_found", ex.code());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Extend-expiry (S2S): payments keeps the stock hold alive past the
+    // payment code it is about to mint
+    // ------------------------------------------------------------------
+
+    @Nested
+    class ExtendExpiry {
+
+        private MarketOrder pending;
+        private Instant originalExpiry;
+
+        @BeforeEach
+        void setUp() {
+            pending = order(OrderStatus.PENDING_PAYMENT); // expires now + 30m
+            originalExpiry = pending.getExpiresAt();
+            when(orderRepository.findByOrderRef(ORDER_REF)).thenReturn(Optional.of(pending));
+        }
+
+        @Test
+        void extendsAPendingHoldToNowPlusMinutesAndJournalsIt() {
+            Instant before = Instant.now();
+            InternalOrderView view = service.extendExpiry(ORDER_REF, 60);
+            Instant after = Instant.now();
+
+            Instant expiry = pending.getExpiresAt();
+            assertFalse(expiry.isBefore(before.plus(Duration.ofMinutes(60))));
+            assertFalse(expiry.isAfter(after.plus(Duration.ofMinutes(60))));
+            assertEquals(expiry, view.expiresAt());
+            assertEquals(OrderStatus.PENDING_PAYMENT, view.status());
+            assertEquals(ORDER_REF, view.orderRef());
+            verify(orderRepository).save(pending);
+            // Not a status change: journalled through note(), never transition().
+            verify(transitions).note(eq(pending),
+                    argThat(detail -> detail.startsWith("Expiry extended by 60m to " + expiry)));
+            verify(transitions, never()).transition(any(), any(), anyString());
+        }
+
+        @Test
+        void neverShortensAHoldThatAlreadyOutlivesTheRequest() {
+            InternalOrderView view = service.extendExpiry(ORDER_REF, 5);
+
+            assertEquals(originalExpiry, pending.getExpiresAt());
+            assertEquals(originalExpiry, view.expiresAt());
+        }
+
+        @Test
+        void aLapsedButUnsweptHoldIsExtendedFromNow() {
+            // Still PENDING_PAYMENT (the sweeper has not expired it), so the
+            // stock is still held and the extension is taken from NOW.
+            pending.setExpiresAt(Instant.now().minus(Duration.ofMinutes(2)));
+            Instant before = Instant.now();
+
+            service.extendExpiry(ORDER_REF, 10);
+
+            assertFalse(pending.getExpiresAt().isBefore(before.plus(Duration.ofMinutes(10))));
+        }
+
+        @Test
+        void bothRangeBoundsAreAccepted() {
+            service.extendExpiry(ORDER_REF, OrderService.MIN_EXTEND_MINUTES);
+            service.extendExpiry(ORDER_REF, OrderService.MAX_EXTEND_MINUTES);
+
+            assertEquals(1, OrderService.MIN_EXTEND_MINUTES);
+            assertEquals(60, OrderService.MAX_EXTEND_MINUTES);
+        }
+
+        @Test
+        void minutesOutOfRangeOrMissingIs400BeforeTheOrderIsEvenRead() {
+            for (Integer minutes : new Integer[] {null, 0, -5, 61, Integer.MAX_VALUE}) {
+                ApiException ex = assertThrows(ApiException.class,
+                        () -> service.extendExpiry(ORDER_REF, minutes), "minutes=" + minutes);
+                assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+                assertEquals("invalid_extension", ex.code());
+                assertEquals("minutes must be between 1 and 60", ex.getMessage());
+            }
+            verify(orderRepository, never()).findByOrderRef(anyString());
+            verify(orderRepository, never()).save(any());
+            assertEquals(originalExpiry, pending.getExpiresAt());
+        }
+
+        @Test
+        void onlyAPendingOrderIsExtendable() {
+            // Every state but PENDING_PAYMENT, so a status added later is covered too.
+            for (OrderStatus status : EnumSet.complementOf(EnumSet.of(OrderStatus.PENDING_PAYMENT))) {
+                pending.setStatus(status);
+
+                ApiException ex = assertThrows(ApiException.class,
+                        () -> service.extendExpiry(ORDER_REF, 15), "status=" + status);
+
+                assertEquals(HttpStatus.CONFLICT, ex.status());
+                assertEquals("order_not_extendable", ex.code());
+                assertEquals("Order " + ORDER_REF + " is not awaiting payment", ex.getMessage());
+                assertEquals(originalExpiry, pending.getExpiresAt());
+            }
+            verify(orderRepository, never()).save(any());
+            verifyNoInteractions(transitions);
+        }
+
+        @Test
+        void unknownOrderRefIs404() {
+            when(orderRepository.findByOrderRef("MKT-000000000000")).thenReturn(Optional.empty());
+
+            ApiException ex = assertThrows(ApiException.class,
+                    () -> service.extendExpiry("MKT-000000000000", 15));
 
             assertEquals(HttpStatus.NOT_FOUND, ex.status());
             assertEquals("order_not_found", ex.code());
