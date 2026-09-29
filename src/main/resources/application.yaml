@@ -41,6 +41,16 @@ spring:
     locations: classpath:db/migration
   lifecycle:
     timeout-per-shutdown-phase: 30s
+  task:
+    scheduling:
+      pool:
+        # Threads for the @Scheduled sweeps. Boot's default is ONE, which ran
+        # every job serially: a slow collection-overdue run (up to 200 S2S
+        # alerts on a degraded user-service) held back the every-minute order
+        # expiry sweep, and stock held by lapsed orders outlived its TTL. Six
+        # jobs, four of them daily: 4 threads let the every-minute and
+        # 15-minute sweeps find a free thread while the slow daily ones run.
+        size: ${MARKETPLACE_SCHEDULER_POOL_SIZE:4}
   servlet:
     # Listing image upload cap (PUT /marketplace/listings/{id}/image) —
     # mirrors event-service's 10 MB banner cap. ListingService re-checks the
@@ -215,6 +225,26 @@ marketplace:
     hmac-secret: ${AUDIT_HMAC_SECRET:change-me-audit-hmac-secret-change-me-audit}
     # Newest-window row budget per nightly integrity walk.
     verify-limit: ${MARKETPLACE_AUDIT_VERIFY_LIMIT:5000}
+  executors:
+    # The notification pools (config/AsyncConfig). Fixed-size; a full
+    # queue on the first two DROPS the notice (metered marketplace.notifications.executor_rejected)
+    # rather than running it on the thread that just committed a payment
+    # confirm. Per-order notices (order paid, parcel updates, refunds, seller
+    # alerts): a large queue so only a sustained provider outage drops one.
+    notification:
+      threads: ${MARKETPLACE_NOTIFY_THREADS:4}
+      queue-capacity: ${MARKETPLACE_NOTIFY_QUEUE_CAPACITY:500}
+    # Fan-outs (restock alerts, up to max-recipients-per-event calls per task):
+    # kept apart so they never queue in front of a per-order notice.
+    bulk-notification:
+      threads: ${MARKETPLACE_NOTIFY_BULK_THREADS:2}
+      queue-capacity: ${MARKETPLACE_NOTIFY_BULK_QUEUE_CAPACITY:50}
+    # The payout-destination change notice (V13's anti-redirect control) ALONE:
+    # its overflow runs on the caller (the seller's/operator's own request)
+    # instead of being dropped, so saturation never loses the warning.
+    security-notification:
+      threads: ${MARKETPLACE_NOTIFY_SECURITY_THREADS:1}
+      queue-capacity: ${MARKETPLACE_NOTIFY_SECURITY_QUEUE_CAPACITY:50}
   notifications:
     restock-alerts:
       # Back-in-stock alerts to favoriters via user-service's internal notify
