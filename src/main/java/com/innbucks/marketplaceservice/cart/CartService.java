@@ -12,10 +12,12 @@ import com.innbucks.marketplaceservice.checkout.LineKey;
 import com.innbucks.marketplaceservice.checkout.PricedBasket;
 import com.innbucks.marketplaceservice.checkout.dto.PricedLineResponse;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -25,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * The buyer's cart.
@@ -45,6 +48,15 @@ import java.util.UUID;
  * <p>Scoped to the caller by shape: the buyer uuid comes from the JWT and no
  * path or query parameter names a user, so there is nothing to point at
  * someone else's cart.
+ *
+ * <p><b>A mutation commits BEFORE its cart is rendered.</b> The add / set /
+ * remove endpoints answer with the whole cart, and rendering it names every
+ * seller — which, for a seller nobody here has named, is an HTTP call to
+ * user-service. Inside the write's transaction that call would hold a pooled
+ * connection (and the resolver refuses to make it there, so the shopper's
+ * main screen would show nameless sellers on a cold cache). So each mutation
+ * runs in its own transaction through {@link #transactions} and the cart is
+ * re-read and rendered after it commits — see {@link NameResolvingRead}.
  */
 @Service
 @RequiredArgsConstructor
@@ -58,6 +70,10 @@ public class CartService {
      *  {@link CartVariantItem} for why it is a sibling, not a change. */
     private final CartVariantItemRepository variantCartRepository;
     private final ListingVariantRepository variantRepository;
+    /** Runs each mutation in its own transaction, so the render that follows
+     *  it holds no connection. Boot's {@code TransactionTemplate} in the app;
+     *  {@code TransactionOperations.withoutTransaction()} in unit tests. */
+    private final TransactionOperations transactions;
 
     /** Same caps the order flow enforces, read from the SAME properties — a
      *  cart a shopper cannot check out with is worse than a refused add. */
@@ -70,14 +86,14 @@ public class CartService {
     @Value("${innbucks.currency}")
     private String currency;
 
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public CartResponse getCart(AuthenticatedUser buyer) {
         return render(linesOf(buyerId(buyer)));
     }
 
     /** {@link #add(AuthenticatedUser, UUID, UUID, int)} on a listing without
      *  options — the pre-V19 call. */
-    @Transactional
+    @NameResolvingRead
     public CartResponse add(AuthenticatedUser buyer, UUID listingId, int quantity) {
         return add(buyer, listingId, null, quantity);
     }
@@ -95,9 +111,12 @@ public class CartService {
      * listing's (404 {@code variant_not_found}). Two options of one listing are
      * two lines, each with its own cap.
      */
-    @Transactional
+    @NameResolvingRead
     public CartResponse add(AuthenticatedUser buyer, UUID listingId, UUID variantId, int quantity) {
-        UUID buyerUuid = buyerId(buyer);
+        return renderAfter(buyer, buyerUuid -> addTx(buyerUuid, listingId, variantId, quantity));
+    }
+
+    private void addTx(UUID buyerUuid, UUID listingId, UUID variantId, int quantity) {
         requireLine(listingId, variantId);
         requireQuantity(quantity);
         Instant now = Instant.now();
@@ -113,20 +132,23 @@ public class CartService {
             variantCartRepository.addQuantity(buyerUuid, variantId, listingId, quantity,
                     maxQuantityPerItem, now);
         }
-        return getCartAfterWrite(buyerUuid);
     }
 
     /** Sets a line without an option to an exact quantity — the pre-V19 call. */
-    @Transactional
+    @NameResolvingRead
     public CartResponse setQuantity(AuthenticatedUser buyer, UUID listingId, int quantity) {
         return setQuantity(buyer, listingId, null, quantity);
     }
 
     /** Sets a line to an exact quantity, creating it if absent. */
-    @Transactional
+    @NameResolvingRead
     public CartResponse setQuantity(AuthenticatedUser buyer, UUID listingId, UUID variantId,
                                     int quantity) {
-        UUID buyerUuid = buyerId(buyer);
+        return renderAfter(buyer, buyerUuid -> setQuantityTx(buyerUuid, listingId, variantId,
+                quantity));
+    }
+
+    private void setQuantityTx(UUID buyerUuid, UUID listingId, UUID variantId, int quantity) {
         requireLine(listingId, variantId);
         requireQuantity(quantity);
         if (quantity > maxQuantityPerItem) {
@@ -148,11 +170,10 @@ public class CartService {
             }
             variantCartRepository.setQuantity(buyerUuid, variantId, listingId, quantity, now);
         }
-        return getCartAfterWrite(buyerUuid);
     }
 
     /** Removes every line of a listing — the pre-V19 call. */
-    @Transactional
+    @NameResolvingRead
     public CartResponse remove(AuthenticatedUser buyer, UUID listingId) {
         return remove(buyer, listingId, null);
     }
@@ -164,19 +185,20 @@ public class CartService {
      * option line of the listing, so an app that never learned about options
      * can still clear a line a newer one added. With it, exactly that line.
      */
-    @Transactional
+    @NameResolvingRead
     public CartResponse remove(AuthenticatedUser buyer, UUID listingId, UUID variantId) {
-        UUID buyerUuid = buyerId(buyer);
-        if (variantId == null) {
-            cartRepository.remove(buyerUuid, listingId);
-            variantCartRepository.removeAllOfListing(buyerUuid, listingId);
-        } else {
-            variantCartRepository.remove(buyerUuid, variantId);
-        }
-        return getCartAfterWrite(buyerUuid);
+        return renderAfter(buyer, buyerUuid -> {
+            if (variantId == null) {
+                cartRepository.remove(buyerUuid, listingId);
+                variantCartRepository.removeAllOfListing(buyerUuid, listingId);
+            } else {
+                variantCartRepository.remove(buyerUuid, variantId);
+            }
+        });
     }
 
-    /** Idempotent: clearing an empty cart is a 200 no-op. */
+    /** Idempotent: clearing an empty cart is a 200 no-op. Stays transactional:
+     *  an empty cart names no seller, so its render makes no lookup. */
     @Transactional
     public CartResponse clear(AuthenticatedUser buyer) {
         UUID buyerUuid = buyerId(buyer);
@@ -223,10 +245,19 @@ public class CartService {
         variantCartRepository.removeAll(buyerUuid, variantIds);
     }
 
-    /** Re-reads and renders after a mutation, so a write and the cart it
-     *  produces are one round trip. The repository's mutations clear the
-     *  persistence context, so this read sees the row the database holds. */
-    private CartResponse getCartAfterWrite(UUID buyerUuid) {
+    /**
+     * Runs {@code mutation} in its own transaction, then re-reads and renders
+     * the cart AFTER it commits, so a write and the cart it produces are still
+     * one round trip but the render — and the seller-name lookup inside it —
+     * holds no connection. A refusal thrown by the mutation rolls it back and
+     * propagates before anything is rendered. The re-read sees the committed
+     * rows (plus anything a concurrent tab committed since, which is the cart
+     * the shopper actually has).
+     */
+    private CartResponse renderAfter(AuthenticatedUser buyer,
+                                     Consumer<UUID> mutation) {
+        UUID buyerUuid = buyerId(buyer);
+        transactions.executeWithoutResult(tx -> mutation.accept(buyerUuid));
         return render(linesOf(buyerUuid));
     }
 

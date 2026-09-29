@@ -72,11 +72,19 @@ public class SellerService {
      * shrinking minority — and it is the reason this can sit on the catalogue
      * path without making a browse depend on user-service being up.
      *
+     * <h2>Why it is not transactional</h2>
+     * The registry is another service's HTTP endpoint, and the resolver will
+     * not call it while a transaction holds a pooled connection — inside one
+     * it answers from its cache alone. So the reads that want fresh names
+     * ({@link NameResolvingRead}) run their queries outside any surrounding
+     * transaction, this one included; write paths that render a name get the
+     * cached one.
+     *
      * <p>Nothing here throws. A merchant with no name anywhere is simply
      * absent from the map, which every caller already renders as no name —
      * the behaviour before this existed.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Map<UUID, String> displayNames(List<UUID> merchantIds) {
         return displayNames(merchantIds, findAllByMerchantIds(merchantIds));
     }
@@ -187,7 +195,7 @@ public class SellerService {
     }
 
     /** The queue. {@code status} null lists every seller, oldest first. */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public SellerPageResponse list(SellerStatus status, int page, int size) {
         if (page < 0) {
             throw ApiException.badRequest("invalid_page", "page must be >= 0");

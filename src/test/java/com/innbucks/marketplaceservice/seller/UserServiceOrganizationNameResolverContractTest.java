@@ -1,13 +1,22 @@
 package com.innbucks.marketplaceservice.seller;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.client.RestClient;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -29,6 +38,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * {@code {organizationId, name}}, unknown ids simply absent, and a plain 400
  * above 200 ids per call.
  *
+ * <p>Also pins what a sick user-service may cost this service: every failure
+ * shape backs off for the window (no call at all until it lapses, then one
+ * probe), the read timeout is the resolver's own, and nothing goes on the wire
+ * while a transaction is active.
+ *
  * <p>Pure JUnit + WireMock, no {@code @SpringBootTest}: the resolver is built
  * exactly as its bean is, just pointed at WireMock's port. Production passes
  * the {@code @LoadBalanced} builder so {@code user-service} resolves through
@@ -40,6 +54,7 @@ class UserServiceOrganizationNameResolverContractTest {
     private static final String PATH = "/users/internal/organizations/names";
     private static final UUID A = UUID.fromString("b3f1c9d2-4a77-4e21-9c60-11ab22cd33ef");
     private static final UUID B = UUID.fromString("7c2e8a4d-1f35-4b90-8de1-2a0c5b6f9e34");
+    private static final long BACKOFF_SECONDS = 30;
 
     private static WireMockServer wireMock;
 
@@ -59,14 +74,92 @@ class UserServiceOrganizationNameResolverContractTest {
         wireMock.resetAll();
     }
 
+    /** Moved by hand, so the backoff window can lapse without sleeping. */
+    private static final class TestClock extends Clock {
+        private Instant now = Instant.parse("2026-09-29T08:00:00Z");
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
+    private TestClock clock;
+    private SimpleMeterRegistry meters;
+
+    @BeforeEach
+    void freshClockAndMeters() {
+        clock = new TestClock();
+        meters = new SimpleMeterRegistry();
+    }
+
     /** ttl 0 keeps each case independent — the cache has its own test below. */
     private UserServiceOrganizationNameResolver resolver() {
         return resolver("http://localhost:" + wireMock.port(), TOKEN, 0);
     }
 
     private UserServiceOrganizationNameResolver resolver(String baseUrl, String token, long ttlSeconds) {
+        return resolver(baseUrl, token, ttlSeconds, 1000);
+    }
+
+    /** Built exactly as the bean is, with the production defaults for the
+     *  connect timeout and the backoff window. */
+    private UserServiceOrganizationNameResolver resolver(String baseUrl, String token, long ttlSeconds,
+                                                         int readTimeoutMs) {
         return new UserServiceOrganizationNameResolver(
-                RestClient.builder(), baseUrl, 2000, 5000, ttlSeconds, token);
+                RestClient.builder(), baseUrl, 500, readTimeoutMs, ttlSeconds, BACKOFF_SECONDS,
+                token, meters, clock);
+    }
+
+    private double outcome(String outcome) {
+        Counter counter = meters.find("marketplace.merchant_names").tag("outcome", outcome).counter();
+        return counter == null ? 0 : counter.count();
+    }
+
+    private void stubRudo() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH))
+                .willReturn(okJson("""
+                        {"code":"200 OK","message":"Organization names","data":[
+                          {"organizationId":"%s","name":"Rudo Traders"}]}""".formatted(A))));
+    }
+
+    /**
+     * The backoff contract, asserted the same way for every failure shape: the
+     * failing call is the LAST one for the whole window (the next page renders
+     * without asking), and once the window lapses the next page asks again and
+     * a healthy answer names the seller.
+     */
+    private void assertBacksOffThenRecovers(UserServiceOrganizationNameResolver resolver) {
+        assertThat(resolver.namesFor(List.of(A))).isEmpty();
+        wireMock.verify(1, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("failed")).isEqualTo(1);
+
+        clock.advance(Duration.ofSeconds(BACKOFF_SECONDS - 1));
+        assertThat(resolver.namesFor(List.of(A))).isEmpty();
+        // Still inside the window: not one more request reached user-service.
+        wireMock.verify(1, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("backoff")).isEqualTo(1);
+
+        wireMock.resetAll();
+        stubRudo();
+        clock.advance(Duration.ofSeconds(1));
+        assertThat(resolver.namesFor(List.of(A))).containsEntry(A, "Rudo Traders");
+        wireMock.verify(1, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("resolved")).isEqualTo(1);
     }
 
     @Test
@@ -119,28 +212,11 @@ class UserServiceOrganizationNameResolverContractTest {
     }
 
     @Test
-    @DisplayName("401 (token drift) is silence, never an exception")
-    void unauthorizedIsSilence() {
-        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(401)));
-
-        assertThatCode(() -> assertThat(resolver().namesFor(List.of(A))).isEmpty())
-                .doesNotThrowAnyException();
-    }
-
-    @Test
     @DisplayName("404 — a user-service without the organization surface — is silence, not a broken catalogue")
     void notFoundIsSilence() {
         wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(404)));
 
         // This is what makes the deploy order free: marketplace can ship first.
-        assertThat(resolver().namesFor(List.of(A))).isEmpty();
-    }
-
-    @Test
-    @DisplayName("500 is silence — a user-service outage must never fail a shopper's browse")
-    void serverErrorIsSilence() {
-        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(500)));
-
         assertThat(resolver().namesFor(List.of(A))).isEmpty();
     }
 
@@ -188,26 +264,149 @@ class UserServiceOrganizationNameResolverContractTest {
     }
 
     @Test
-    @DisplayName("A FAILED lookup is never cached — a blip must not pin a seller nameless")
-    void failuresAreNotCached() {
+    @DisplayName("A FAILED lookup is never cached as a name — but it does stop the next pages asking")
+    void failuresAreNotCachedButBackOff() {
         wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(500)));
         UserServiceOrganizationNameResolver cached = resolver("http://localhost:" + wireMock.port(), TOKEN, 300);
 
-        assertThat(cached.namesFor(List.of(A))).isEmpty();
-        assertThat(cached.namesFor(List.of(A))).isEmpty();
-
-        // Both attempts hit the wire: the next page retries rather than serving
-        // a cached "no name" for the whole TTL.
-        wireMock.verify(2, getRequestedFor(urlPathEqualTo(PATH)));
+        // The TTL is 300s and the backoff 30s: the name appears at the first
+        // page after the backoff, not after the TTL — nothing "no name" was
+        // cached, only the decision not to ask for a short while.
+        assertBacksOffThenRecovers(cached);
     }
 
     @Test
-    @DisplayName("A body that is not the agreed shape is silence, not a parse failure")
-    void unexpectedBodyIsSilence() {
+    @DisplayName("5xx backs off: every page in the window renders without asking")
+    void serverErrorBacksOff() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(503)));
+
+        assertBacksOffThenRecovers(resolver());
+    }
+
+    @Test
+    @DisplayName("401 (token drift) backs off too — asking again changes nothing for 30s")
+    void unauthorizedBacksOff() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(401)));
+
+        assertBacksOffThenRecovers(resolver());
+    }
+
+    @Test
+    @DisplayName("A body that is not JSON (an edge's HTML page on a 200) backs off")
+    void unparsableBodyBacksOff() {
+        // Not a shape user-service emits: what a proxy or edge in front of it
+        // answers when it is unwell. Labelled, because it pins our handling,
+        // not their contract.
+        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "text/html")
+                .withBody("<html><body>Bad gateway</body></html>")));
+
+        assertBacksOffThenRecovers(resolver());
+    }
+
+    @Test
+    @DisplayName("A 200 without the names envelope backs off — it is not an answer")
+    void wrongEnvelopeBacksOff() {
         wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(okJson("""
                 {"unexpected":"shape"}""")));
 
-        assertThat(resolver().namesFor(List.of(A))).isEmpty();
+        assertBacksOffThenRecovers(resolver());
+    }
+
+    @Test
+    @DisplayName("Connect-refused backs off")
+    void connectRefusedBacksOff() {
+        UserServiceOrganizationNameResolver dead = resolver("http://localhost:1", TOKEN, 0);
+
+        assertThat(dead.namesFor(List.of(A))).isEmpty();
+        clock.advance(Duration.ofSeconds(5));
+        assertThat(dead.namesFor(List.of(A))).isEmpty();
+
+        assertThat(outcome("failed")).isEqualTo(1);
+        assertThat(outcome("backoff")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("The read timeout is the resolver's own, and a timeout backs off")
+    void readTimeoutIsHonouredAndBacksOff() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(200)
+                .withFixedDelay(3000)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                        {"code":"200 OK","message":"Organization names","data":[]}""")));
+        UserServiceOrganizationNameResolver slow =
+                resolver("http://localhost:" + wireMock.port(), TOKEN, 0, 300);
+
+        long started = System.nanoTime();
+        assertThat(slow.namesFor(List.of(A))).isEmpty();
+        long tookMs = (System.nanoTime() - started) / 1_000_000;
+
+        // Gave up at ~300ms, nowhere near the 3s the stub would have taken:
+        // a shopper's page is not held hostage by a label.
+        assertThat(tookMs).isLessThan(2000);
+        wireMock.resetAll();
+        stubRudo();
+        clock.advance(Duration.ofSeconds(1));
+        assertThat(slow.namesFor(List.of(A))).isEmpty();
+        wireMock.verify(0, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("failed")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("After the window ONE page probes; a failed probe re-opens the window")
+    void failedProbeReopensTheWindow() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(aResponse().withStatus(500)));
+        UserServiceOrganizationNameResolver resolver = resolver();
+
+        resolver.namesFor(List.of(A));
+        clock.advance(Duration.ofSeconds(BACKOFF_SECONDS));
+        resolver.namesFor(List.of(A));            // the probe — fails again
+        clock.advance(Duration.ofSeconds(BACKOFF_SECONDS - 1));
+        resolver.namesFor(List.of(A));            // inside the NEW window
+
+        wireMock.verify(2, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("failed")).isEqualTo(2);
+        assertThat(outcome("backoff")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("A well-formed answer naming nobody is a success, not a failure")
+    void emptyAnswerDoesNotBackOff() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH))
+                .willReturn(okJson("""
+                        {"code":"200 OK","message":"Organization names","data":[]}""")));
+        UserServiceOrganizationNameResolver resolver = resolver();
+
+        assertThat(resolver.namesFor(List.of(A))).isEmpty();
+        assertThat(resolver.namesFor(List.of(A))).isEmpty();
+
+        // An organization the registry does not know is an ANSWER; backing off
+        // on it would hide every other seller's name for 30s.
+        wireMock.verify(2, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("backoff")).isZero();
+    }
+
+    @Test
+    @DisplayName("Inside a transaction nothing goes on the wire — only cached names are served")
+    void neverCallsOutInsideATransaction() {
+        stubRudo();
+        UserServiceOrganizationNameResolver cached = resolver("http://localhost:" + wireMock.port(), TOKEN, 300);
+        cached.namesFor(List.of(A));                         // warms the cache, outside
+        wireMock.resetAll();
+
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            // A is cached and served; B is a miss and is NOT fetched — that
+            // call would hold the transaction's pooled connection for its
+            // whole latency.
+            assertThat(cached.namesFor(List.of(A, B)))
+                    .containsEntry(A, "Rudo Traders").doesNotContainKey(B);
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+
+        wireMock.verify(0, getRequestedFor(urlPathEqualTo(PATH)));
+        assertThat(outcome("in_transaction")).isEqualTo(1);
     }
 
     @Test

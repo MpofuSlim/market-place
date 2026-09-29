@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.time.Instant;
 import java.util.List;
@@ -68,7 +69,8 @@ class CartServiceTest {
                 new CheckoutPricer(listingRepository, mock(ListingDeliveryTownRepository.class),
                         TestTowns.zimbabwe(), "USD", variantRepository),
                 new BasketViewAssembler(listingViews),
-                variantCartRepository, variantRepository);
+                variantCartRepository, variantRepository,
+                TransactionOperations.withoutTransaction());
         ReflectionTestUtils.setField(service, "maxItems", MAX_ITEMS);
         ReflectionTestUtils.setField(service, "maxQuantityPerItem", MAX_QTY);
         ReflectionTestUtils.setField(service, "currency", "USD");
