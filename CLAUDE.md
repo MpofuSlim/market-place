@@ -1531,6 +1531,33 @@ never change either casually.
   broke, and logging somebody else's typo at ERROR (a path scanner could fill
   the error log on its own). Found while proving the public test surface has no
   order endpoint: the assertion that an unmapped path 404s failed at 500.
+  **The same held for EVERY Spring MVC client error** — a `@RestControllerAdvice`
+  runs before `DefaultHandlerExceptionResolver`, so a wrong verb, a wrong
+  Content-Type, an unsatisfiable Accept or a missing `@RequestPart("listing")`
+  on the multipart create all answered 500 and paged via Sentry. They now keep
+  their native status and headers (`Allow` on a 405, `Accept` on a 415) with
+  stable codes `method_not_allowed` / `unsupported_media_type` /
+  `not_acceptable` / `missing_parameter` / `missing_part` / `missing_header`,
+  logged at WARN/DEBUG. Any OTHER framework exception carrying Spring's
+  `ErrorResponse` contract with a 4xx status (a future one included) takes the
+  catch-all's generic branch: its own status, a code from a FIXED table
+  (`bad_request`, `conflict`, … never `HttpStatus.name()`, which Spring renames
+  across majors) and a message that never echoes the exception's reason. A 5xx
+  `ErrorResponse` and everything else stay `500 INTERNAL_ERROR` at ERROR. The
+  JSON Content-Type is pinned on these bodies, or a 406's envelope would fail
+  negotiation a second time. `AccessDeniedException` keeps its own 403 handler.
+  Two framework failures take an EXISTING contract instead of a new code: a
+  multipart body that cannot be parsed (a plain `MultipartException` — not an
+  `ErrorResponse`, so the generic branch would miss it) is `400
+  MALFORMED_REQUEST` like any malformed body, while `MaxUploadSizeExceeded`
+  keeps `image_too_large`; and a failed constraint on a `@RequestParam` /
+  `@PathVariable` (`HandlerMethodValidationException`) is `400
+  VALIDATION_ERROR` with the name-to-message map, exactly like a `@Valid` body —
+  one kind of mistake, one code. These log the exception CLASS and status,
+  never `getMessage()`, which for some framework exceptions lists every query
+  value (an MSISDN included).
+  Pinned by `GlobalExceptionHandlerTest` (incl. missing param/header, which no
+  real endpoint requires yet) and `FrameworkClientErrorsIT`.
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`

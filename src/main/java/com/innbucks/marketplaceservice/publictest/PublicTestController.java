@@ -807,10 +807,9 @@ public class PublicTestController {
      */
     private void requireEnabled() {
         if (!enabled) {
-            // ApiException, not ResponseStatusException: the latter falls
-            // through GlobalExceptionHandler's catch-all and renders as a 500,
-            // which would make a cell that simply has the feature off look
-            // broken.
+            // ApiException, not ResponseStatusException: the refusal must carry
+            // the published code/message pair (not_found / "Not found"), not
+            // GlobalExceptionHandler's generic table for framework 4xx.
             throw ApiException.notFound("not_found", "Not found");
         }
     }
