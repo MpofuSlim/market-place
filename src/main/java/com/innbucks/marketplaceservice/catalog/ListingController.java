@@ -399,7 +399,7 @@ public class ListingController {
               }
             }""";
 
-    /** Same record after PUT /{id}/image landed the primary product photo (the
+    /** Same record after POST /{id}/image landed the primary product photo (the
      *  GETs and the status change below then show the populated gallery). */
     private static final String EXAMPLE_IMAGE_200 = """
             {
@@ -1464,7 +1464,10 @@ public class ListingController {
                     + "gallery's primary image in place, or creates it when the gallery has none "
                     + "(back-compat V2 contract — additional images are untouched). The primary is "
                     + "served publicly at GET /marketplace/catalog/{id}/image — the imageUrl on the "
-                    + "response. Caller must own the listing (SUPER_ADMIN may manage any).")
+                    + "response. Caller must own the listing (SUPER_ADMIN may manage any). "
+                    + "POST only: every multipart upload here is POST, because the edge WAF refuses "
+                    + "PUT + multipart/form-data before it reaches the service. A PUT is 405 "
+                    + "method_not_allowed.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Primary image stored; listing returned "
                     + "with imageUrl + imageUrls",
@@ -1496,7 +1499,7 @@ public class ListingController {
                             examples = @ExampleObject(name = "image-limit-reached",
                                     value = EXAMPLE_IMAGE_LIMIT_409)))
     })
-    @PutMapping(value = "/{id}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PostMapping(value = "/{id}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResult<ListingResponse> uploadImage(
             @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     schema = @Schema(type = "string", format = "uuid"))

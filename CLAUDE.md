@@ -256,7 +256,8 @@ never change either casually.
   (`ListingImageRepository.ImageMeta`) — never the entity — and a page of
   listings resolves its galleries with ONE grouped `listing_id IN (...)`
   query (`ListingViewAssembler`), never per-row. Endpoints:
-  `PUT /{id}/image` (replace-or-create primary, back-compat V2 contract),
+  `POST /{id}/image` (replace-or-create primary; was PUT until 2026-09-29, see
+  the POST-only bullet below),
   `DELETE /{id}/image` (delete primary + promotion), `POST /{id}/images`
   (append; 409 `image_limit_reached` at 10), `DELETE /{id}/images/{imageId}`
   (remove one, promotion if primary), `PUT /{id}/images/{imageId}/primary`
@@ -304,6 +305,21 @@ never change either casually.
   `ListingResponse.imageUrl` (primary, null when none) stays for
   back-compat; `imageUrls` lists the whole gallery primary-first. The JSON
   listing-create contract stays non-multipart (published FE contract).
+* **Every multipart upload is POST, and ONLY POST** (owner decision,
+  2026-09-29). Cloudflare's WAF on the `innbucks.co.zw` zone refuses `PUT`
+  with a `multipart/form-data` body before it reaches origin (measured on
+  event-service's banner upload; see the ticketing-system CLAUDE.md). The CORS
+  preflight passes, the block page carries no CORS header, and the browser
+  reports a bare "network error" with nothing in any server log, so a
+  multipart PUT here is an endpoint the portal cannot call. The primary-image
+  replace was `PUT /{id}/image` and is now `POST /{id}/image`. The PUT was
+  REMOVED, not kept as an alias, by the owner's call: a PUT is now `405
+  method_not_allowed` whose `Allow` header names POST and DELETE. Body-less PUTs stay PUT
+  (`PUT /{id}/images/{imageId}/primary`, JSON updates), because the WAF only
+  trips on PUT combined with multipart. Pinned by
+  `MultipartUploadsArePostOnlyTest`, which scans every controller for a
+  mapping that consumes multipart or takes a part and fails on any method but
+  POST, and by the 405 case in `SuperAdminAndImageFlowIT`.
 * **PUBLISH GATE** (owner decision, 2026-08-06): a status transition **TO
   ACTIVE requires a primary image** — 422 `primary_image_required`
   otherwise. Exactly one image is MANDATORY for a live listing; DRAFTs may

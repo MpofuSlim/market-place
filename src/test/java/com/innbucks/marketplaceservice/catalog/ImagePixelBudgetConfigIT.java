@@ -119,7 +119,7 @@ class ImagePixelBudgetConfigIT extends PostgresTestContainer {
     void uploadRefusesAgainstTheConfiguredBudget_andNamesIt() throws Exception {
         String listingId = createDraftListing();
 
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo.png", "image/png", png(800, 600)))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isBadRequest())
@@ -128,7 +128,7 @@ class ImagePixelBudgetConfigIT extends PostgresTestContainer {
                         + "one of at most 0.1 megapixels and no more than 8,192 pixels on its "
                         + "longest side."));
 
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo.png", "image/png", png(300, 200)))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());

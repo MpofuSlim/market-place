@@ -86,7 +86,7 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
     }
 
     private String activate(String id, String token) throws Exception {
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", id)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", id)
                         .file(new MockMultipartFile("image", "p.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
@@ -446,7 +446,7 @@ class CatalogTaxonomyBrowseIT extends PostgresTestContainer {
                 .andReturn().getResponse().getContentAsString();
         String id = JsonPath.read(created, "$.data.id");
 
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", id)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", id)
                         .file(new MockMultipartFile("image", "p.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());
