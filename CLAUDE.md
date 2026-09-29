@@ -1682,6 +1682,22 @@ beans, real Postgres + security chain).
   V19 an image upload's `touch`, a status change or a moderation takedown
   saved whatever stock the entity was loaded with and silently undid a
   reservation made in between.
+* **Every APPLICATION connection is time-bounded; Flyway's are not.** Hikari's
+  `connection-timeout` only bounds acquiring a connection, so a hung statement,
+  a stuck row lock or a leaked transaction used to hold a request thread and a
+  pooled connection until TCP gave up. The pool now hands PgJDBC
+  `options=-c statement_timeout=30s -c lock_timeout=10s -c
+  idle_in_transaction_session_timeout=60s` (startup packet, so it survives a
+  RESET) plus `socketTimeout=60` (the only bound that holds when the server
+  itself is gone — keep it above statement_timeout); `DB_*` env overrides.
+  lock_timeout sits below statement_timeout so a lock wait fails as a LOCK
+  error (55P03). Flyway is exempt BY DATASOURCE: `spring.flyway.url` gives it
+  its own unpooled connections, and its `init-sqls` zero all three. Do not
+  move Flyway back onto the shared pool — a session `SET` there goes back into
+  the pool and strips the timeouts from the connection it borrowed. A timeout
+  reaches `GlobalExceptionHandler` unmapped (500 `INTERNAL_ERROR`). Pinned by
+  `DatabaseTimeoutsIT` (every pooled connection, fail-fast statement and lock,
+  Flyway at 0 against a role default).
 
 ## Tests
 

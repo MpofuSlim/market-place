@@ -76,6 +76,13 @@ fleet-shared `JWT_SECRET` (verify-only), `INTERNAL_API_TOKEN`,
 `AUDIT_HMAC_SECRET` (generate: `openssl rand -base64 48`; add to the cell
 secret).
 
+Database timeouts need nothing: `DB_STATEMENT_TIMEOUT_MS` (30000),
+`DB_LOCK_TIMEOUT_MS` (10000), `DB_IDLE_IN_TRANSACTION_TIMEOUT_MS` (60000) and
+`DB_SOCKET_TIMEOUT_SECONDS` (60) default in `application.yaml`. To change one,
+set it on the marketplace Deployment's own `env:`, not in the shared cell
+ConfigMap, which every service `envFrom`s. Do not add `options=` to `DB_URL`:
+PgJDBC lets the URL win, so it would replace all three server-side timeouts.
+
 ## 5. Payments integration (when the payments generalization lands)
 
 The payments service will drive marketplace orders through the SAME contract

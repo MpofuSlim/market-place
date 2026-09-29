@@ -27,6 +27,32 @@ spring:
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
       idle-timeout: ${DB_IDLE_TIMEOUT_MS:600000}
       max-lifetime: ${DB_MAX_LIFETIME_MS:1800000}
+      # connection-timeout above only bounds ACQUIRING a connection. These bound
+      # what happens on one, so a hung statement, a stuck lock or a leaked
+      # transaction fails fast instead of holding a request thread and a pooled
+      # connection until TCP gives up. Passed to PgJDBC as driver properties;
+      # "options" rides the startup packet, so every pooled connection carries
+      # it from birth and a RESET/DISCARD ALL returns to it. A DB_URL that sets
+      # its own options= REPLACES this string (PgJDBC: the URL wins).
+      #  - statement_timeout 30s: the slowest legitimate statements (the audit
+      #    verify over 5000 rows, the 5000-row earnings statement, the payout
+      #    report, the stock-drift scan, a catalogue page + count) run in well
+      #    under a second today; 30s is headroom for growth, not a target.
+      #  - lock_timeout 10s: every explicit lock here (audit_chain_head FOR
+      #    UPDATE, listing/option FOR NO KEY UPDATE, the seller row) is held for
+      #    one short transaction, so a 10s queue is a stuck holder, not a burst.
+      #    Below statement_timeout so a lock wait fails as a LOCK error (55P03).
+      #  - idle_in_transaction_session_timeout 60s: a transaction left open
+      #    with nothing running (a leak, or remote I/O inside a transaction) is
+      #    terminated and its row locks released.
+      #  - socketTimeout (SECONDS, client side): the only bound that holds when
+      #    the server itself is gone (failover, partition) and its timers cannot
+      #    fire. MUST stay above statement_timeout, or a slow-but-legal statement
+      #    is cut client-side and the connection discarded.
+      # Flyway is EXEMPT: see spring.flyway.url below.
+      data-source-properties:
+        options: "-c statement_timeout=${DB_STATEMENT_TIMEOUT_MS:30000} -c lock_timeout=${DB_LOCK_TIMEOUT_MS:10000} -c idle_in_transaction_session_timeout=${DB_IDLE_IN_TRANSACTION_TIMEOUT_MS:60000}"
+        socketTimeout: ${DB_SOCKET_TIMEOUT_SECONDS:60}
   jpa:
     hibernate:
       # Schema is owned by Flyway migrations; Hibernate only validates.
@@ -39,6 +65,22 @@ spring:
     enabled: ${FLYWAY_ENABLED:true}
     baseline-on-migrate: false
     locations: classpath:db/migration
+    # Flyway gets its OWN unpooled connections (a spring.flyway.url makes Boot
+    # build a SimpleDriverDataSource for it) so the timeouts above never reach
+    # a migration: an index build or a backfill must never be killed mid-deploy.
+    # Same database and credentials as the application. The init-sqls make the
+    # exemption hold even against a role- or database-level default, and they
+    # can only ever touch Flyway's own connections - on the shared pool a
+    # session SET would have gone back into it and stripped the application's
+    # timeouts from whichever connection Flyway had borrowed.
+    url: ${spring.datasource.url}
+    user: ${spring.datasource.username}
+    password: ${spring.datasource.password}
+    driver-class-name: ${spring.datasource.driver-class-name}
+    init-sqls:
+      - SET statement_timeout = 0;
+      - SET lock_timeout = 0;
+      - SET idle_in_transaction_session_timeout = 0;
   lifecycle:
     timeout-per-shutdown-phase: 30s
   servlet:
