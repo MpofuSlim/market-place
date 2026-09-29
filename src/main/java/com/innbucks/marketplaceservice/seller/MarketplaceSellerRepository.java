@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.Set;
 import java.util.UUID;
 
 public interface MarketplaceSellerRepository extends JpaRepository<MarketplaceSeller, UUID> {
@@ -44,4 +46,33 @@ public interface MarketplaceSellerRepository extends JpaRepository<MarketplaceSe
             VALUES (:merchantId, 'PENDING', :now)
             ON CONFLICT (merchant_id) DO NOTHING""", nativeQuery = true)
     int insertIfAbsent(@Param("merchantId") UUID merchantId, @Param("now") Instant now);
+
+    /**
+     * The ONLY writer of {@code collection_enabled} (V20) and its stamps, which
+     * are read-only on the entity. A bulk statement rather than an entity save
+     * because the entity has no {@code @Version}: a save from any other path
+     * would put back whatever value that path loaded.
+     *
+     * @return rows updated; 0 when the seller has no record
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE marketplace_seller
+               SET collection_enabled = :enabled,
+                   collection_updated_at = :now,
+                   collection_updated_by = :by
+             WHERE merchant_id = :merchantId""", nativeQuery = true)
+    int setCollectionEnabled(@Param("merchantId") UUID merchantId,
+                             @Param("enabled") boolean enabled,
+                             @Param("now") Instant now,
+                             @Param("by") UUID by);
+
+    /**
+     * Of the given sellers, the ones that do NOT collect. Selecting only the
+     * delivery-only ones means a seller with no record reads as collecting,
+     * which is what every seller was before V20. One query for a whole basket.
+     */
+    @Query("SELECT s.merchantId FROM MarketplaceSeller s "
+            + "WHERE s.merchantId IN :merchantIds AND s.collectionEnabled = false")
+    Set<UUID> findCollectionDisabledAmong(@Param("merchantIds") Collection<UUID> merchantIds);
 }

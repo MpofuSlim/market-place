@@ -80,6 +80,7 @@ class BuyerCancelParcelTest {
                 new MarketplaceMetrics(registry), mock(CollectCodeAttempts.class),
                 mock(CollectCodeNotifier.class), stockReturner, eventPublisher,
                 mock(MarketOrderDeliveryFeeRepository.class),
+                mock(com.innbucks.marketplaceservice.order.MarketOrderSellerRepository.class),
                 TestParcelViews.over(orderRepository, itemRepository, settlementService),
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
                 new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));

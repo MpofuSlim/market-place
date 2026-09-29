@@ -208,6 +208,14 @@ marketplace:
     # How goods may reach the buyer here. A market with no courier arrangement
     # drops DELIVERY and checkout stops offering it.
     methods: ${MARKETPLACE_DELIVERY_METHODS:DELIVERY,COLLECTION}
+    # V20: may a seller turn COLLECTION off and become delivery-only?
+    # OFF by default, like variants-enabled: it gates only the move to
+    # delivery-only (PUT .../collection {collectionEnabled:false}); turning
+    # collection back on is never gated, and a seller already delivery-only
+    # stays so when this is switched off. Keep it off until the super app
+    # renders sellers[].availableMethods from the quote, or a delivery-only
+    # seller's items read as collectable up to the moment the quote refuses.
+    delivery-only-sellers-enabled: ${MARKETPLACE_DELIVERY_ONLY_SELLERS_ENABLED:false}
     # There is no flat delivery fee any more (V14): each listing names the towns
     # it delivers to and the fee for each, and a DELIVERY order pays each
     # seller's fee to the buyer's town. MARKETPLACE_DELIVERY_FEE_CENTS is gone.

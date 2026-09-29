@@ -34,6 +34,10 @@ public enum AuditEventType {
     COLLECTION_POINT_UPDATED,
     COLLECTION_POINT_DELETED,
     COLLECTION_POINT_DEFAULT_CHANGED,
+    /** A seller (or an operator for them) turned collection off or back on
+     *  (V20). Metadata carries the merchant, the new and previous value and
+     *  who acted; there is no free text to leave out. */
+    SELLER_COLLECTION_CHANGED,
     /** A merchant created a listing. */
     LISTING_CREATED,
     /** A merchant updated a listing's content (title/description/price/stock). */
