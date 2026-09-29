@@ -266,7 +266,36 @@ never change either casually.
   jpeg/png/webp only, GIF deliberately rejected — 10 MB cap enforced twice
   (servlet `spring.servlet.multipart.max-file-size` and in-code;
   `GlobalExceptionHandler` maps the container's rejection to the same 400
-  `image_too_large`). Bytes are served ONLY via the public
+  `image_too_large`). **Bytes bound the upload, not the decode**: a
+  few-hundred-KB PNG can declare 30000 x 30000 (~3.6 GB decoded), so every
+  upload path also reads the HEADER (`ImageDimensions`: JDK reader stopped at
+  `getWidth(0)`, WebP's VP8/VP8L/VP8X fields parsed by hand — the JDK has no
+  WebP reader) and refuses over `ImagePixelBudget` — 400
+  `image_dimensions_too_large`, default 50 MP (every phone's full-res mode,
+  8160 x 6120) and 8192 px a side (`marketplace.listing.image-max-*`). The
+  budget admits camera output; it is NOT the heap guard, so raising it needs no
+  more heap. An unreadable header is let through, as before, because the public
+  `?w=` resize re-reads the header FIRST and never decodes one it cannot read
+  or one over the budget (a pre-guard row): it serves the original. **What
+  protects the ~450 MiB heap is the resizer**: a decode is subsampled to ~2x the
+  target and may not exceed `ImageResizer.DECODE_CEILING_BYTES` (24 MiB, at the
+  reader's own bytes per pixel — a 16-bit PNG is 8, not 4); a multi-scan
+  (progressive) JPEG is refused on the same ceiling BEFORE decoding, because
+  libjpeg allocates a full-resolution native coefficient buffer that
+  subsampling cannot shrink (`ImageDimensions.jpegWholeImageBufferBytes`,
+  ~150 MB for a 50 MP photo); and at most `image-resize-concurrency` (2)
+  decodes run at once, never waiting — none free serves the original with
+  `no-store`. Then a progressive bilinear `Graphics2D` scale replaces
+  `getScaledInstance`. Streams are `MemoryCacheImageInputStream`, never
+  `ImageIO.createImageInputStream` (temp-file cache per request). Tests craft
+  bombs by hand (`HeaderOnlyImages`), never through `BufferedImage` — and a
+  hand-built bomb is served original by the OLD code too (the JDK refuses a
+  >2 GB raster), so the proof that the check runs before the decode is a
+  DECODABLE image under a tight budget (`ImageResizerTest`,
+  `ImagePixelBudgetConfigIT`, which also pins the configured budget reaching
+  both upload and serve). Pinned by `ImageDimensionsTest`,
+  `ImagePixelBudgetTest`, `ImageResizerTest`, the bomb cases in
+  `ListingServiceTest` and `SuperAdminAndImageFlowIT`. Bytes are served ONLY via the public
   `GET /marketplace/catalog/{id}/image` (primary, unchanged contract) and
   `GET /marketplace/catalog/{id}/images/{imageId}` (any image; the
   (listingId, imageId) pair must match), both with the stored Content-Type +

@@ -98,6 +98,18 @@ marketplace:
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}
+    # Pixel budget for listing images, read from the header at upload (400
+    # image_dimensions_too_large) and again before any server-side resize (an
+    # older row over it is served unresized, never decoded). 50 MP admits every
+    # phone camera's full-resolution mode (8160 x 6120); the side limit refuses
+    # panoramas and strips. It is NOT what protects the heap: the resizer's
+    # per-decode byte ceiling and the concurrency limit below do, so raising
+    # the budget needs no more heap (and vice versa). See ImagePixelBudget.
+    image-max-pixels: ${MARKETPLACE_LISTING_IMAGE_MAX_PIXELS:50000000}
+    image-max-side: ${MARKETPLACE_LISTING_IMAGE_MAX_SIDE:8192}
+    # Public ?w= resizes allowed to decode at once. Never waits: with none free
+    # the original is served (no-store). See ImageDecodePermits.
+    image-resize-concurrency: ${MARKETPLACE_LISTING_IMAGE_RESIZE_CONCURRENCY:2}
     # V19 product options (sizes, colours). OFF by default and on production
     # until the super app ships an option picker: it gates only the move INTO
     # options (creating a listing with them, or converting one), so while it

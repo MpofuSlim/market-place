@@ -49,6 +49,8 @@ import java.util.UUID;
 public class CatalogController {
 
     private final CatalogService catalogService;
+    private final ImagePixelBudget imageBudget;
+    private final ImageDecodePermits decodePermits;
 
     /** Newest first: the Cotton Crew Tee (sold in sizes - priceCents is its
      *  "from" price, maxPriceCents the dearest option) above the speaker. */
@@ -556,7 +558,8 @@ public class CatalogController {
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
-                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h)",
+                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h, except "
+                    + "no-store when a ?w= resize was skipped because the server was busy)",
                     content = @Content(mediaType = "image/png",
                             schema = @Schema(type = "string", format = "binary"))),
             @ApiResponse(responseCode = "400", description = "Malformed id",
@@ -574,7 +577,9 @@ public class CatalogController {
             @PathVariable("id") String id,
             @Parameter(description = "Optional downscale width. One of 120, 240, 480, 960 — "
                     + "anything else is a 400. Omit for the original. Never upscales, and "
-                    + "WebP is served unresized (no JDK decoder).", example = "240")
+                    + "WebP is served unresized (no JDK decoder), as is an image stored before "
+                    + "the upload pixel limit that exceeds it, a large progressive JPEG, or any image while "
+                    + "the server is busy resizing others — check X-Image-Resized.", example = "240")
             @RequestParam(value = "w", required = false) Integer w) {
         return imageResponse(catalogService.getImage(parseListingId(id)), w);
     }
@@ -587,7 +592,8 @@ public class CatalogController {
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
-                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h)",
+                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h, except "
+                    + "no-store when a ?w= resize was skipped because the server was busy)",
                     content = @Content(mediaType = "image/png",
                             schema = @Schema(type = "string", format = "binary"))),
             @ApiResponse(responseCode = "400", description = "Malformed listing or image id",
@@ -615,8 +621,9 @@ public class CatalogController {
                 catalogService.getImageById(parseListingId(id), parseImageId(imageId)), w);
     }
 
-    private static ResponseEntity<byte[]> imageResponse(CatalogService.ListingImageView image, Integer width) {
-        ImageResizer.Resized out = ImageResizer.resize(image.bytes(), image.contentType(), width);
+    private ResponseEntity<byte[]> imageResponse(CatalogService.ListingImageView image, Integer width) {
+        ImageResizer.Resized out = ImageResizer.resize(
+                image.bytes(), image.contentType(), width, imageBudget, decodePermits);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(out.contentType()))
                 // Tells a client whether it actually got a smaller copy. A WebP
@@ -628,7 +635,11 @@ public class CatalogController {
                 // an executable type (e.g. HTML/JS) regardless of the served
                 // Content-Type — defence-in-depth alongside upload magic-byte checks.
                 .header("X-Content-Type-Options", "nosniff")
-                .cacheControl(CacheControl.maxAge(Duration.ofHours(1)).cachePublic())
+                // A busy decode limiter answered with the original: a
+                // transient answer, never cached under the thumbnail URL.
+                .cacheControl(out.cacheable()
+                        ? CacheControl.maxAge(Duration.ofHours(1)).cachePublic()
+                        : CacheControl.noStore())
                 .body(out.bytes());
     }
 
