@@ -123,11 +123,82 @@ never change either casually.
   REQUIRES_NEW tx. Nightly `AuditIntegrityVerifier`: content tamper →
   `marketplace.audit.integrity.broken` (page), chain break →
   `marketplace.audit.chain.broken` (ticket).
+* **Operational signals: a swallowed failure is COUNTED, and a quiet job is
+  told apart from a dead one.** Three things used to be log-only, and each
+  looked exactly like health: `AuditService.record` swallowing a write
+  (deliberate — an audit gap beats an outage) now increments
+  `marketplace.audit.write_failed{type}` (invariant zero); the fail-open Redis
+  revocation lookups count `marketplace.auth.revocation_check_failed{store=
+  denylist|token_version}` and WARN at most once per store per minute (class +
+  message, no stack trace, with the number held back — they run on every
+  authenticated request and used to log two stack traces each); and every
+  `@Scheduled` job runs its pass through `MarketplaceMetrics.runScheduledJob`,
+  which stamps `marketplace.scheduler.last_success{job}` (epoch seconds, 0 from
+  boot) or counts `marketplace.scheduler.failures{job}`; the invariant-zero
+  counters are pre-registered per event type / store at construction, because a
+  series that first appears already at 1 is no `increase()` and would hide the
+  FIRST failure. The call sits INSIDE
+  the `@SchedulerLock` method, so a run ShedLock skips for another replica is
+  neither, and a proxy that refuses the body (the V19 `int`-return bug) simply
+  never stamps — which is what the staleness alert catches. The audit
+  verifier's swallowed pass (`Result.completed == false`) is a failure. A new
+  job must add its lock name to `MarketplaceMetrics.SCHEDULED_JOBS`;
+  `SchedulerHeartbeatTest` scans for `@Scheduled` and fails otherwise, and
+  `SchedulerHeartbeatWiringTest` fails until the job has a case proving its
+  body stamps under its own lock name. **`last_success` is PER REPLICA and
+  resets to 0 on restart**, and under ShedLock only the lock winner stamps — so
+  never alert on the raw series (it pages after every deploy until a daily
+  job's next run, and forever for a replica that keeps losing the lock).
+  Aggregate across replicas and carry the stamp over restarts. Alerts these
+  enable (the RULES live in the fleet repo — a follow-up):
+  `time() - max by (job) (max_over_time(marketplace_scheduler_last_success{job="orderExpirySweeper"}[10m])) > 300`
+  (every minute), the same with `[26h]` and `> 26*3600` for the daily jobs
+  (staleEscrow, collectionOverdue, variantStockDrift, auditIntegrityVerifier)
+  and about `[1h]` / `> 3600` for the 15-minute settlementReleaseSweeper —
+  confirm each against its cron when writing the rule;
+  `increase(marketplace_scheduler_failures_total[1h]) > 0`,
+  `increase(marketplace_audit_write_failed_total[5m]) > 0`,
+  `rate(marketplace_auth_revocation_check_failed_total[5m]) > 0`. Pinned by
+  `SchedulerHeartbeatTest`, `SchedulerHeartbeatWiringTest`,
+  `RevocationFailOpenSignalTest`,
+  `ThrottledWarningTest`, the write-failure cases in `AuditServiceTest`, the
+  heartbeat cases in `AuditIntegrityVerifierTest` / `StaleEscrowSweeperTest`,
+  and through the real ShedLock proxy (run stamps, locked-out run counts
+  nothing) by `VariantStockDriftSweeperIT`.
 * **Idempotency claim-row** on order creation: key claimed with
   `INSERT … ON CONFLICT DO NOTHING` (status 0 sentinel) BEFORE work runs;
   replays return the ORIGINAL stored status/body; same key + different body
   → 422; fresh claim in flight → 409; stale claim (>60s) taken over. DB
   backstop: partial unique index on `market_order.idempotency_key`.
+  **Once the order commits, the claim can never strand.** The replay body is
+  stored FIRST after the commit; cart clean-up then runs best-effort (caught,
+  logged by order ref, `marketplace.orders.post_commit_failures{step}`) and can
+  never turn a created order into an error. It used to run BEFORE the store,
+  unguarded: one throw there left the claim IN_PROGRESS, and after the 60s
+  takeover every retry re-ran into the unique index and answered 500 while the
+  real order held its stock until expiry. Defence in depth: a claim we own whose
+  key ALREADY has a committed order (a crash in that window, a failed store, an
+  ambiguous commit, a racing takeover) REPLAYS that order — rendered as it
+  stands now, since its original body was never stored, then stored so every
+  later retry is byte-identical — and never re-runs
+  (`marketplace.orders.idempotent_recoveries`). Business refusals
+  (`ApiException`) skip that lookup: they are thrown before commit. **The FIRST
+  stored body wins** (`IdempotencyService.completeIfInFlight`, `AND status = 0`):
+  a slow owner and the caller that took its claim over can both end up
+  answering with the same order, and the second to store answers with the
+  first's bytes rather than overwriting what a client already saw. A recovery
+  is audited `ORDER_CREATE_RECOVERED`, never a second `ORDER_CREATED` — a crash
+  in the window wrote no creation audit, and that row is then the order's only
+  entry on the chain. **Known edge:** a key whose order committed but whose
+  claim row was RELEASED — every key stranded before this fix (the old
+  takeover loop ended in `release()`), or a failed commit whose own lookup also
+  failed — has no fingerprint left. A same-body retry replays the order
+  correctly; a DIFFERENT body also replays it (201, not 422) and its fingerprint
+  becomes the key's, so the original body then gets 422. The order stores no
+  request fingerprint, so this cannot be told apart. Pinned by
+  `OrderServiceTest$PostCommitWindow`, `IdempotencyServiceIT` and
+  `OrderIdempotencyRecoveryIT` (faults injected by Postgres triggers, so the
+  wiring under test is production's).
 * **The payer is the CALLER**: `OrderService.resolveBuyerMsisdn` takes the
   order's `buyerMsisdn` from the JWT's `phoneNumber` claim whenever the token
   carries one (every real CUSTOMER login does) and reads the body field ONLY
@@ -195,7 +266,36 @@ never change either casually.
   jpeg/png/webp only, GIF deliberately rejected — 10 MB cap enforced twice
   (servlet `spring.servlet.multipart.max-file-size` and in-code;
   `GlobalExceptionHandler` maps the container's rejection to the same 400
-  `image_too_large`). Bytes are served ONLY via the public
+  `image_too_large`). **Bytes bound the upload, not the decode**: a
+  few-hundred-KB PNG can declare 30000 x 30000 (~3.6 GB decoded), so every
+  upload path also reads the HEADER (`ImageDimensions`: JDK reader stopped at
+  `getWidth(0)`, WebP's VP8/VP8L/VP8X fields parsed by hand — the JDK has no
+  WebP reader) and refuses over `ImagePixelBudget` — 400
+  `image_dimensions_too_large`, default 50 MP (every phone's full-res mode,
+  8160 x 6120) and 8192 px a side (`marketplace.listing.image-max-*`). The
+  budget admits camera output; it is NOT the heap guard, so raising it needs no
+  more heap. An unreadable header is let through, as before, because the public
+  `?w=` resize re-reads the header FIRST and never decodes one it cannot read
+  or one over the budget (a pre-guard row): it serves the original. **What
+  protects the ~450 MiB heap is the resizer**: a decode is subsampled to ~2x the
+  target and may not exceed `ImageResizer.DECODE_CEILING_BYTES` (24 MiB, at the
+  reader's own bytes per pixel — a 16-bit PNG is 8, not 4); a multi-scan
+  (progressive) JPEG is refused on the same ceiling BEFORE decoding, because
+  libjpeg allocates a full-resolution native coefficient buffer that
+  subsampling cannot shrink (`ImageDimensions.jpegWholeImageBufferBytes`,
+  ~150 MB for a 50 MP photo); and at most `image-resize-concurrency` (2)
+  decodes run at once, never waiting — none free serves the original with
+  `no-store`. Then a progressive bilinear `Graphics2D` scale replaces
+  `getScaledInstance`. Streams are `MemoryCacheImageInputStream`, never
+  `ImageIO.createImageInputStream` (temp-file cache per request). Tests craft
+  bombs by hand (`HeaderOnlyImages`), never through `BufferedImage` — and a
+  hand-built bomb is served original by the OLD code too (the JDK refuses a
+  >2 GB raster), so the proof that the check runs before the decode is a
+  DECODABLE image under a tight budget (`ImageResizerTest`,
+  `ImagePixelBudgetConfigIT`, which also pins the configured budget reaching
+  both upload and serve). Pinned by `ImageDimensionsTest`,
+  `ImagePixelBudgetTest`, `ImageResizerTest`, the bomb cases in
+  `ListingServiceTest` and `SuperAdminAndImageFlowIT`. Bytes are served ONLY via the public
   `GET /marketplace/catalog/{id}/image` (primary, unchanged contract) and
   `GET /marketplace/catalog/{id}/images/{imageId}` (any image; the
   (listingId, imageId) pair must match), both with the stored Content-Type +
@@ -288,10 +388,21 @@ never change either casually.
   computable, and the profile now carries it — see the seller-stats bullet
   below.
 * **Verified-purchase reviews (V5)**: a review may ONLY be created by a
-  CUSTOMER with a **PAID order containing the listing** — the gate queries
-  `market_order` ⋈ `market_order_item` (status pinned to PAID in the JPQL,
-  never a parameter) and stores the qualifying `order_id` on the review as
-  provenance; no paid order → 403 `review_requires_purchase`. One review per
+  CUSTOMER with a **PAID order containing the listing whose parcel was
+  DELIVERED** — the gate queries `market_order` ⋈ `market_order_item` ⋈
+  `order_fulfilment` (joined on the line's SNAPSHOT `merchant_id`; PAID and
+  DELIVERED both pinned in the JPQL, never parameters) and stores the
+  qualifying `order_id` on the review as provenance; otherwise 403
+  `review_requires_purchase` ("You can review this item once your order of it
+  has been delivered" — the code is what clients branch on). **Paid is not
+  received:** keyed on PAID alone, a parcel the seller declined, the buyer
+  cancelled or nobody collected — money queued for refund — still reviewed as
+  "Verified buyer", rating a seller for goods never shipped. DELIVERED covers
+  all three kinds of handover evidence (buyer, redeemed code, seller's own
+  close), and in a two-seller order only THAT seller's parcel counts. The gate
+  runs on CREATE only: edit and delete never re-ask it, so reviews written
+  under the paid-only rule stay their authors'. Pinned by the delivery cases in
+  `ReviewFlowIT` and `PublicTestOrderRailIT`, and `ReviewServiceTest`. One review per
   buyer per listing (`existsBy` + the V5 unique index as race backstop, both
   surfacing 409 `review_already_exists` — the insert is `saveAndFlush`ed
   inside a catch so losing the race is never a 500). ANY listing status is
@@ -1000,7 +1111,9 @@ never change either casually.
   * **`BUYER_NOT_NOTIFIED` fires from `BuyerNoticeRecorder`** when every
     channel of a seller-triggered buyer SMS FAILED — the seller's action went
     through, the buyer does not know, and only the seller can now tell them.
-    `NOT_SENT` (a deployment choice) alerts nobody.
+    `NOT_SENT` (a deployment choice) alerts nobody. Neither does a notice
+    DROPPED by a saturated `notificationExecutor` — the listener never ran, so
+    nothing is recorded (see Notifications › Triggers).
   * **`CollectionOverdueSweeper` alerts ONCE per parcel**: it CLAIMS
     `order_fulfilment.collection_overdue_alerted_at` with a conditional bulk
     UPDATE before sending (at most once — a crash loses an alert rather than
@@ -1410,6 +1523,28 @@ never change either casually.
     budget, and since this service has no name-write path it is the complete
     invalidation story — **if one is ever added, it must evict**. Do NOT widen
     this into a general cache in front of user-service.
+  * **The lookup never holds a pooled connection.** It used to run inside
+    the catalogue's read transaction, so every in-flight call pinned one of
+    20 connections for up to the old 2s+5s timeouts, and a user-service stall
+    was pool exhaustion for orders and payment confirms too — from a PUBLIC
+    endpoint. Now: (1) the resolver answers from its cache alone whenever a
+    transaction is active (write paths render cached names; metered
+    `outcome=in_transaction`, which such writes hit on every cold miss, so
+    its RATE against `resolved` is the signal, never its level); (2) the
+    reads that want fresh names are `@NameResolvingRead` and NOT
+    `@Transactional` — their queries commit one by one, then the call is
+    made — and so are the cart's add/set/remove, which commit their write
+    through a `TransactionOperations` and render the cart after (the shopper's
+    main screen must not go nameless on a cold cache); (3) **`spring.jpa.open-in-view: false`** —
+    measured, with it on a read with no transaction at all still held its
+    connection across the call (the request-bound EntityManager keeps it
+    until the response is written). Safe because no entity has a lazy
+    association. Plus its own timeouts (`marketplace.merchant-names.
+    connect-timeout-ms`/`read-timeout-ms`, 500/1000) and a **backoff after
+    any failure** (`failure-backoff-seconds`, 30: no call until it lapses,
+    then ONE probe) — a backoff on the CALL, never a cached "no name".
+    Metric `marketplace.merchant_names{outcome=resolved|failed|backoff|
+    in_transaction}`.
   * The registry side is user-service's `GET /users/internal/organizations/
     names?ids=` (`ticketing-system`), `ApiResult` body with `data:
     [{organizationId, name}]`, unknown ids omitted rather than 404ing the
@@ -1418,9 +1553,14 @@ never change either casually.
     `user-internal-deny`. (It read loyalty's `merchants/names` while a seller
     id was a loyalty merchant id; that endpoint is gone.)
   * Pinned by `MerchantNameResolutionTest` (local-wins, gap-scoping, batching,
-    absent-not-placeholder) and `UserServiceOrganizationNameResolverContractTest`
-    (the wire shape, every failure mode, the cache, and `verify(0, ...)` on a
-    blank token).
+    absent-not-placeholder, the name-rendering reads staying
+    non-transactional, and no `@Transactional` anywhere on the assemblers or
+    `displayNames(List, Map)` the lookup passes through) and `UserServiceOrganizationNameResolverContractTest`
+    (the wire shape, every failure mode backing off, the timeout, the cache,
+    and `verify(0, ...)` on a blank token and inside a transaction), and
+    `NameLookupHoldsNoConnectionIT` (Hikari's active count is 0 while a slow
+    lookup is on the wire, for browse, detail, the seller profile and add to
+    cart).
 * **An unauthenticated PRE-CHECKOUT surface, for building the app before login
   exists (`/marketplace/public/**`).** Super-app customers authenticate at the
   InnBucks middleware, which does not yet sign the assertion user-service trades
@@ -1531,6 +1671,33 @@ never change either casually.
   broke, and logging somebody else's typo at ERROR (a path scanner could fill
   the error log on its own). Found while proving the public test surface has no
   order endpoint: the assertion that an unmapped path 404s failed at 500.
+  **The same held for EVERY Spring MVC client error** — a `@RestControllerAdvice`
+  runs before `DefaultHandlerExceptionResolver`, so a wrong verb, a wrong
+  Content-Type, an unsatisfiable Accept or a missing `@RequestPart("listing")`
+  on the multipart create all answered 500 and paged via Sentry. They now keep
+  their native status and headers (`Allow` on a 405, `Accept` on a 415) with
+  stable codes `method_not_allowed` / `unsupported_media_type` /
+  `not_acceptable` / `missing_parameter` / `missing_part` / `missing_header`,
+  logged at WARN/DEBUG. Any OTHER framework exception carrying Spring's
+  `ErrorResponse` contract with a 4xx status (a future one included) takes the
+  catch-all's generic branch: its own status, a code from a FIXED table
+  (`bad_request`, `conflict`, … never `HttpStatus.name()`, which Spring renames
+  across majors) and a message that never echoes the exception's reason. A 5xx
+  `ErrorResponse` and everything else stay `500 INTERNAL_ERROR` at ERROR. The
+  JSON Content-Type is pinned on these bodies, or a 406's envelope would fail
+  negotiation a second time. `AccessDeniedException` keeps its own 403 handler.
+  Two framework failures take an EXISTING contract instead of a new code: a
+  multipart body that cannot be parsed (a plain `MultipartException` — not an
+  `ErrorResponse`, so the generic branch would miss it) is `400
+  MALFORMED_REQUEST` like any malformed body, while `MaxUploadSizeExceeded`
+  keeps `image_too_large`; and a failed constraint on a `@RequestParam` /
+  `@PathVariable` (`HandlerMethodValidationException`) is `400
+  VALIDATION_ERROR` with the name-to-message map, exactly like a `@Valid` body —
+  one kind of mistake, one code. These log the exception CLASS and status,
+  never `getMessage()`, which for some framework exceptions lists every query
+  value (an MSISDN included).
+  Pinned by `GlobalExceptionHandlerTest` (incl. missing param/header, which no
+  real endpoint requires yet) and `FrameworkClientErrorsIT`.
 * **Marketplace-service still collects no money, but it now says WHERE to.**
   A `PENDING_PAYMENT` order carries a `payment` block, and
   `GET /marketplace/checkout/options` lists the rails, naming `POST /payments`
@@ -1613,10 +1780,41 @@ orders.
   per-user channel selection/fallback. Strictly best-effort: failures logged
   + metered, NEVER thrown.
 
-**Triggers (all `AFTER_COMMIT` + `@Async` on the bounded
-`notificationExecutor`, and NOTHING may escape a listener — an after-commit
-exception would make a dead SMS gateway look like a failed payment confirm;
-copied from the middleware/ticketing discipline):**
+**Triggers (all `AFTER_COMMIT` + `@Async` on a bounded pool, and NOTHING may
+escape a listener — an after-commit exception would make a dead SMS gateway
+look like a failed payment confirm; copied from the middleware/ticketing
+discipline).** Three pools (`config/AsyncConfig`), a bulkhead: per-order notices
+(order paid, parcel updates, refunds, dispute resolved, seller alerts) on
+`notificationExecutor`; the restock fan-out (up to 200 sequential S2S calls per
+event) ALONE on `bulkNotificationExecutor`, so it can never queue in front of
+the "delivered" SMS that tells a buyer their dispute window has started. Both
+are fixed-size and **DISCARD on overflow** (`MeteredRejectionPolicy`:
+`marketplace.notifications.executor_rejected{executor,policy,reason}` on every
+rejection, 0 from boot — alert on `reason=saturated`; the WARN is rate-limited
+to one line per pool per minute carrying the count, so an outage does not
+flood the log). The old `CallerRunsPolicy` ran an overflowing listener on the
+thread that had just COMMITTED — payment-service's confirm-payment request — so
+exactly during an SMS outage the money path inherited 30-50 s of gateway
+timeouts. A saturated pool now loses that notice instead (the fire-and-forget
+bargain every listener already makes); the per-order queue is 500 deep so only
+a sustained outage drops one. **A dropped parcel notice records nothing**:
+`buyer_notice_*` and `BUYER_NOT_NOTIFIED` are written by the listener itself,
+so the seller card keeps showing the previous notice and no seller is alerted
+— the rejection counter is the only trace. The one exception is the V13
+payout-destination warning, the anti-redirect control ("notified on EVERY
+change"): it runs ALONE on `securityNotificationExecutor`, whose overflow runs
+ON THE CALLER (`policy=caller_runs`) — safe only because its sole publishers are
+the seller's or an operator's own payout-destination request, never the money
+path; add nothing there that payment-service can reach. The
+`@Scheduled` sweeps get their own pool too (`spring.task.scheduling.pool.size`,
+`MARKETPLACE_SCHEDULER_POOL_SIZE`, default 4): Boot's default is ONE thread, so
+`CollectionOverdueSweeper`'s up-to-200 synchronous seller alerts held back the
+every-minute order-expiry sweep and lapsed orders kept their stock. Those
+alerts stay synchronous on purpose — each is sent right after its at-most-once
+claim, and a discarding pool would lose an already-claimed alert for good.
+Every `@Async` must name its pool. Pinned by `AsyncConfigTest` (real yaml +
+Boot auto-config, incl. a slow job not starving another), `MeteredRejectionPolicyTest`,
+`NotificationExecutorRoutingTest` and `NotificationExecutorsIT`.
 
 * **Buyer ORDER PAID** — `OrderTransitionService` publishes `OrderPaid` from
   the transition chokepoint (only PAID; a future confirm path cannot forget);
@@ -1698,6 +1896,14 @@ beans, real Postgres + security chain).
   reaches `GlobalExceptionHandler` unmapped (500 `INTERNAL_ERROR`). Pinned by
   `DatabaseTimeoutsIT` (every pooled connection, fail-fast statement and lock,
   Flyway at 0 against a role default).
+* **`spring.jpa.open-in-view` is OFF — do not re-enable it.** With it on, a
+  request keeps the connection of its first query until the response is
+  written, transaction or not, so any remote call made while rendering pins a
+  pooled connection (the seller-name lookup did; pinned by
+  `NameLookupHoldsNoConnectionIT`). The cost: a lazy association touched
+  outside a transaction throws, and a detached entity is not flushed by any
+  request-scoped EntityManager. Read any new lazy association inside a
+  transaction (or fetch it eagerly in the query).
 
 ## Tests
 
@@ -1715,6 +1921,14 @@ beans, real Postgres + security chain).
   (`VariantStockDriftSweeperIT`).
 * Every future external-HTTP client MUST get a standalone-WireMock contract
   test per the fleet convention.
+* **Session revocation is pinned OUTSIDE the shared IT context**, whose Redis
+  is a closed port (every IT runs the stores fail-open, so a dropped gate stays
+  green there): `JwtFilterRevocationTest` (real `JwtFilter`, mocked stores) and
+  `RedisTokenRevocationIT` (user-service's exact keys in a real Redis, 401 over
+  HTTP). The stores' own catch is what keeps revocation fail-open — if one ever
+  threw, the filter's catch would leave the request unauthenticated (401 on
+  protected paths). S2S `extend-expiry`: `OrderServiceTest.ExtendExpiry`,
+  `OrderFlowIT`, and the token-gate 404s in `SecuritySurfaceIT`.
 
 ## Swagger
 

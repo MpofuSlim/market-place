@@ -49,6 +49,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -293,7 +294,7 @@ class OrderServiceTest {
 
         // Replay body stored with the ORIGINAL 201 status and round-trips.
         ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
-        verify(idempotencyService).complete(eq(KEY_HASH), eq(201), body.capture());
+        verify(idempotencyService).completeIfInFlight(eq(KEY_HASH), eq(201), body.capture());
         assertEquals(resp, objectMapper.readValue(body.getValue(), OrderResponse.class));
 
         verify(auditService).record(eq(AuditEventType.ORDER_CREATED),
@@ -736,7 +737,7 @@ class OrderServiceTest {
         assertEquals(stored, resp);
         verifyNoInteractions(listingRepository, orderRepository, itemRepository,
                 transitions, auditService);
-        verify(idempotencyService, never()).complete(anyString(), anyInt(), anyString());
+        verify(idempotencyService, never()).completeIfInFlight(anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -970,6 +971,116 @@ class OrderServiceTest {
             ApiException ex = assertThrows(ApiException.class,
                     () -> service.confirmPayment("MKT-000000000000",
                             new ConfirmPaymentRequest("PAY-REF-1", 3550L)));
+
+            assertEquals(HttpStatus.NOT_FOUND, ex.status());
+            assertEquals("order_not_found", ex.code());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Extend-expiry (S2S): payments keeps the stock hold alive past the
+    // payment code it is about to mint
+    // ------------------------------------------------------------------
+
+    @Nested
+    class ExtendExpiry {
+
+        private MarketOrder pending;
+        private Instant originalExpiry;
+
+        @BeforeEach
+        void setUp() {
+            pending = order(OrderStatus.PENDING_PAYMENT); // expires now + 30m
+            originalExpiry = pending.getExpiresAt();
+            when(orderRepository.findByOrderRef(ORDER_REF)).thenReturn(Optional.of(pending));
+        }
+
+        @Test
+        void extendsAPendingHoldToNowPlusMinutesAndJournalsIt() {
+            Instant before = Instant.now();
+            InternalOrderView view = service.extendExpiry(ORDER_REF, 60);
+            Instant after = Instant.now();
+
+            Instant expiry = pending.getExpiresAt();
+            assertFalse(expiry.isBefore(before.plus(Duration.ofMinutes(60))));
+            assertFalse(expiry.isAfter(after.plus(Duration.ofMinutes(60))));
+            assertEquals(expiry, view.expiresAt());
+            assertEquals(OrderStatus.PENDING_PAYMENT, view.status());
+            assertEquals(ORDER_REF, view.orderRef());
+            verify(orderRepository).save(pending);
+            // Not a status change: journalled through note(), never transition().
+            verify(transitions).note(eq(pending),
+                    argThat(detail -> detail.startsWith("Expiry extended by 60m to " + expiry)));
+            verify(transitions, never()).transition(any(), any(), anyString());
+        }
+
+        @Test
+        void neverShortensAHoldThatAlreadyOutlivesTheRequest() {
+            InternalOrderView view = service.extendExpiry(ORDER_REF, 5);
+
+            assertEquals(originalExpiry, pending.getExpiresAt());
+            assertEquals(originalExpiry, view.expiresAt());
+        }
+
+        @Test
+        void aLapsedButUnsweptHoldIsExtendedFromNow() {
+            // Still PENDING_PAYMENT (the sweeper has not expired it), so the
+            // stock is still held and the extension is taken from NOW.
+            pending.setExpiresAt(Instant.now().minus(Duration.ofMinutes(2)));
+            Instant before = Instant.now();
+
+            service.extendExpiry(ORDER_REF, 10);
+
+            assertFalse(pending.getExpiresAt().isBefore(before.plus(Duration.ofMinutes(10))));
+        }
+
+        @Test
+        void bothRangeBoundsAreAccepted() {
+            service.extendExpiry(ORDER_REF, OrderService.MIN_EXTEND_MINUTES);
+            service.extendExpiry(ORDER_REF, OrderService.MAX_EXTEND_MINUTES);
+
+            assertEquals(1, OrderService.MIN_EXTEND_MINUTES);
+            assertEquals(60, OrderService.MAX_EXTEND_MINUTES);
+        }
+
+        @Test
+        void minutesOutOfRangeOrMissingIs400BeforeTheOrderIsEvenRead() {
+            for (Integer minutes : new Integer[] {null, 0, -5, 61, Integer.MAX_VALUE}) {
+                ApiException ex = assertThrows(ApiException.class,
+                        () -> service.extendExpiry(ORDER_REF, minutes), "minutes=" + minutes);
+                assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+                assertEquals("invalid_extension", ex.code());
+                assertEquals("minutes must be between 1 and 60", ex.getMessage());
+            }
+            verify(orderRepository, never()).findByOrderRef(anyString());
+            verify(orderRepository, never()).save(any());
+            assertEquals(originalExpiry, pending.getExpiresAt());
+        }
+
+        @Test
+        void onlyAPendingOrderIsExtendable() {
+            // Every state but PENDING_PAYMENT, so a status added later is covered too.
+            for (OrderStatus status : EnumSet.complementOf(EnumSet.of(OrderStatus.PENDING_PAYMENT))) {
+                pending.setStatus(status);
+
+                ApiException ex = assertThrows(ApiException.class,
+                        () -> service.extendExpiry(ORDER_REF, 15), "status=" + status);
+
+                assertEquals(HttpStatus.CONFLICT, ex.status());
+                assertEquals("order_not_extendable", ex.code());
+                assertEquals("Order " + ORDER_REF + " is not awaiting payment", ex.getMessage());
+                assertEquals(originalExpiry, pending.getExpiresAt());
+            }
+            verify(orderRepository, never()).save(any());
+            verifyNoInteractions(transitions);
+        }
+
+        @Test
+        void unknownOrderRefIs404() {
+            when(orderRepository.findByOrderRef("MKT-000000000000")).thenReturn(Optional.empty());
+
+            ApiException ex = assertThrows(ApiException.class,
+                    () -> service.extendExpiry("MKT-000000000000", 15));
 
             assertEquals(HttpStatus.NOT_FOUND, ex.status());
             assertEquals("order_not_found", ex.code());
@@ -1553,7 +1664,7 @@ class OrderServiceTest {
             // The stored replay carries the option too, so a retry answers the
             // same two lines.
             ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
-            verify(idempotencyService).complete(eq(KEY_HASH), eq(201), body.capture());
+            verify(idempotencyService).completeIfInFlight(eq(KEY_HASH), eq(201), body.capture());
             assertEquals(response, objectMapper.readValue(body.getValue(), OrderResponse.class));
         }
 
@@ -2016,6 +2127,234 @@ class OrderServiceTest {
             verify(listingRepository, never()).restock(any(), anyInt());
             assertEquals(1.0, registry.get("marketplace.stock.returns_dropped")
                     .tag("reason", "listing_converted").counter().count());
+        }
+    }
+
+    /**
+     * The window after the order transaction commits. Before the fix, cart
+     * clean-up ran BEFORE the replay body was stored and outside any guard, so
+     * a throw there left the claim IN_PROGRESS for good; after the 60s
+     * takeover every retry re-ran into {@code uq_order_idempotency_key} and
+     * answered 500 while the real order held its stock.
+     */
+    @Nested
+    class PostCommitWindow {
+
+        private final UUID listingId = new UUID(0, 1);
+
+        @BeforeEach
+        void sellable() {
+            when(listingRepository.findAllById(any()))
+                    .thenReturn(List.of(listing(listingId, 1550, "Solar Lantern 20W")));
+            when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(1);
+            when(cartService.basketOf(BUYER)).thenReturn(List.of(new BasketLine(listingId, 2)));
+        }
+
+        private CreateOrderRequest fromCart() {
+            return new CreateOrderRequest("0771234567", true, null, null, null, null);
+        }
+
+        /** A body another holder of the claim stored first - deliberately not
+         *  what this call would render, so the test can tell them apart. */
+        private OrderResponse storedFirst() {
+            return new OrderResponse(UUID.randomUUID(), "MKT-5T0REDF1R5T0",
+                    OrderStatus.PENDING_PAYMENT, 3100, 0, 3100, "USD",
+                    DeliveryMethod.COLLECTION, null,
+                    Instant.parse("2026-09-29T10:30:00Z"), Instant.parse("2026-09-29T10:00:00Z"), null,
+                    List.of(new OrderResponse.Line(listingId, "Solar Lantern 20W", 1550, 2, 3100)),
+                    null, null, List.of(), null, null, null);
+        }
+
+        @Test
+        void aCartCleanupThatThrowsStillReturnsTheOrderAndCompletesTheClaim() throws Exception {
+            org.mockito.Mockito.doThrow(new org.springframework.dao.QueryTimeoutException("blip"))
+                    .when(cartService).removeOrdered(any(), any());
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            assertEquals(3100, response.totalCents());
+            ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
+            verify(idempotencyService).completeIfInFlight(eq(KEY_HASH), eq(201), body.capture());
+            assertEquals(response, objectMapper.readValue(body.getValue(), OrderResponse.class));
+            verify(idempotencyService, never()).release(anyString());
+            // The creation is still recorded, and the lost clean-up is visible.
+            verify(auditService).record(eq(AuditEventType.ORDER_CREATED), anyString(),
+                    anyString(), anyMap());
+            assertEquals(1.0, registry.get("marketplace.orders.post_commit_failures")
+                    .tag("step", "cart_cleanup").counter().count());
+        }
+
+        @Test
+        void theReplayBodyIsStoredBeforeAnyPostCommitWork() {
+            service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            InOrder order = inOrder(idempotencyService, cartService, auditService);
+            order.verify(idempotencyService).completeIfInFlight(eq(KEY_HASH), eq(201), anyString());
+            order.verify(cartService).removeOrdered(BUYER_UUID, List.of(listingId));
+            order.verify(auditService).record(eq(AuditEventType.ORDER_CREATED), anyString(),
+                    anyString(), anyMap());
+        }
+
+        @Test
+        void aFailedReplayStoreIsMeteredAndTheOrderStillReturned() {
+            org.mockito.Mockito.doThrow(new org.springframework.dao.QueryTimeoutException("blip"))
+                    .when(idempotencyService).completeIfInFlight(anyString(), anyInt(), anyString());
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            assertNotNull(response.orderRef());
+            verify(idempotencyService, never()).release(anyString());
+            assertEquals(1.0, registry.get("marketplace.orders.post_commit_failures")
+                    .tag("step", "replay_store").counter().count());
+        }
+
+        @Test
+        void aTakeoverThatFindsTheOrderCommittedReplaysItAndRunsNothing() throws Exception {
+            // The claim was taken over after the original request died between
+            // commit and storing its replay body: the order exists, the body
+            // does not.
+            MarketOrder committed = order(OrderStatus.PENDING_PAYMENT);
+            committed.setIdempotencyKey(KEY_HASH);
+            when(orderRepository.findByIdempotencyKey(KEY_HASH)).thenReturn(Optional.of(committed));
+            when(itemRepository.findByOrderId(committed.getId())).thenReturn(List.of(
+                    orderItem(committed.getId(), listingId, 2)));
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            assertEquals(committed.getId(), response.id());
+            assertEquals(ORDER_REF, response.orderRef());
+            // Nothing re-ran: no stock held twice, no second order, no journal.
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+            verify(orderRepository, never()).save(any());
+            verify(transitions, never()).journalCreation(any());
+            // The claim is completed with THIS order, so later retries replay
+            // these bytes verbatim; never released.
+            ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
+            verify(idempotencyService).completeIfInFlight(eq(KEY_HASH), eq(201), body.capture());
+            assertEquals(response, objectMapper.readValue(body.getValue(), OrderResponse.class));
+            verify(idempotencyService, never()).release(anyString());
+            // Audited as a RECOVERY, never as a second creation: a crash in the
+            // window wrote no ORDER_CREATED, and this row is then the order's
+            // only entry on the chain.
+            verify(auditService).record(eq(AuditEventType.ORDER_CREATE_RECOVERED),
+                    eq(BUYER_UUID.toString()), eq(committed.getId().toString()), anyMap());
+            verify(auditService, never()).record(eq(AuditEventType.ORDER_CREATED),
+                    any(), any(), any());
+            verify(cartService, never()).removeOrdered(any(), any());
+            assertEquals(1.0, registry.get("marketplace.orders.idempotent_recoveries")
+                    .counter().count());
+        }
+
+        @Test
+        void aNonBusinessFailureWhoseOrderCommittedAnywayAnswersWithTheOrderNotA500() {
+            // A racing takeover won the unique index (or our own commit failed
+            // ambiguously): the order for this key exists after all.
+            MarketOrder committed = order(OrderStatus.PENDING_PAYMENT);
+            when(orderRepository.findByIdempotencyKey(KEY_HASH))
+                    .thenReturn(Optional.empty(), Optional.of(committed));
+            when(itemRepository.saveAll(any())).thenThrow(
+                    new org.springframework.dao.DataIntegrityViolationException(
+                            "duplicate key value violates unique constraint uq_order_idempotency_key"));
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            assertEquals(committed.getId(), response.id());
+            verify(idempotencyService).completeIfInFlight(eq(KEY_HASH), eq(201), anyString());
+            verify(idempotencyService, never()).release(anyString());
+        }
+
+        @Test
+        void aBusinessRefusalReleasesTheClaimWithoutASecondLookup() {
+            when(listingRepository.reserveStock(any(UUID.class), anyInt())).thenReturn(0);
+
+            ApiException ex = assertThrows(ApiException.class,
+                    () -> service.createOrder(BUYER, fromCart(), RAW_KEY));
+
+            assertEquals("insufficient_stock", ex.code());
+            verify(idempotencyService).release(KEY_HASH);
+            verify(orderRepository, times(1)).findByIdempotencyKey(KEY_HASH);
+        }
+
+        @Test
+        void aLookupFailureOnTheFailurePathNeverMasksTheOriginalError() {
+            RuntimeException original = new org.springframework.dao.QueryTimeoutException("commit");
+            when(orderRepository.findByIdempotencyKey(KEY_HASH))
+                    .thenReturn(Optional.empty())
+                    .thenThrow(new org.springframework.dao.QueryTimeoutException("lookup"));
+            when(itemRepository.saveAll(any())).thenThrow(original);
+
+            RuntimeException thrown = assertThrows(RuntimeException.class,
+                    () -> service.createOrder(BUYER, fromCart(), RAW_KEY));
+
+            assertEquals(original, thrown);
+            verify(idempotencyService).release(KEY_HASH);
+        }
+
+        @Test
+        void anOrderOfAnotherBuyerUnderTheKeyIsNeverReplayed() {
+            // Impossible while keys are namespaced per buyer; pinned so it
+            // stays harmless if that ever changes.
+            MarketOrder foreign = order(OrderStatus.PENDING_PAYMENT);
+            foreign.setBuyerUuid(UUID.randomUUID());
+            when(orderRepository.findByIdempotencyKey(KEY_HASH)).thenReturn(Optional.of(foreign));
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            org.junit.jupiter.api.Assertions.assertNotEquals(foreign.getId(), response.id());
+            verify(listingRepository).reserveStock(listingId, 2);
+        }
+
+        @Test
+        void aRecoveryAnswersWithTheBodyAnotherHolderAlreadyStored() throws Exception {
+            // A live-but-slow owner committed AND stored its body before this
+            // takeover got to store: the first stored body wins, so every
+            // replay and both clients agree on the same bytes.
+            MarketOrder committed = order(OrderStatus.PENDING_PAYMENT);
+            committed.setIdempotencyKey(KEY_HASH);
+            when(orderRepository.findByIdempotencyKey(KEY_HASH)).thenReturn(Optional.of(committed));
+            when(itemRepository.findByOrderId(committed.getId())).thenReturn(List.of(
+                    orderItem(committed.getId(), listingId, 2)));
+            OrderResponse storedFirst = storedFirst();
+            when(idempotencyService.completeIfInFlight(eq(KEY_HASH), eq(201), anyString()))
+                    .thenReturn(Optional.of(objectMapper.writeValueAsString(storedFirst)));
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            assertEquals(storedFirst, response);
+            verify(idempotencyService, never()).complete(anyString(), anyInt(), anyString());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+        }
+
+        @Test
+        void anOwnerWhoseClaimWasAlreadyCompletedAnswersWithTheStoredBody() throws Exception {
+            OrderResponse storedFirst = storedFirst();
+            when(idempotencyService.completeIfInFlight(eq(KEY_HASH), eq(201), anyString()))
+                    .thenReturn(Optional.of(objectMapper.writeValueAsString(storedFirst)));
+
+            OrderResponse response = service.createOrder(BUYER, fromCart(), RAW_KEY);
+
+            assertEquals(storedFirst, response);
+            verify(idempotencyService, never()).complete(anyString(), anyInt(), anyString());
+        }
+
+        @Test
+        void theOwnerCheckComparesUuidsNotStrings() {
+            // A non-canonical (upper-case) userUuid claim is still the same
+            // buyer: a string compare would skip the replay and re-run into
+            // the unique index - the exact 500 loop this guard removes.
+            AuthenticatedUser upper = new AuthenticatedUser(
+                    BUYER_UUID.toString().toUpperCase(java.util.Locale.ROOT),
+                    Set.of("CUSTOMER"), null, null, null, "ZW");
+            String upperKey = IdempotencyService.namespaced(upper.uuid(), RAW_KEY);
+            MarketOrder committed = order(OrderStatus.PENDING_PAYMENT);
+            when(orderRepository.findByIdempotencyKey(upperKey)).thenReturn(Optional.of(committed));
+            when(itemRepository.findByOrderId(committed.getId())).thenReturn(List.of(
+                    orderItem(committed.getId(), listingId, 2)));
+
+            OrderResponse response = service.createOrder(upper, fromCart(), RAW_KEY);
+
+            assertEquals(committed.getId(), response.id());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
         }
     }
 }

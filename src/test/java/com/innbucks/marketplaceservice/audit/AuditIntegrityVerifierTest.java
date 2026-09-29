@@ -42,12 +42,14 @@ class AuditIntegrityVerifierTest {
     @BeforeEach
     void setUp() {
         registry = new SimpleMeterRegistry();
+        // ONE metrics instance per registry: a second one would re-register the
+        // same gauges and Micrometer keeps the FIRST instance's state object.
+        MarketplaceMetrics metrics = new MarketplaceMetrics(registry);
         repository = mock(AuditEventRepository.class);
         auditService = new AuditService(mock(AuditEventRepository.class),
                 mock(AuditChainHeadRepository.class), new ObjectMapper(),
-                mock(PlatformTransactionManager.class), SECRET);
-        verifier = new AuditIntegrityVerifier(repository, auditService,
-                new MarketplaceMetrics(registry), 5000);
+                mock(PlatformTransactionManager.class), SECRET, metrics);
+        verifier = new AuditIntegrityVerifier(repository, auditService, metrics, 5000);
     }
 
     /** Builds {@code n} correctly sealed + chained rows, oldest-first. */
@@ -205,5 +207,51 @@ class AuditIntegrityVerifierTest {
             assertThat(r.tampered()).isZero();
             assertThat(r.chainBroken()).isZero();
         }).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aPassThatCouldNotRunIsReportedAsNotCompleted() {
+        when(repository.findAll(any(Pageable.class)))
+                .thenThrow(new RuntimeException("db down"));
+
+        assertThat(verifier.verifyRecent().completed()).isFalse();
+    }
+
+    @Test
+    void aScheduledPassThatCouldNotRunIsAHeartbeatFailure() {
+        // verifyRecent never throws, so without this the failed pass would read
+        // exactly like a clean one: both broken-counters at 0.
+        when(repository.findAll(any(Pageable.class)))
+                .thenThrow(new RuntimeException("db down"));
+
+        verifier.scheduledVerify();
+
+        assertThat(schedulerFailures()).isEqualTo(1.0);
+        assertThat(lastSuccess()).isZero();
+    }
+
+    @Test
+    void aScheduledPassThatFindsTamperingStillSucceeded() {
+        // The heartbeat says whether the verifier RAN; what it found is the
+        // job of the two broken-counters.
+        List<AuditEvent> rows = intactChain(3);
+        rows.get(1).setMetadata("{\"seq\":999}");
+        repositoryReturns(rows);
+
+        verifier.scheduledVerify();
+
+        assertThat(counter("marketplace.audit.integrity.broken")).isEqualTo(1.0);
+        assertThat(lastSuccess()).isPositive();
+        assertThat(schedulerFailures()).isZero();
+    }
+
+    private double schedulerFailures() {
+        return registry.find("marketplace.scheduler.failures")
+                .tag("job", AuditIntegrityVerifier.JOB).counter().count();
+    }
+
+    private double lastSuccess() {
+        return registry.find("marketplace.scheduler.last_success")
+                .tag("job", AuditIntegrityVerifier.JOB).gauge().value();
     }
 }

@@ -890,6 +890,13 @@ public class ListingController {
               "message": "That image is too large. Please use one under 10 MB."
             }""";
 
+    /** ImagePixelBudget.refusalMessage() at the production defaults. */
+    private static final String EXAMPLE_IMAGE_DIMENSIONS_TOO_LARGE_400 = """
+            {
+              "code": "image_dimensions_too_large",
+              "message": "That image has too many pixels. Please use one of at most 50 megapixels and no more than 8,192 pixels on its longest side."
+            }""";
+
     private static final String EXAMPLE_TOO_MANY_IMAGES_400 = """
             {
               "code": "too_many_images",
@@ -1116,7 +1123,9 @@ public class ListingController {
                     colours (same rules as the JSON create).
                     - `image` — optional; becomes the gallery's PRIMARY image \
                     (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB each, \
-                    magic-byte verified).
+                    magic-byte verified; by default at most 50 megapixels and \
+                    8192 px on the longest side, else 400 \
+                    image_dimensions_too_large).
                     - `images` — optional REPEATED part: up to 9 additional \
                     gallery images (400 too_many_images beyond that; 10 images \
                     total). When `image` is omitted, the FIRST `images` entry \
@@ -1143,12 +1152,15 @@ public class ListingController {
                             @ExampleObject(name = "created-with-options-and-photo",
                                     value = EXAMPLE_VARIANT_CREATED_WITH_IMAGE_201)})),
             @ApiResponse(responseCode = "400", description = "Validation failed, bad image "
-                    + "(unsupported_image_type / image_too_large / image_required), more than 9 "
+                    + "(unsupported_image_type / image_too_large / image_dimensions_too_large / "
+                    + "image_required), more than 9 "
                     + "additional images, unknown categoryCode, SUPER_ADMIN without merchantId, no "
                     + "stockQty for a listing without options, or options that break the editor's "
                     + "rules",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "unsupported-image", value = EXAMPLE_UNSUPPORTED_IMAGE_400),
+                            @ExampleObject(name = "image-dimensions-too-large",
+                                    value = EXAMPLE_IMAGE_DIMENSIONS_TOO_LARGE_400),
                             @ExampleObject(name = "too-many-images", value = EXAMPLE_TOO_MANY_IMAGES_400),
                             @ExampleObject(name = "unknown-category", value = EXAMPLE_UNKNOWN_CATEGORY_400),
                             @ExampleObject(name = "merchant-id-required",
@@ -1204,11 +1216,13 @@ public class ListingController {
         public ListingCreateRequest listing;
 
         @Schema(type = "string", format = "binary",
-                description = "Optional PRIMARY image (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB).")
+                description = "Optional PRIMARY image (JPEG/PNG/WEBP — GIF is not accepted; max 10 MB, "
+                        + "50 MP and 8192 px per side by default).")
         public MultipartFile image;
 
         @ArraySchema(arraySchema = @Schema(description = "Optional repeated part: up to 9 additional "
-                + "gallery images (JPEG/PNG/WEBP, max 10 MB each)."),
+                + "gallery images (JPEG/PNG/WEBP, max 10 MB, 50 MP and 8192 px per side each by "
+                + "default)."),
                 schema = @Schema(type = "string", format = "binary"))
         public List<MultipartFile> images;
     }
@@ -1443,8 +1457,10 @@ public class ListingController {
 
     @Operation(summary = "Upload/replace the PRIMARY listing image",
             description = "Multipart single file part named `image` (JPEG/PNG/WEBP — GIF is not "
-                    + "accepted; max 10 MB). The declared Content-Type AND the file's magic-byte "
-                    + "signature are both validated (event-service banner discipline). REPLACES the "
+                    + "accepted; max 10 MB, and by default 50 megapixels and 8192 px on the longest "
+                    + "side — 400 image_dimensions_too_large, read from the header without decoding). "
+                    + "The declared Content-Type AND the file's magic-byte signature are both "
+                    + "validated (event-service banner discipline). REPLACES the "
                     + "gallery's primary image in place, or creates it when the gallery has none "
                     + "(back-compat V2 contract — additional images are untouched). The primary is "
                     + "served publicly at GET /marketplace/catalog/{id}/image — the imageUrl on the "
@@ -1455,11 +1471,13 @@ public class ListingController {
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "image-uploaded", value = EXAMPLE_IMAGE_200))),
             @ApiResponse(responseCode = "400", description = "Missing/empty part, unsupported type or "
-                    + "signature, too large, or malformed id",
+                    + "signature, too large in bytes or in pixels, or malformed id",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "image-required", value = EXAMPLE_IMAGE_REQUIRED_400),
                             @ExampleObject(name = "unsupported-image-type", value = EXAMPLE_UNSUPPORTED_IMAGE_400),
                             @ExampleObject(name = "image-too-large", value = EXAMPLE_IMAGE_TOO_LARGE_400),
+                            @ExampleObject(name = "image-dimensions-too-large",
+                                    value = EXAMPLE_IMAGE_DIMENSIONS_TOO_LARGE_400),
                             @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
                     content = @Content(mediaType = "application/json",
@@ -1483,9 +1501,9 @@ public class ListingController {
             @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     schema = @Schema(type = "string", format = "uuid"))
             @PathVariable("id") String id,
-            // required=false so an absent part renders OUR 400 image_required
-            // instead of Spring's MissingServletRequestPartException falling
-            // into the catch-all as a 500.
+            // required=false so an absent part renders the published 400
+            // image_required rather than GlobalExceptionHandler's generic
+            // 400 missing_part.
             @Parameter(description = "Image file (JPEG/PNG/WEBP, max 10 MB)")
             @RequestPart(value = "image", required = false) MultipartFile image) {
         return ApiResult.ok(listingService.uploadImage(CurrentUser.get(), parseListingId(id), image));
@@ -1527,8 +1545,9 @@ public class ListingController {
     }
 
     @Operation(summary = "Add an image to the listing's gallery",
-            description = "Multipart single file part named `image` (JPEG/PNG/WEBP, max 10 MB, same "
-                    + "magic-byte validation as the primary upload). The image is APPENDED after the "
+            description = "Multipart single file part named `image` (JPEG/PNG/WEBP, max 10 MB and "
+                    + "50 MP / 8192 px per side by default, same magic-byte and pixel validation as "
+                    + "the primary upload). The image is APPENDED after the "
                     + "current last position as a non-primary — except into an empty gallery, where "
                     + "the sole image becomes the primary (a gallery with images always has exactly "
                     + "one primary). At 10 images the gallery is full: 409 image_limit_reached. "
@@ -1539,11 +1558,13 @@ public class ListingController {
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "image-added", value = EXAMPLE_IMAGE_ADDED_200))),
             @ApiResponse(responseCode = "400", description = "Missing/empty part, unsupported type or "
-                    + "signature, too large, or malformed id",
+                    + "signature, too large in bytes or in pixels, or malformed id",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "image-required", value = EXAMPLE_IMAGE_REQUIRED_400),
                             @ExampleObject(name = "unsupported-image-type", value = EXAMPLE_UNSUPPORTED_IMAGE_400),
                             @ExampleObject(name = "image-too-large", value = EXAMPLE_IMAGE_TOO_LARGE_400),
+                            @ExampleObject(name = "image-dimensions-too-large",
+                                    value = EXAMPLE_IMAGE_DIMENSIONS_TOO_LARGE_400),
                             @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid token",
                     content = @Content(mediaType = "application/json",

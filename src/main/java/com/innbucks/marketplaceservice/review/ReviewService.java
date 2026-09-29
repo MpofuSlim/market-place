@@ -32,11 +32,17 @@ import java.util.UUID;
 
 /**
  * Verified-purchase reviews (V5). THE invariant: a review exists only when its
- * author has a PAID order containing the listing — enforced on create by
- * querying the order tables, and recorded as {@code order_id} provenance on
- * the row. One review per buyer per listing (existsBy check + unique-index
- * backstop). Any listing STATUS is reviewable — a delisted product was still
- * bought.
+ * author has a PAID order containing the listing whose parcel was DELIVERED —
+ * enforced on create by querying the order and fulfilment tables, and recorded
+ * as {@code order_id} provenance on the row. Payment alone is not a purchase
+ * the buyer can speak to: a parcel the seller declined, the buyer cancelled or
+ * nobody collected was refunded, not received. One review per buyer per
+ * listing (existsBy check + unique-index backstop). Any listing STATUS is
+ * reviewable — a delisted product was still bought.
+ *
+ * <p>The gate runs on CREATE only. Editing or deleting a review the author
+ * already holds never re-asks it, so a review written under an earlier rule is
+ * never retroactively locked against its own author.
  *
  * <p><b>Aggregates discipline:</b> the listing's {@code rating_sum}/
  * {@code rating_count} are adjusted via ONE atomic bulk UPDATE
@@ -56,6 +62,11 @@ public class ReviewService {
      *  purchase-verified by construction. */
     static final String REVIEWER_NAME = "Verified buyer";
 
+    /** The 403 {@code review_requires_purchase} copy. Shown to the shopper as
+     *  is, so it says what unlocks the button rather than naming a status. */
+    static final String REQUIRES_DELIVERY_MESSAGE =
+            "You can review this item once your order of it has been delivered";
+
     private static final Sort NEWEST_FIRST = Sort.by(Sort.Direction.DESC, "createdAt");
 
     private final ListingReviewRepository reviewRepository;
@@ -74,14 +85,14 @@ public class ReviewService {
         UUID buyerUuid = UUID.fromString(caller.uuid());
         int rating = requiredRating(request.rating());
 
-        // THE gate: a PAID order of this buyer must contain the listing. The
-        // oldest qualifying order becomes the review's provenance.
-        List<UUID> paidOrders = orderRepository.findPaidOrderIdsContainingListing(
+        // THE gate: a PAID order of this buyer must contain the listing AND
+        // that seller's parcel must have been DELIVERED. The oldest qualifying
+        // order becomes the review's provenance.
+        List<UUID> deliveredOrders = orderRepository.findDeliveredOrderIdsContainingListing(
                 buyerUuid, listingId, PageRequest.of(0, 1));
-        if (paidOrders.isEmpty()) {
+        if (deliveredOrders.isEmpty()) {
             metrics.reviewOutcome("rejected_unverified");
-            throw ApiException.forbidden("review_requires_purchase",
-                    "Only buyers with a paid order containing this listing may review it");
+            throw ApiException.forbidden("review_requires_purchase", REQUIRES_DELIVERY_MESSAGE);
         }
         if (reviewRepository.existsByListingIdAndBuyerUuid(listingId, buyerUuid)) {
             metrics.reviewOutcome("duplicate");
@@ -95,7 +106,7 @@ public class ReviewService {
                 .listingId(listingId)
                 .merchantId(listing.getMerchantId())
                 .buyerUuid(buyerUuid)
-                .orderId(paidOrders.getFirst())
+                .orderId(deliveredOrders.getFirst())
                 .rating(rating)
                 .comment(sanitizedOrNull(request.comment()))
                 .createdAt(now)

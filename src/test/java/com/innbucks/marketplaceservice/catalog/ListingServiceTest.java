@@ -133,6 +133,7 @@ class ListingServiceTest {
                 listingStock,
                 new com.innbucks.marketplaceservice.catalog.variant.ListingVariantService(
                         variantRepository, listingStock, variantsEnabled, 50),
+                ImagePixelBudget.defaults(),
                 "USD", MAX_PER_MERCHANT);
     }
 
@@ -1024,6 +1025,53 @@ class ListingServiceTest {
         assertEquals(HttpStatus.BAD_REQUEST, ex.status());
         assertEquals("image_too_large", ex.code());
         verify(listingImageRepository, never()).save(any());
+    }
+
+    @Test
+    void uploadOfAPixelBombIs400ImageDimensionsTooLarge_onEveryUploadPath() {
+        // < 100 bytes on the wire, 30000 x 30000 declared: the byte cap sees
+        // nothing wrong, the header does. Hand-built, so this test never
+        // allocates the raster it is refusing.
+        byte[] bomb = HeaderOnlyImages.png(30_000, 30_000);
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+
+        ApiException put = assertThrows(ApiException.class,
+                () -> service.uploadImage(MERCHANT, listingId,
+                        new MockMultipartFile("image", "bomb.png", "image/png", bomb)));
+        ApiException add = assertThrows(ApiException.class,
+                () -> service.addImage(MERCHANT, listingId,
+                        new MockMultipartFile("image", "bomb.png", "image/png", bomb)));
+        ApiException createPrimary = assertThrows(ApiException.class,
+                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", null),
+                        new MockMultipartFile("image", "bomb.png", "image/png", bomb), null));
+        ApiException createExtra = assertThrows(ApiException.class,
+                () -> service.create(MERCHANT, createReq("Solar Lantern", "desc", null),
+                        new MockMultipartFile("image", "main.png", "image/png", pngBytes()),
+                        List.of(new MockMultipartFile("images", "bomb.jpg", "image/jpeg",
+                                HeaderOnlyImages.jpeg(9000, 9000)))));
+
+        for (ApiException ex : List.of(put, add, createPrimary, createExtra)) {
+            assertEquals(HttpStatus.BAD_REQUEST, ex.status());
+            assertEquals("image_dimensions_too_large", ex.code());
+        }
+        verify(listingRepository, never()).save(any());
+        verify(listingImageRepository, never()).save(any());
+    }
+
+    @Test
+    void anImageWithinThePixelBudgetPassesTheDimensionGate() {
+        // 8160 x 6120 is a 50 MP phone's full-resolution shot — the largest
+        // camera output the default budget exists to admit.
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.countByListingId(listingId)).thenReturn(1L);
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(0);
+
+        service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", HeaderOnlyImages.png(8160, 6120)));
+
+        verify(listingImageRepository).save(any());
     }
 
     @Test

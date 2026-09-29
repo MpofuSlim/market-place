@@ -31,6 +31,7 @@ import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -68,7 +69,11 @@ import java.util.UUID;
  * instead of blocking on our row insert for the whole request. The business
  * work (validate → reserve stock → persist order+items+journal) runs inside
  * a {@link TransactionTemplate}; the claim is completed with the serialized
- * response only after that transaction commits, and released if it throws.
+ * response FIRST thing after that transaction commits, and released if it
+ * throws. Everything after the commit (cart clean-up, audit) is best-effort
+ * and can never strand the claim or turn a created order into an error; and a
+ * claim that finds its key's order already committed replays that order
+ * rather than re-running into the {@code uq_order_idempotency_key} backstop.
  *
  * <h2>Stock invariants</h2>
  * Reservation is a single atomic UPDATE per line — the listing's, or the
@@ -181,26 +186,79 @@ public class OrderService {
             case ClaimResult.New fresh -> { /* we own the claim — run the work */ }
         }
 
+        // Defence in depth: a claim we own over a key whose order has ALREADY
+        // committed (a stale-claim takeover after a crash between commit and
+        // storing the replay body, or a store that itself failed) must replay
+        // that order. Re-running would reserve stock again, hit the
+        // uq_order_idempotency_key backstop, roll back and answer 500 - on
+        // every retry, for good, while the real order sits unreachable.
+        // Inside the try so a failed lookup still frees the claim.
         OrderResponse response;
         try {
+            OrderResponse committed = replayCommittedOrder(buyer, keyHash);
+            if (committed != null) {
+                return committed;
+            }
             response = transactionTemplate.execute(tx -> createOrderTx(buyer, request, keyHash));
         } catch (RuntimeException ex) {
-            // Nothing persisted (the tx rolled back) — free the claim so a
+            // A business refusal (ApiException) is thrown by our own code before
+            // commit, so nothing persisted. Anything else may be a commit that
+            // failed ambiguously, or a racing takeover that won the unique index:
+            // if an order for this key DID commit, answer with it and keep the
+            // claim (its fingerprint still guards the key) instead of freeing it.
+            if (!(ex instanceof ApiException)) {
+                OrderResponse racedIn = replayCommittedOrderQuietly(buyer, keyHash);
+                if (racedIn != null) {
+                    return racedIn;
+                }
+            }
+            // Nothing persisted (the tx rolled back) - free the claim so a
             // retry with the same key can re-execute.
             idempotencyService.release(keyHash);
             throw ex;
         }
 
+        // FIRST thing after the commit: store the replay body. From here the
+        // order exists, so nothing below may leave the claim IN_PROGRESS -
+        // a stranded claim answers 409 for a minute and then (before the
+        // replay guard above) re-ran into the unique index on every retry.
+        // First stored body wins: if a caller that took this claim over as
+        // stale already stored this order, answer with THOSE bytes, so both
+        // clients and every later replay agree.
+        response = storeReplayBody(keyHash, response);
+
         // The ordered lines leave the cart only once the order has COMMITTED.
         // Clearing them inside the transaction and then rolling back would
         // look to the shopper like their cart vanished and their order failed;
-        // losing this call to a crash leaves stale lines they can remove
-        // themselves, which is strictly the better failure. Anything they did
-        // not check out stays where it was.
+        // losing this call leaves stale lines they can remove themselves,
+        // which is strictly the better failure - so it is best-effort and can
+        // never turn a created order into an error response. Anything they
+        // did not check out stays where it was.
         if (request.sourcedFromCart()) {
+            removeOrderedFromCart(buyer, response);
+        }
+
+        // Audit + metric AFTER the commit: AuditService commits in its own
+        // REQUIRES_NEW tx, so recording inside ours would leave an audit row
+        // for an order that then rolled back. (record() swallows its own
+        // failures.)
+        auditService.record(AuditEventType.ORDER_CREATED, buyer.uuid(),
+                response.id().toString(), createdMetadata(response));
+        metrics.orderOutcome("created");
+        return response;
+    }
+
+    /**
+     * Removes the checked-out lines from the buyer's cart, best-effort. Plain
+     * lines leave {@code cart_item} exactly as before V19; option lines leave
+     * {@code cart_variant_item} - touched only when the order had any. A
+     * failure is logged by order reference (never the buyer's number) and
+     * metered, and swallowed: the order has committed and its replay body is
+     * stored, so the buyer must get it back.
+     */
+    private void removeOrderedFromCart(AuthenticatedUser buyer, OrderResponse response) {
+        try {
             UUID buyerId = UUID.fromString(buyer.uuid());
-            // Plain lines leave cart_item exactly as before V19; option lines
-            // leave cart_variant_item — touched only when the order had any.
             cartService.removeOrdered(buyerId, response.items().stream()
                     .filter(line -> line.variantId() == null)
                     .map(OrderResponse.Line::listingId).toList());
@@ -209,16 +267,67 @@ public class OrderService {
             if (!orderedVariants.isEmpty()) {
                 cartService.removeOrderedVariants(buyerId, orderedVariants);
             }
+        } catch (RuntimeException ex) {
+            metrics.orderPostCommitFailure("cart_cleanup");
+            log.warn("order {} committed but its lines could not be removed from the cart "
+                    + "(left for the buyer to remove): {}", response.orderRef(), ex.toString());
         }
+    }
 
-        storeReplayBody(keyHash, response);
-        // Audit + metric AFTER the commit: AuditService commits in its own
-        // REQUIRES_NEW tx, so recording inside ours would leave an audit row
-        // for an order that then rolled back.
-        auditService.record(AuditEventType.ORDER_CREATED, buyer.uuid(),
-                response.id().toString(), createdMetadata(response));
-        metrics.orderOutcome("created");
+    /**
+     * The order already committed under {@code keyHash}, rendered as it stands
+     * now and stored as the claim's replay body, or null when there is none.
+     *
+     * <p>Rendered, not the original bytes: this path exists precisely because
+     * the original body was never stored (the buyer saw an error, not an
+     * order). Stored only while the claim is still in flight - if another
+     * caller already stored a body for this key (a live-but-slow owner, or a
+     * concurrent recovery), that body wins and is what this caller answers
+     * with, so no replay ever changes under a client that already saw one.
+     * Once stored, every later retry replays those bytes verbatim, like any
+     * other replay. The cart is deliberately not touched - by now the buyer
+     * may have re-added a line on purpose, and a stale line is theirs to
+     * remove.
+     *
+     * <p>Audited as {@code ORDER_CREATE_RECOVERED}, not as a second
+     * {@code ORDER_CREATED}: a JVM that died between the commit and the
+     * post-commit steps wrote no creation audit at all, and this row is what
+     * puts such an order on the tamper-evident chain; where the creation WAS
+     * audited, it records that a retry was answered from the committed order.
+     *
+     * <p>The key is namespaced per buyer, so the order is the caller's by
+     * construction; the owner check is a guard against that ever changing.
+     */
+    private OrderResponse replayCommittedOrder(AuthenticatedUser buyer, String keyHash) {
+        MarketOrder order = orderRepository.findByIdempotencyKey(keyHash).orElse(null);
+        if (order == null) {
+            return null;
+        }
+        if (!order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
+            log.error("idempotency key {} resolves to order {} of another buyer - not replaying",
+                    keyHash, order.getOrderRef());
+            return null;
+        }
+        OrderResponse response = storeReplayBody(keyHash, views.toResponse(order));
+        auditService.record(AuditEventType.ORDER_CREATE_RECOVERED, buyer.uuid(),
+                order.getId().toString(), createdMetadata(response));
+        metrics.orderIdempotentRecovery();
+        // The key hash is not a secret (SHA-256 of scope + key) - safe to log.
+        log.warn("idempotency key {} already has committed order {} - replaying it instead of "
+                + "re-running the creation", keyHash, order.getOrderRef());
         return response;
+    }
+
+    /** {@link #replayCommittedOrder} for the failure path: a lookup that
+     *  itself fails must never mask the exception being handled. */
+    private OrderResponse replayCommittedOrderQuietly(AuthenticatedUser buyer, String keyHash) {
+        try {
+            return replayCommittedOrder(buyer, keyHash);
+        } catch (RuntimeException lookupFailure) {
+            log.warn("idempotency key {}: could not check for a committed order after a failed "
+                    + "creation: {}", keyHash, lookupFailure.toString());
+            return null;
+        }
     }
 
     private OrderResponse createOrderTx(AuthenticatedUser buyer, CreateOrderRequest request,
@@ -565,7 +674,7 @@ public class OrderService {
         }
     }
 
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Page<OrderResponse> getMine(AuthenticatedUser buyer, Pageable pageable) {
         return withItems(orderRepository.findByBuyerUuid(UUID.fromString(buyer.uuid()), pageable));
     }
@@ -575,7 +684,7 @@ public class OrderService {
      * controller's pageable, optionally narrowed to one buyer. Role gating is
      * the controller's {@code @PreAuthorize}; nothing here is owner-scoped.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Page<OrderResponse> getAll(UUID buyerUuidFilter, Pageable pageable) {
         Page<MarketOrder> page = buyerUuidFilter == null
                 ? orderRepository.findAll(pageable)
@@ -588,7 +697,7 @@ public class OrderService {
      * exists but belongs to someone else is the same 404 as a nonexistent id);
      * SUPER_ADMIN reads ANY order by id — fleet oversight, so no masking.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public OrderResponse getOrder(AuthenticatedUser caller, UUID orderId) {
         MarketOrder order = caller.isSuperAdmin()
                 ? orderRepository.findById(orderId)
@@ -801,15 +910,26 @@ public class OrderService {
         }
     }
 
-    private void storeReplayBody(String keyHash, OrderResponse response) {
+    /**
+     * Stores {@code response} as the claim's replay body and returns what the
+     * caller must answer with: {@code response} itself, or - when another
+     * holder of this key's claim already stored a body - that stored body
+     * (first stored wins; see {@link IdempotencyService#completeIfInFlight}).
+     */
+    private OrderResponse storeReplayBody(String keyHash, OrderResponse response) {
         try {
-            idempotencyService.complete(keyHash, HttpStatus.CREATED.value(),
-                    objectMapper.writeValueAsString(response));
+            return idempotencyService.completeIfInFlight(keyHash, HttpStatus.CREATED.value(),
+                            objectMapper.writeValueAsString(response))
+                    .map(this::readStoredResponse)
+                    .orElse(response);
         } catch (JsonProcessingException | RuntimeException ex) {
-            // The order is committed and will be returned regardless; a lost
-            // replay body means a stale-claim takeover re-executes and hits the
-            // market_order.idempotency_key unique backstop instead of replaying.
+            // The order is committed and will be returned regardless. A lost
+            // replay body leaves the claim IN_PROGRESS: a same-key retry gets
+            // 409 until the claim goes stale, then takes it over and
+            // replayCommittedOrder answers with this order (never a re-run).
+            metrics.orderPostCommitFailure("replay_store");
             log.error("Failed to store idempotent replay body for order {}", response.orderRef(), ex);
+            return response;
         }
     }
 

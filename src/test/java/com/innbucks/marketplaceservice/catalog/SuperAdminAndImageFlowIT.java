@@ -347,6 +347,74 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.code").value("image_not_found"));
     }
 
+    @Test
+    void aPixelBombIsRefusedOnEveryUploadPath_andNothingIsStored() throws Exception {
+        // < 100 bytes, 30000 x 30000 declared (~3.6 GB decoded). The byte cap
+        // and the magic bytes both pass it; only the header read refuses it.
+        byte[] bomb = HeaderOnlyImages.png(30_000, 30_000);
+        String listingId = createDraftListing(merchantToken);
+
+        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+                        .file(new MockMultipartFile("image", "bomb.png", "image/png", bomb))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("image_dimensions_too_large"))
+                .andExpect(jsonPath("$.message").value("That image has too many pixels. Please use "
+                        + "one of at most 50 megapixels and no more than 8,192 pixels on its "
+                        + "longest side."));
+        mockMvc.perform(multipart("/marketplace/listings/{id}/images", listingId)
+                        .file(new MockMultipartFile("image", "bomb.jpg", "image/jpeg",
+                                HeaderOnlyImages.jpeg(60_000, 60_000)))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("image_dimensions_too_large"));
+        mockMvc.perform(get("/marketplace/catalog/{id}/image", listingId))
+                .andExpect(status().isNotFound());
+
+        // Multipart create: a bomb among the ADDITIONAL images refuses the
+        // whole create — no listing row, no image rows.
+        Integer before = jdbc.queryForObject("SELECT count(*) FROM listing", Integer.class);
+        mockMvc.perform(multipart("/marketplace/listings")
+                        .file(new MockMultipartFile("listing", "", "application/json",
+                                LISTING_BODY.getBytes()))
+                        .file(new MockMultipartFile("image", "main.png", "image/png", PNG_BYTES))
+                        .file(new MockMultipartFile("images", "bomb.webp", "image/webp",
+                                HeaderOnlyImages.webpExtended(20_000, 20_000)))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("image_dimensions_too_large"));
+        mockMvc.perform(multipart("/marketplace/listings")
+                        .file(new MockMultipartFile("listing", "", "application/json",
+                                LISTING_BODY.getBytes()))
+                        .file(new MockMultipartFile("image", "bomb.png", "image/png", bomb))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("image_dimensions_too_large"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM listing", Integer.class)).isEqualTo(before);
+    }
+
+    @Test
+    void aBombStoredBeforeTheGuardIsServedOriginal() throws Exception {
+        // A row written before upload refused these: the public ?w= read hands
+        // back the stored bytes. (The pre-guard code happened to do the same
+        // for THIS shape — the JDK refuses a >2 GB raster — so the proof that
+        // the header check runs before a decode is ImagePixelBudgetConfigIT,
+        // on an image that genuinely decodes.)
+        String listingId = createDraftListing(merchantToken);
+        byte[] bomb = HeaderOnlyImages.png(30_000, 30_000);
+        jdbc.update("""
+                INSERT INTO listing_image (id, listing_id, image_bytes, content_type, is_primary,
+                                           position, created_at)
+                VALUES (?, ?, ?, 'image/png', TRUE, 0, now())""",
+                UUID.randomUUID(), UUID.fromString(listingId), bomb);
+
+        mockMvc.perform(get("/marketplace/catalog/{id}/image", listingId).param("w", "240"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", "image/png"))
+                .andExpect(header().string("X-Image-Resized", "false"))
+                .andExpect(content().bytes(bomb));
+    }
+
     // ------------------------------------------------------------------
     // SUPER_ADMIN oversight
     // ------------------------------------------------------------------

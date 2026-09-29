@@ -1,11 +1,17 @@
 package com.innbucks.marketplaceservice.metrics;
 
+import com.innbucks.marketplaceservice.audit.AuditEventType;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 /**
  * Business-level metrics for the marketplace domain. Spring Boot Actuator
@@ -19,6 +25,37 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class MarketplaceMetrics {
 
+    /**
+     * The {@code @SchedulerLock} name of every {@code @Scheduled} job in this
+     * service — the {@code job} tag vocabulary of the scheduler heartbeat. Each
+     * gets its {@code marketplace.scheduler.last_success} gauge and
+     * {@code marketplace.scheduler.failures} counter at construction, so a job
+     * that never once succeeds still has a series an alert can read.
+     *
+     * <p>The gauge is PER REPLICA and resets to 0 on every restart, and under
+     * ShedLock only the replica that won a run stamps it. So a raw series going
+     * stale means nothing on its own — a replica that keeps losing the lock, or
+     * one booted after today's daily run, reads old or 0 while the job is
+     * healthy. Never alert on it unaggregated: take
+     * {@code max by (job) (max_over_time(...[window]))} across replicas (see
+     * CLAUDE.md for the expressions). {@code SchedulerHeartbeatTest} scans the
+     * classpath and fails when a {@code @Scheduled} method's lock name is
+     * missing here, so a new job cannot ship without a heartbeat.
+     */
+    public static final List<String> SCHEDULED_JOBS = List.of(
+            "orderExpirySweeper",
+            "settlementReleaseSweeper",
+            "staleEscrowSweeper",
+            "collectionOverdueSweeper",
+            "variantStockDriftSweeper",
+            "auditIntegrityVerifier");
+
+    /** The {@code store} tag values of
+     *  {@code marketplace.auth.revocation_check_failed}: the explicit-logout
+     *  denylist and the session-supersession token version. */
+    public static final String REVOCATION_STORE_DENYLIST = "denylist";
+    public static final String REVOCATION_STORE_TOKEN_VERSION = "token_version";
+
     private final MeterRegistry registry;
     private final Counter listingsCreated;
     private final Counter confirmMismatch;
@@ -30,6 +67,14 @@ public class MarketplaceMetrics {
     private final Counter auditChainBroken;
     private final AtomicLong staleSettlements = new AtomicLong();
     private final AtomicLong stockDrift = new AtomicLong();
+    /** job -> epoch MILLIS of its last clean pass; the gauge reads seconds. */
+    private final Map<String, AtomicLong> jobLastSuccess = new ConcurrentHashMap<>();
+    /** Pre-registered per bounded tag value, so each series exists at 0 from
+     *  boot: {@code increase()}/{@code rate()} need an earlier sample, and a
+     *  counter that first appears already at 1 reads as zero increase — the
+     *  FIRST failure would be invisible, and it is the one that matters. */
+    private final Map<String, Counter> auditWriteFailed = new ConcurrentHashMap<>();
+    private final Map<String, Counter> revocationCheckFailed = new ConcurrentHashMap<>();
 
     public MarketplaceMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -97,6 +142,17 @@ public class MarketplaceMetrics {
                 .description("Variant listings whose stock total disagrees with their options")
                 .baseUnit("listings")
                 .register(registry);
+        // Scheduler heartbeat, registered per job at boot for the same reason:
+        // "the job has not succeeded since X" must be answerable before its
+        // first run, not only after it.
+        SCHEDULED_JOBS.forEach(this::registerJob);
+        // Invariant-zero failure counters, pre-registered per bounded tag value
+        // for the same reason as the gauges above (see the field comment).
+        for (AuditEventType type : AuditEventType.values()) {
+            auditWriteFailedCounter(type.name());
+        }
+        revocationCheckFailedCounter(REVOCATION_STORE_DENYLIST);
+        revocationCheckFailedCounter(REVOCATION_STORE_TOKEN_VERSION);
     }
 
     public void listingCreated() {
@@ -113,6 +169,30 @@ public class MarketplaceMetrics {
         Counter.builder("marketplace.orders")
                 .description("Marketplace orders by lifecycle outcome")
                 .tag("outcome", outcome == null ? "unknown" : outcome)
+                .register(registry)
+                .increment();
+    }
+
+    /**
+     * Order creation's recovery signals, off the lifecycle series on purpose:
+     * {@code marketplace.orders.post_commit_failures{step}} counts best-effort
+     * work that failed AFTER an order committed (the order stands and the
+     * buyer still gets it), and {@code marketplace.orders.idempotent_recoveries}
+     * counts a same-key request that found its order already committed with no
+     * stored replay body and replayed it instead of re-running. Either climbing
+     * means the post-commit window is being hit — investigate, nothing is lost.
+     */
+    public void orderPostCommitFailure(String step) {
+        Counter.builder("marketplace.orders.post_commit_failures")
+                .description("Best-effort order-creation steps that failed after the order committed")
+                .tag("step", step == null ? "unknown" : step)
+                .register(registry)
+                .increment();
+    }
+
+    public void orderIdempotentRecovery() {
+        Counter.builder("marketplace.orders.idempotent_recoveries")
+                .description("Same-key order requests that replayed an already-committed order")
                 .register(registry)
                 .increment();
     }
@@ -360,5 +440,122 @@ public class MarketplaceMetrics {
      *  counter's description in the constructor. */
     public void auditChainBroken(long count) {
         if (count > 0) auditChainBroken.increment(count);
+    }
+
+    /**
+     * An audit row could not be written ({@code AuditService.record} swallowed
+     * the failure so the business flow survives):
+     * {@code marketplace.audit.write_failed{type}}, tagged by the bounded
+     * {@code AuditEventType} name. The invariant is zero — any increase is a
+     * hole in the tamper-evident trail, most likely pool exhaustion or an
+     * {@code audit_chain_head} lock wait, i.e. under exactly the load when
+     * nobody is reading logs.
+     */
+    public void auditWriteFailed(String type) {
+        auditWriteFailedCounter(type == null ? "unknown" : type).increment();
+    }
+
+    private Counter auditWriteFailedCounter(String type) {
+        return auditWriteFailed.computeIfAbsent(type, t ->
+                Counter.builder("marketplace.audit.write_failed")
+                        .description("Audit rows that could not be written (the business action went ahead without its audit row)")
+                        .tag("type", t)
+                        .register(registry));
+    }
+
+    /**
+     * A token-revocation lookup against the shared Redis failed and the request
+     * was let through (fail-open, by design):
+     * {@code marketplace.auth.revocation_check_failed{store}}, store =
+     * {@code denylist} (explicit logout) or {@code token_version} (session
+     * supersession). While this moves, logout and "sign out everywhere" are
+     * not enforced here — the access-token TTL is the only backstop.
+     */
+    public void revocationCheckFailed(String store) {
+        // A map hit on the hot path: during an outage this runs on every
+        // authenticated request, so no builder/registry lookup per call.
+        revocationCheckFailedCounter(store == null ? "unknown" : store).increment();
+    }
+
+    private Counter revocationCheckFailedCounter(String store) {
+        return revocationCheckFailed.computeIfAbsent(store, s ->
+                Counter.builder("marketplace.auth.revocation_check_failed")
+                        .description("Token revocation lookups that failed open (Redis unreachable or unreadable)")
+                        .tag("store", s)
+                        .register(registry));
+    }
+
+    /**
+     * Runs one pass of a scheduled job with a heartbeat: a pass that returns
+     * normally stamps {@code marketplace.scheduler.last_success{job}}, one that
+     * throws increments {@code marketplace.scheduler.failures{job}} and is
+     * rethrown untouched (the scheduler logs it, as before).
+     *
+     * <p>Call it INSIDE the {@code @SchedulerLock} method. A run ShedLock skips
+     * because another replica holds the lock never enters the method body, so
+     * it counts as neither — that replica's own heartbeat covers the pass.
+     * Likewise a proxy that refuses the method before the body (the V19
+     * {@code int}-return bug) leaves {@code last_success} frozen, which is
+     * precisely what the staleness alert catches.
+     */
+    public void runScheduledJob(String job, Runnable pass) {
+        runScheduledJobReporting(job, () -> {
+            pass.run();
+            return true;
+        });
+    }
+
+    /**
+     * {@link #runScheduledJob} for a pass that reports its own failure instead
+     * of throwing (the audit verifier's "never throws" contract): {@code false}
+     * counts as a failure exactly like an exception would.
+     */
+    public void runScheduledJobReporting(String job, BooleanSupplier pass) {
+        boolean completed;
+        try {
+            completed = pass.getAsBoolean();
+        } catch (RuntimeException | Error ex) {
+            scheduledJobFailed(job);
+            throw ex;
+        }
+        if (completed) {
+            scheduledJobSucceeded(job);
+        } else {
+            scheduledJobFailed(job);
+        }
+    }
+
+    private void scheduledJobSucceeded(String job) {
+        registerJob(job).set(Instant.now().toEpochMilli());
+    }
+
+    private void scheduledJobFailed(String job) {
+        registerJob(job);
+        failuresCounter(job).increment();
+    }
+
+    /** Idempotent: the boot list registers every known job; an unlisted name
+     *  still gets a working series rather than an exception on the job path. */
+    private AtomicLong registerJob(String job) {
+        return jobLastSuccess.computeIfAbsent(job, name -> {
+            AtomicLong lastSuccessMillis = new AtomicLong();
+            Gauge.builder("marketplace.scheduler.last_success", lastSuccessMillis,
+                            millis -> millis.get() / 1000.0)
+                    .description("Epoch seconds of the job's last pass that completed without failing (0 = never since boot)")
+                    .tag("job", name)
+                    // No baseUnit on purpose: Prometheus would append
+                    // "_seconds" and the documented alert expressions read
+                    // marketplace_scheduler_last_success.
+                    .register(registry);
+            failuresCounter(name);
+            return lastSuccessMillis;
+        });
+    }
+
+    private Counter failuresCounter(String job) {
+        return Counter.builder("marketplace.scheduler.failures")
+                .description("Scheduled-job passes that threw or reported failure")
+                .tag("job", job)
+                .register(registry);
     }
 }

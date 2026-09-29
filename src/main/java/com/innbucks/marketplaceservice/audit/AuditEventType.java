@@ -69,6 +69,12 @@ public enum AuditEventType {
     LISTING_REPORT_RESOLVED,
     /** A buyer created an order — stock was reserved and a payable total minted. */
     ORDER_CREATED,
+    /** A same-key retry found an order already committed under its
+     *  idempotency key and was answered with it instead of re-running the
+     *  creation. Written because a crash between the commit and the
+     *  post-commit steps leaves the creation itself unaudited - this row is
+     *  then the order's only entry on the chain. Metadata as ORDER_CREATED. */
+    ORDER_CREATE_RECOVERED,
     /** An order was confirmed as paid by the platform payments service — the
      *  paid amount matched the order total and the order moved to PAID. */
     ORDER_PAID,

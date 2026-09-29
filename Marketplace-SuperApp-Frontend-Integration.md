@@ -609,7 +609,12 @@ The list carries each listing's **current status**, so render "no longer availab
 
 ## 12. Reviews
 
-**Only a verified purchase can review**: the buyer must have a `PAID` order containing that listing.
+**Only a verified purchase can review, and paid is not enough — the goods must have arrived.** The buyer needs a `PAID` order containing that listing **whose parcel from that listing's seller is `DELIVERED`**. Any close counts: the buyer's own *received*, a redeemed collection code, or the seller marking it delivered (`closedBy` `BUYER_CONFIRMED` / `COLLECTION_CODE` / `SELLER_MARKED`).
+
+- Show *Write a review* on a line only when that line's parcel (`fulfilments[]` entry for the line's seller) has `status: "DELIVERED"`.
+- `PREPARING`, `DISPATCHED` (incl. "ready to collect") and `UNFULFILLED` (seller declined, buyer cancelled, not collected) do **not** qualify.
+- In a multi-seller order, judge **each line by its own seller's parcel** — one seller's delivery does not unlock the other seller's items.
+- **Existing reviews stay editable and deletable** by their author whatever the parcel's state; only *creating* a review is gated.
 
 | | |
 |---|---|
@@ -619,7 +624,7 @@ The list carries each listing's **current status**, so render "no longer availab
 
 | status | `code` | meaning |
 |---|---|---|
-| `403` | `review_requires_purchase` | no paid order containing this listing |
+| `403` | `review_requires_purchase` | no **delivered** parcel of a paid order containing this listing. Message: *"You can review this item once your order of it has been delivered"* — customer-safe, but branch on the `code` |
 | `409` | `review_already_exists` | one review per buyer per listing — offer *edit* instead |
 
 **Any listing status is reviewable** — a delisted product was still bought.

@@ -54,6 +54,13 @@ spring:
         options: "-c statement_timeout=${DB_STATEMENT_TIMEOUT_MS:30000} -c lock_timeout=${DB_LOCK_TIMEOUT_MS:10000} -c idle_in_transaction_session_timeout=${DB_IDLE_IN_TRANSACTION_TIMEOUT_MS:60000}"
         socketTimeout: ${DB_SOCKET_TIMEOUT_SECONDS:60}
   jpa:
+    # OFF, deliberately (Boot defaults it ON). With it on, the request-bound
+    # EntityManager keeps the connection of its first query until the response
+    # is written — measured: a read with no transaction at all still held one
+    # across the seller-name HTTP call. Nothing here needs it: no entity has a
+    # lazy association, and every read builds its DTOs where it queries.
+    # Pinned by NameLookupHoldsNoConnectionIT.
+    open-in-view: false
     hibernate:
       # Schema is owned by Flyway migrations; Hibernate only validates.
       ddl-auto: ${JPA_DDL_AUTO:validate}
@@ -83,6 +90,16 @@ spring:
       - SET idle_in_transaction_session_timeout = 0;
   lifecycle:
     timeout-per-shutdown-phase: 30s
+  task:
+    scheduling:
+      pool:
+        # Threads for the @Scheduled sweeps. Boot's default is ONE, which ran
+        # every job serially: a slow collection-overdue run (up to 200 S2S
+        # alerts on a degraded user-service) held back the every-minute order
+        # expiry sweep, and stock held by lapsed orders outlived its TTL. Six
+        # jobs, four of them daily: 4 threads let the every-minute and
+        # 15-minute sweeps find a free thread while the slow daily ones run.
+        size: ${MARKETPLACE_SCHEDULER_POOL_SIZE:4}
   servlet:
     # Listing image upload cap (PUT /marketplace/listings/{id}/image) —
     # mirrors event-service's 10 MB banner cap. ListingService re-checks the
@@ -123,6 +140,18 @@ marketplace:
   listing:
     # Hard caps on merchant listing volume (abuse guard).
     max-per-merchant: ${MARKETPLACE_LISTING_MAX_PER_MERCHANT:500}
+    # Pixel budget for listing images, read from the header at upload (400
+    # image_dimensions_too_large) and again before any server-side resize (an
+    # older row over it is served unresized, never decoded). 50 MP admits every
+    # phone camera's full-resolution mode (8160 x 6120); the side limit refuses
+    # panoramas and strips. It is NOT what protects the heap: the resizer's
+    # per-decode byte ceiling and the concurrency limit below do, so raising
+    # the budget needs no more heap (and vice versa). See ImagePixelBudget.
+    image-max-pixels: ${MARKETPLACE_LISTING_IMAGE_MAX_PIXELS:50000000}
+    image-max-side: ${MARKETPLACE_LISTING_IMAGE_MAX_SIDE:8192}
+    # Public ?w= resizes allowed to decode at once. Never waits: with none free
+    # the original is served (no-store). See ImageDecodePermits.
+    image-resize-concurrency: ${MARKETPLACE_LISTING_IMAGE_RESIZE_CONCURRENCY:2}
     # V19 product options (sizes, colours). OFF by default and on production
     # until the super app ships an option picker: it gates only the move INTO
     # options (creating a listing with them, or converting one), so while it
@@ -207,6 +236,18 @@ marketplace:
     # "100% confirmed" over two parcels is noise wearing a percentage, and a
     # new seller deserves "new seller", not a verdict.
     min-sample: ${MARKETPLACE_SELLER_STATS_MIN_SAMPLE:5}
+  merchant-names:
+    # Seller names from user-service's organization registry
+    # (UserServiceOrganizationNameResolver), for sellers nobody here has named.
+    # The public catalogue waits on this call, so it gets its own tight
+    # timeouts rather than the user-service.* ones sized for notifications, and
+    # after a failure every page skips it for failure-backoff-seconds instead of
+    # each paying the timeout again. ttl-seconds is the staleness budget of the
+    # successes-only name cache.
+    ttl-seconds: ${MARKETPLACE_MERCHANT_NAMES_TTL_SECONDS:300}
+    connect-timeout-ms: ${MARKETPLACE_MERCHANT_NAMES_CONNECT_TIMEOUT_MS:500}
+    read-timeout-ms: ${MARKETPLACE_MERCHANT_NAMES_READ_TIMEOUT_MS:1000}
+    failure-backoff-seconds: ${MARKETPLACE_MERCHANT_NAMES_FAILURE_BACKOFF_SECONDS:30}
   settlement:
     # The escrow's clocks (V10). All deliberately config, none load-bearing in
     # code: a cell tunes trust economics without a deploy.
@@ -257,6 +298,26 @@ marketplace:
     hmac-secret: ${AUDIT_HMAC_SECRET:change-me-audit-hmac-secret-change-me-audit}
     # Newest-window row budget per nightly integrity walk.
     verify-limit: ${MARKETPLACE_AUDIT_VERIFY_LIMIT:5000}
+  executors:
+    # The notification pools (config/AsyncConfig). Fixed-size; a full
+    # queue on the first two DROPS the notice (metered marketplace.notifications.executor_rejected)
+    # rather than running it on the thread that just committed a payment
+    # confirm. Per-order notices (order paid, parcel updates, refunds, seller
+    # alerts): a large queue so only a sustained provider outage drops one.
+    notification:
+      threads: ${MARKETPLACE_NOTIFY_THREADS:4}
+      queue-capacity: ${MARKETPLACE_NOTIFY_QUEUE_CAPACITY:500}
+    # Fan-outs (restock alerts, up to max-recipients-per-event calls per task):
+    # kept apart so they never queue in front of a per-order notice.
+    bulk-notification:
+      threads: ${MARKETPLACE_NOTIFY_BULK_THREADS:2}
+      queue-capacity: ${MARKETPLACE_NOTIFY_BULK_QUEUE_CAPACITY:50}
+    # The payout-destination change notice (V13's anti-redirect control) ALONE:
+    # its overflow runs on the caller (the seller's/operator's own request)
+    # instead of being dropped, so saturation never loses the warning.
+    security-notification:
+      threads: ${MARKETPLACE_NOTIFY_SECURITY_THREADS:1}
+      queue-capacity: ${MARKETPLACE_NOTIFY_SECURITY_QUEUE_CAPACITY:50}
   notifications:
     restock-alerts:
       # Back-in-stock alerts to favoriters via user-service's internal notify
@@ -302,7 +363,8 @@ innbucks:
 
 # user-service, resolved by NAME through Eureka (lb via the @LoadBalanced
 # builder) — never a hardcoded host:port. Consumed by UserNotifyGateway for
-# the S2S notify endpoint (restock alerts, merchant order alerts).
+# the S2S notify endpoint (restock alerts, merchant order alerts). The seller-name
+# lookup has its own, tighter timeouts under marketplace.merchant-names.
 user-service:
   base-url: http://user-service
   connect-timeout-ms: ${USER_SERVICE_CONNECT_TIMEOUT_MS:2000}

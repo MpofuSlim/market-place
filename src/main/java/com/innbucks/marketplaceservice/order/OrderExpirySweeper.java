@@ -34,13 +34,20 @@ public class OrderExpirySweeper {
      *  turn one sweep into an unbounded scan; the next pass takes the rest. */
     private static final int BATCH_SIZE = 500;
 
+    /** ShedLock name and the scheduler heartbeat's {@code job} tag. */
+    static final String JOB = "orderExpirySweeper";
+
     private final MarketOrderRepository orderRepository;
     private final OrderService orderService;
     private final MarketplaceMetrics metrics;
 
     @Scheduled(cron = "${marketplace.scheduler.expiry-sweep-cron}")
-    @SchedulerLock(name = "orderExpirySweeper")
+    @SchedulerLock(name = JOB)
     public void sweep() {
+        metrics.runScheduledJob(JOB, this::sweepOnce);
+    }
+
+    private void sweepOnce() {
         List<MarketOrder> lapsed = orderRepository.findByStatusAndExpiresAtBefore(
                 OrderStatus.PENDING_PAYMENT, Instant.now(),
                 PageRequest.of(0, BATCH_SIZE, Sort.by(Sort.Direction.ASC, "expiresAt")));

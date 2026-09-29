@@ -4,6 +4,7 @@ import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.config.MarketZone;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.PayoutRow;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementPageResponse;
@@ -184,7 +185,7 @@ public class SettlementQueryService {
      * point at which a human can notice that a destination moved yesterday.
      * The seller is warned at change time too; this is the other side of it.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Csv payoutReportCsv() {
         List<PayoutRow> rows = settlementRepository.payoutReport();
         List<UUID> merchantIds = rows.stream().map(PayoutRow::getMerchantId).toList();

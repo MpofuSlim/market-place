@@ -12,9 +12,13 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -137,6 +141,67 @@ class OrderFlowIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.data.totalCents").value(3100))
                 .andExpect(jsonPath("$.data.buyerMsisdn").value("+263771234567"));
 
+        // --- Payments extends the stock hold before minting a code -----------
+        Instant heldUntil = expiresAtOf(orderRef);
+
+        // A wrong token is the same 404 as an unknown ref, and moves nothing.
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/extend-expiry", orderRef)
+                        .header("X-Internal-Token", "definitely-not-the-internal-token")
+                        .param("minutes", "60"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("order_not_found"));
+        assertThat(expiresAtOf(orderRef)).isEqualTo(heldUntil);
+
+        // Out of range / not a number: the documented 400, nothing moves.
+        for (String minutes : new String[] {"0", "61", "fifteen"}) {
+            mockMvc.perform(patch("/marketplace/internal/orders/{ref}/extend-expiry", orderRef)
+                            .header("X-Internal-Token", internalToken)
+                            .param("minutes", minutes))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("invalid_extension"))
+                    .andExpect(jsonPath("$.message").value("minutes must be between 1 and 60"));
+        }
+        assertThat(expiresAtOf(orderRef)).isEqualTo(heldUntil);
+
+        // 60 minutes from now outlives the 30-minute payment TTL: the hold moves.
+        Instant beforeExtend = Instant.now();
+        String extended = mockMvc.perform(
+                        patch("/marketplace/internal/orders/{ref}/extend-expiry", orderRef)
+                                .header("X-Internal-Token", internalToken)
+                                .param("minutes", "60"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Order expiry extended"))
+                .andExpect(jsonPath("$.data.status").value("PENDING_PAYMENT"))
+                .andReturn().getResponse().getContentAsString();
+        Instant extendedTo = Instant.parse(JsonPath.read(extended, "$.data.expiresAt"));
+        assertThat(extendedTo).isAfter(heldUntil)
+                .isAfterOrEqualTo(beforeExtend.plus(Duration.ofMinutes(60)).truncatedTo(ChronoUnit.MILLIS));
+        // The internal read payments does next sees the same deadline.
+        String reread = mockMvc.perform(get("/marketplace/internal/orders/{ref}", orderRef)
+                        .header("X-Internal-Token", internalToken))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        // (Postgres keeps microseconds, the in-memory value may carry nanos.)
+        assertThat(Instant.parse(JsonPath.<String>read(reread, "$.data.expiresAt")))
+                .isCloseTo(extendedTo, within(1, ChronoUnit.MILLIS));
+
+        // A shorter request never shortens the hold.
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/extend-expiry", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .param("minutes", "5"))
+                .andExpect(status().isOk());
+        assertThat(expiresAtOf(orderRef)).isCloseTo(extendedTo, within(1, ChronoUnit.MILLIS));
+        // The real extension is journalled as a note, not a status change.
+        // (Today the no-op 5m call above ALSO writes an "Expiry extended by 5m"
+        // row naming the unchanged deadline. That is current behaviour, not the
+        // contract, so it is deliberately not asserted: skipping the save and
+        // journal for a no-op would be a correct change.)
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM market_order_event
+                WHERE order_id = ?::uuid AND from_status = 'PENDING_PAYMENT'
+                  AND to_status = 'PENDING_PAYMENT' AND detail LIKE 'Expiry extended by 60m %'""",
+                Integer.class, orderId)).isEqualTo(1);
+
         // --- Confirm with the WRONG amount: 422, order untouched (100x guard)
         mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
                         .header("X-Internal-Token", internalToken)
@@ -169,11 +234,23 @@ class OrderFlowIT extends PostgresTestContainer {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("illegal_order_state"));
 
+        // --- A PAID order's hold can no longer be extended --------------------
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/extend-expiry", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .param("minutes", "15"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("order_not_extendable"))
+                .andExpect(jsonPath("$.message").value("Order " + orderRef + " is not awaiting payment"));
+
         // PAID never releases stock; the sold units stay gone.
         MarketOrder finalRow = orderRepository.findByOrderRef(orderRef).orElseThrow();
         assertThat(finalRow.getStatus()).isEqualTo(OrderStatus.PAID);
         assertThat(finalRow.isStockReleased()).isFalse();
         assertThat(stockOf(listingId)).isEqualTo(8);
+    }
+
+    private Instant expiresAtOf(String orderRef) {
+        return orderRepository.findByOrderRef(orderRef).orElseThrow().getExpiresAt();
     }
 
     private int stockOf(String listingId) {

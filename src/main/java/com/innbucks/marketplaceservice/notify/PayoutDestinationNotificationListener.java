@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.notify;
 
+import com.innbucks.marketplaceservice.config.AsyncConfig;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.seller.PayoutDestinationChanged;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +38,13 @@ import java.util.UUID;
  * delays the seller's own save, and NOTHING escapes — an exception from an
  * after-commit callback reaches the caller of {@code commit()} and would make
  * a dead SMS gateway look like a refused update.
+ *
+ * <p>It runs on its OWN pool ({@link AsyncConfig#SECURITY_NOTIFICATION_EXECUTOR}),
+ * whose overflow runs on the caller instead of being dropped like the per-order
+ * pool's: "notified on EVERY change" must survive a saturated notification
+ * gateway, and the only callers are the seller's or an operator's own
+ * payout-destination request — which may then wait for the send, but never the
+ * money path.
  */
 @Slf4j
 @Component
@@ -47,7 +55,7 @@ public class PayoutDestinationNotificationListener {
     private final UserNotifyGateway userNotifyGateway;
     private final MarketplaceMetrics metrics;
 
-    @Async("notificationExecutor")
+    @Async(AsyncConfig.SECURITY_NOTIFICATION_EXECUTOR)
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onPayoutDestinationChanged(PayoutDestinationChanged event) {
         try {
