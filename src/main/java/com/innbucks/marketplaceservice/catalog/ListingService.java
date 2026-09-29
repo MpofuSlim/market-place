@@ -490,7 +490,7 @@ public class ListingService {
     }
 
     /**
-     * PUT /{id}/image (back-compat V2 contract): REPLACES the primary image
+     * POST /{id}/image (back-compat V2 contract): REPLACES the primary image
      * in place, or creates it when the gallery has none. Validation is
      * event-service's banner discipline: allow-listed content type AND
      * magic-byte signature (the declared type is attacker-controlled), size
@@ -914,7 +914,7 @@ public class ListingService {
         }
         // Bytes bound the upload, not the decode: a few-hundred-KB PNG can
         // declare gigabytes of raster. Header-only read, no decode — see
-        // ImagePixelBudget. Every upload path (multipart create, PUT /image,
+        // ImagePixelBudget. Every upload path (multipart create, POST /image,
         // POST /images) passes through here.
         imageBudget.requireUploadable(bytes);
         return new ValidatedImage(bytes, contentType.toLowerCase(Locale.ROOT));

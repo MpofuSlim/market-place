@@ -179,7 +179,7 @@ class NameLookupHoldsNoConnectionIT extends PostgresTestContainer {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String id = JsonPath.read(body, "$.data.id");
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", id)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", id)
                         .file(new MockMultipartFile("image", "p.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());

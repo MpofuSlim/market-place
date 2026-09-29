@@ -66,7 +66,7 @@ public interface ListingImageRepository extends JpaRepository<ListingImage, UUID
     Optional<ListingImage> findByIdAndListingId(UUID id, UUID listingId);
 
     /** FULL entity (bytes) — public primary-image serving and the in-place
-     *  primary replacement (PUT /{id}/image) only. */
+     *  primary replacement (POST /{id}/image) only. */
     Optional<ListingImage> findByListingIdAndPrimaryImageTrue(UUID listingId);
 
     /** Promotion candidate after a primary delete: lowest position wins. */

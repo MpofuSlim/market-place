@@ -126,11 +126,13 @@ Same fields as create, **plus `stockQty` — which is REQUIRED on every update**
 
 | | |
 |---|---|
-| `PUT /{id}/image` | multipart `image` — replace-or-create the **primary** |
+| `POST /{id}/image` | multipart `image` — replace-or-create the **primary** (was `PUT`; a `PUT` is now `405 method_not_allowed`) |
 | `DELETE /{id}/image` | delete the primary; the lowest-position survivor is promoted |
 | `POST /{id}/images` | multipart, append — `409 image_limit_reached` at **10** |
 | `DELETE /{id}/images/{imageId}` | remove one; promotion if it was primary |
 | `PUT /{id}/images/{imageId}/primary` | atomic swap |
+
+**Every upload is a `POST`.** Cloudflare's WAF refuses `PUT` with a multipart body before it reaches the server, and the browser shows only a network error. So every call that sends a file (the create with photos, `POST /{id}/image`, `POST /{id}/images`) is `POST`. The body-less `PUT /{id}/images/{imageId}/primary` stays `PUT`.
 
 **Rules the UI should enforce before upload:**
 

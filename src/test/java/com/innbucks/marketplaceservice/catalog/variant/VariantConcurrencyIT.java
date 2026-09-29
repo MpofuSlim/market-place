@@ -330,7 +330,7 @@ class VariantConcurrencyIT extends PostgresTestContainer {
     }
 
     private String publish(String listingId) throws Exception {
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());

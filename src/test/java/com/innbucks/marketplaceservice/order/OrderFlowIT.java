@@ -84,7 +84,7 @@ class OrderFlowIT extends PostgresTestContainer {
         String listingId = JsonPath.read(createdListing, "$.data.id");
 
         // Publish gate: activation needs a primary image first.
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk());

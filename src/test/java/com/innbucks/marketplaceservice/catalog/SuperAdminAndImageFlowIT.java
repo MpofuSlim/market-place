@@ -14,6 +14,9 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.allOf;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -103,7 +106,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
 
     /** Uploads the primary image so the publish gate lets the listing go ACTIVE. */
     private void uploadPrimary(String listingId, String token) throws Exception {
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
@@ -113,14 +116,36 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
     // Gallery
     // ------------------------------------------------------------------
 
+    /**
+     * The primary-image upload is POST only: the edge WAF refuses PUT with a
+     * multipart body before it reaches the service, so a PUT is a 405 naming
+     * the methods the path does take, and nothing is stored.
+     */
+    @Test
+    void primaryImageUploadIsPostOnly_putIsMethodNotAllowed() throws Exception {
+        String listingId = createDraftListing(merchantToken);
+
+        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+                        .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string("Allow", allOf(
+                        containsString("POST"), containsString("DELETE"), not(containsString("PUT")))))
+                .andExpect(jsonPath("$.code").value("method_not_allowed"));
+
+        mockMvc.perform(get("/marketplace/catalog/{id}/image", listingId))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("image_not_found"));
+    }
+
     @Test
     void imageLifecycle_uploadServePubliclyWhileDraftThenDelete() throws Exception {
         String listingId = createDraftListing(merchantToken);
 
-        // Upload (multipart PUT, part name "image") — becomes the PRIMARY;
+        // Upload (multipart POST, part name "image") — becomes the PRIMARY;
         // the response carries imageUrl AND the per-image gallery URL.
         String uploaded = mockMvc.perform(
-                        multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+                        multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                                 .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
                                 .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk())
@@ -157,7 +182,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
 
         // Replacing the primary keeps the SAME per-image URL (in-place
         // replace) but serves the new bytes.
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo2.png", "image/png", PNG_BYTES_2))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isOk())
@@ -312,7 +337,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
         String listingId = createDraftListing(merchantToken);
 
         // Honest GIF: refused by the content-type allow-list.
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "anim.gif", "image/gif", GIF_BYTES))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isBadRequest())
@@ -321,7 +346,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
         // Smuggled payload: image/png declared, HTML bytes — the magic-byte
         // sniff refuses what the header would have let through. Same guard on
         // the gallery-add endpoint.
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "fake.png", "image/png",
                                 "<html><script>alert(1)</script></html>".getBytes()))
                         .header("Authorization", "Bearer " + merchantToken))
@@ -335,7 +360,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.code").value("unsupported_image_type"));
 
         // Empty part: 400 image_required (not a 500 from a missing part).
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "empty.png", "image/png", new byte[0]))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isBadRequest())
@@ -354,7 +379,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
         byte[] bomb = HeaderOnlyImages.png(30_000, 30_000);
         String listingId = createDraftListing(merchantToken);
 
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "bomb.png", "image/png", bomb))
                         .header("Authorization", "Bearer " + merchantToken))
                 .andExpect(status().isBadRequest())
@@ -441,7 +466,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.data.merchantId").value(merchantId.toString()));
 
         // ... including its image.
-        mockMvc.perform(multipart(HttpMethod.PUT, "/marketplace/listings/{id}/image", listingId)
+        mockMvc.perform(multipart(HttpMethod.POST, "/marketplace/listings/{id}/image", listingId)
                         .file(new MockMultipartFile("image", "photo.png", "image/png", PNG_BYTES))
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk());
