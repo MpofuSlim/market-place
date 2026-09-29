@@ -31,22 +31,36 @@ public interface MarketOrderRepository extends JpaRepository<MarketOrder, UUID> 
 
     /**
      * The verified-purchase review gate (V5): ids of the caller's PAID orders
-     * that contain the listing, oldest first — the FIRST qualifying purchase
-     * is stored on the review as its provenance. Callers pass a bounded
-     * {@link Pageable} (the service only needs one row). Status is pinned to
-     * PAID in the query, not a parameter: PENDING/CANCELLED/EXPIRED orders
-     * must never qualify a reviewer.
+     * whose PARCEL carrying the listing was DELIVERED, oldest first — the FIRST
+     * qualifying purchase is stored on the review as its provenance. Callers
+     * pass a bounded {@link Pageable} (the service only needs one row).
+     *
+     * <p>Both statuses are pinned in the query, never parameters:
+     * PENDING/CANCELLED/EXPIRED orders must never qualify a reviewer, and nor
+     * may a PAID one whose goods never reached the buyer — a parcel still
+     * PREPARING or DISPATCHED, or one that ended UNFULFILLED (the seller
+     * declined, the buyer cancelled, a collection was never picked up) with the
+     * money on its way back. DELIVERED covers every kind of handover evidence:
+     * the buyer's own confirmation, a redeemed collection code, and a seller's
+     * own "delivered".
+     *
+     * <p>The parcel is matched on the line's SNAPSHOT {@code merchantId}, not the
+     * live listing's: the seller who owed these goods is the one selling at
+     * order time, and in a two-seller order only THAT seller's parcel counts —
+     * the other half arriving qualifies nothing on this listing.
      */
     @Query("""
             select o.id
               from MarketOrder o
               join MarketOrderItem i on i.orderId = o.id
+              join OrderFulfilment f on f.orderId = o.id and f.merchantId = i.merchantId
              where o.buyerUuid = :buyerUuid
                and o.status = com.innbucks.marketplaceservice.order.OrderStatus.PAID
+               and f.status = com.innbucks.marketplaceservice.fulfilment.FulfilmentStatus.DELIVERED
                and i.listingId = :listingId
              order by o.createdAt asc
             """)
-    List<UUID> findPaidOrderIdsContainingListing(@Param("buyerUuid") UUID buyerUuid,
-                                                 @Param("listingId") UUID listingId,
-                                                 Pageable pageable);
+    List<UUID> findDeliveredOrderIdsContainingListing(@Param("buyerUuid") UUID buyerUuid,
+                                                      @Param("listingId") UUID listingId,
+                                                      Pageable pageable);
 }

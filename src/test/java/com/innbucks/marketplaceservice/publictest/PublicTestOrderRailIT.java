@@ -441,17 +441,57 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
     }
 
     @Test
-    void aReviewStillNeedsAPaidOrderEvenHere() throws Exception {
+    @DisplayName("The review gate is the service's here too: unpaid and paid-but-undelivered are "
+            + "refused, the handle's own receipt confirmation opens it")
+    void aReviewStillNeedsADeliveredOrderEvenHere() throws Exception {
         String listingId = publishListing();
 
         // The verified-purchase gate is the service's, and it is not softened
         // by the caller arriving on this rail: an unpaid handle is refused.
+        assertPublicReviewRefused(listingId);
+
+        addToCart("alice", listingId, 1);
+        String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "public-review-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"fromCart":true,"buyerMsisdn":"0771234567","deliveryMethod":"COLLECTION"}"""))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+        String orderRef = JsonPath.read(created, "$.data.orderRef");
+        mockMvc.perform(patch("/marketplace/internal/orders/{ref}/confirm-payment", orderRef)
+                        .header("X-Internal-Token", internalToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentRef\":\"INB-PAY-PUB-REVIEW-1\",\"amountCents\":1550}"))
+                .andExpect(status().isOk());
+
+        // Paid is not received: the parcel is still PREPARING.
+        assertPublicReviewRefused(listingId);
+
+        String fulfilmentId = jdbc.queryForObject(
+                "SELECT id::text FROM order_fulfilment WHERE order_id = ?::uuid", String.class, orderId);
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders/{o}/fulfilments/{f}/received",
+                        "alice", orderId, fulfilmentId)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/listings/{id}/reviews",
+                        "alice", listingId))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":5,\"comment\":\"Great lantern\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.orderId").value(orderId));
+    }
+
+    private void assertPublicReviewRefused(String listingId) throws Exception {
         mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/listings/{id}/reviews",
                         "alice", listingId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"rating\":5,\"comment\":\"Great lantern\"}"))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("review_requires_purchase"));
+                .andExpect(jsonPath("$.code").value("review_requires_purchase"))
+                .andExpect(jsonPath("$.message")
+                        .value("You can review this item once your order of it has been delivered"));
     }
 
     @Test

@@ -28,10 +28,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * End-to-end verified-purchase review lifecycle against real Postgres: only a
- * buyer with a PAID order may review, aggregates move atomically with every
- * write, the public read anonymizes the reviewer, and SUPER_ADMIN moderation
- * removal decrements + audits. The V5 unique index and the bulk aggregate
- * UPDATE run against real SQL here — mocked-repo tests can't prove either.
+ * buyer with a PAID order whose parcel was DELIVERED may review, aggregates
+ * move atomically with every write, the public read anonymizes the reviewer,
+ * and SUPER_ADMIN moderation removal decrements + audits. The V5 unique index,
+ * the bulk aggregate UPDATE and the order ⋈ item ⋈ fulfilment gate run against
+ * real SQL here — mocked-repo tests can't prove any of them.
  */
 class ReviewFlowIT extends PostgresTestContainer {
 
@@ -85,10 +86,13 @@ class ReviewFlowIT extends PostgresTestContainer {
         adminToken = TestJwts.superAdmin(UUID.randomUUID(), jwtSecret);
     }
 
+    private static final String REQUIRES_DELIVERY =
+            "You can review this item once your order of it has been delivered";
+
     @Test
     void verifiedPurchaseReviewLifecycle() throws Exception {
         String listingId = createActiveListing();
-        payOrderFor(listingId, buyerToken);
+        receivedOrderFor(listingId, buyerToken);
 
         // --- Unverified buyer (no paid order): 403, THE gate ---------------
         String strangerToken = TestJwts.customer(UUID.randomUUID(), jwtSecret);
@@ -97,9 +101,10 @@ class ReviewFlowIT extends PostgresTestContainer {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"rating\":5,\"comment\":\"never bought it\"}"))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("review_requires_purchase"));
+                .andExpect(jsonPath("$.code").value("review_requires_purchase"))
+                .andExpect(jsonPath("$.message").value(REQUIRES_DELIVERY));
 
-        // --- Paid buyer reviews: 201, comment sanitized, order provenance ---
+        // --- Buyer who received it reviews: 201, comment sanitized, order provenance ---
         String created = mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
                         .header("Authorization", "Bearer " + buyerToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -187,7 +192,7 @@ class ReviewFlowIT extends PostgresTestContainer {
     @Test
     void anotherCustomerCannotDeleteSomeoneElsesReview() throws Exception {
         String listingId = createActiveListing();
-        payOrderFor(listingId, buyerToken);
+        receivedOrderFor(listingId, buyerToken);
         String created = mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
                         .header("Authorization", "Bearer " + buyerToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -230,6 +235,7 @@ class ReviewFlowIT extends PostgresTestContainer {
                  WHERE listing_id = ?::uuid AND option1_value = 'XL'""", String.class, listingId);
         String orderId = payOrder("{\"listingId\":\"%s\",\"quantity\":1,\"variantId\":\"%s\"}"
                 .formatted(listingId, extraLarge), buyerToken);
+        confirmReceived(orderId, merchantId, buyerToken);
 
         // The paid line is the OPTION, at its own price - and it names the
         // parent listing, which is what the gate queries.
@@ -263,6 +269,215 @@ class ReviewFlowIT extends PostgresTestContainer {
     }
 
     // ------------------------------------------------------------------
+    // The gate follows the PARCEL, not the payment
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Paid is not received: PREPARING and DISPATCHED are refused, the buyer's own "
+            + "receipt confirmation opens the review")
+    void aPaidParcelIsReviewableOnlyOnceDelivered() throws Exception {
+        String listingId = createActiveListing();
+        String orderId = payOrderFor(listingId, buyerToken);
+
+        // PREPARING: the money has moved, the goods have not.
+        assertReviewRefused(listingId, buyerToken);
+
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/dispatch",
+                        fulfilmentIdOf(orderId, merchantId))
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+        // DISPATCHED: on its way (or on the shelf), still not in the buyer's hands.
+        assertReviewRefused(listingId, buyerToken);
+
+        confirmReceived(orderId, merchantId, buyerToken);
+        mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":4}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.orderId").value(orderId));
+    }
+
+    @Test
+    @DisplayName("A buyer who cancelled their parcel before dispatch cannot review what they "
+            + "were refunded for")
+    void aBuyerCancelledParcelDoesNotQualify() throws Exception {
+        String listingId = createActiveListing();
+        String orderId = payOrderFor(listingId, buyerToken);
+
+        mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/cancel",
+                        orderId, fulfilmentIdOf(orderId, merchantId))
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Ordered the wrong one\"}"))
+                .andExpect(status().isOk());
+        assertThat(parcelStatus(orderId, merchantId)).isEqualTo("UNFULFILLED");
+
+        assertReviewRefused(listingId, buyerToken);
+    }
+
+    @Test
+    @DisplayName("A parcel the seller declined cannot be reviewed - the seller is not rated for "
+            + "goods they never shipped")
+    void aSellerDeclinedParcelDoesNotQualify() throws Exception {
+        String listingId = createActiveListing();
+        String orderId = payOrderFor(listingId, buyerToken);
+
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/unfulfillable",
+                        fulfilmentIdOf(orderId, merchantId))
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Out of stock\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("UNFULFILLED"));
+
+        assertReviewRefused(listingId, buyerToken);
+    }
+
+    @Test
+    @DisplayName("A COLLECTION handed over against a redeemed code qualifies the buyer")
+    void aRedeemedCollectionCodeQualifies() throws Exception {
+        String listingId = createActiveListing();
+        String orderId = payOrderFor(listingId, buyerToken);
+        String fulfilmentId = fulfilmentIdOf(orderId, merchantId);
+        assertThat(jdbc.queryForObject(
+                "SELECT delivery_method FROM market_order WHERE id = ?::uuid",
+                String.class, orderId)).isEqualTo("COLLECTION");
+
+        String minted = mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/collect-code",
+                        orderId, fulfilmentId)
+                        .header("Authorization", "Bearer " + buyerToken))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String code = JsonPath.read(minted, "$.data.code");
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/collect", fulfilmentId)
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"%s\"}".formatted(code)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("DELIVERED"))
+                .andExpect(jsonPath("$.data.deliveredBy").value("RECIPIENT"));
+
+        mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":5}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.orderId").value(orderId));
+    }
+
+    @Test
+    @DisplayName("A courier DELIVERY the seller closed on their own word qualifies too - "
+            + "DELIVERED is DELIVERED, whoever closed it")
+    void aSellerMarkedDeliveryQualifies() throws Exception {
+        String listingId = createActiveListing("""
+                {
+                  "title": "Solar Lantern 20W",
+                  "description": "Portable solar lantern with 12h battery",
+                  "categoryCode": "electronics",
+                  "priceCents": 1550,
+                  "stockQty": 10,
+                  "deliveryTowns": [{ "townCode": "harare", "feeCents": 0 }]
+                }""");
+        String address = mockMvc.perform(post("/marketplace/addresses")
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"label":"Home","recipientName":"Tariro Moyo",
+                                 "recipientMsisdn":"0771234567","line1":"14 Samora Machel Ave",
+                                 "city":"Harare"}"""))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String orderId = payOrderBody("""
+                {"buyerMsisdn":"+263771234567",
+                 "items":[{"listingId":"%s","quantity":1}],
+                 "deliveryMethod":"DELIVERY","deliveryAddressId":"%s"}"""
+                .formatted(listingId, JsonPath.<String>read(address, "$.data.id")), buyerToken);
+        String fulfilmentId = fulfilmentIdOf(orderId, merchantId);
+
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/dispatch", fulfilmentId)
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk());
+        assertReviewRefused(listingId, buyerToken);
+
+        mockMvc.perform(post("/marketplace/fulfilments/{id}/delivered", fulfilmentId)
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("DELIVERED"))
+                .andExpect(jsonPath("$.data.deliveredBy").value("MERCHANT"));
+
+        mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":3}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.orderId").value(orderId));
+    }
+
+    @Test
+    @DisplayName("Two sellers, one order: only the seller whose parcel arrived can be reviewed - "
+            + "the gate joins on the line's snapshot merchant")
+    void inATwoSellerOrderOnlyTheDeliveredSellersListingQualifies() throws Exception {
+        UUID otherMerchantId = UUID.randomUUID();
+        String otherMerchantToken = TestJwts.merchantAdmin(UUID.randomUUID(), otherMerchantId, jwtSecret);
+        String delivered = createActiveListing();
+        String undelivered = createActiveListing(LISTING_BODY, otherMerchantToken);
+
+        String orderId = payOrder("""
+                {"listingId":"%s","quantity":1},{"listingId":"%s","quantity":1}"""
+                .formatted(delivered, undelivered), buyerToken);
+        confirmReceived(orderId, merchantId, buyerToken);
+        assertThat(parcelStatus(orderId, merchantId)).isEqualTo("DELIVERED");
+        assertThat(parcelStatus(orderId, otherMerchantId)).isEqualTo("PREPARING");
+
+        // Same PAID order, same buyer - but the other seller's goods have not
+        // arrived, and the first parcel's delivery says nothing about them.
+        assertReviewRefused(undelivered, buyerToken);
+        mockMvc.perform(post("/marketplace/listings/{id}/reviews", delivered)
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":5}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.orderId").value(orderId));
+    }
+
+    @Test
+    @DisplayName("A review written before the delivery rule stays its author's: edit and delete "
+            + "never re-run the gate")
+    void anExistingReviewIsNeverRetroactivelyLocked() throws Exception {
+        String listingId = createActiveListing();
+        String orderId = payOrderFor(listingId, buyerToken);
+        assertThat(parcelStatus(orderId, merchantId)).isEqualTo("PREPARING");
+
+        // What the old paid-only gate let through: a review on a parcel that
+        // never arrived, with the aggregates it moved.
+        UUID reviewId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO listing_review
+                    (id, listing_id, merchant_id, buyer_uuid, order_id, rating, comment,
+                     created_at, updated_at)
+                VALUES (?, ?::uuid, ?, ?, ?::uuid, 5, 'written under the old gate', now(), now())
+                """, reviewId, listingId, merchantId, buyerUuid, orderId);
+        jdbc.update("UPDATE listing SET rating_sum = 5, rating_count = 1 WHERE id = ?::uuid",
+                listingId);
+        assertReviewRefused(listingId, TestJwts.customer(UUID.randomUUID(), jwtSecret));
+
+        mockMvc.perform(put("/marketplace/listings/{id}/reviews/mine", listingId)
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":2,\"comment\":\"never arrived\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.rating").value(2));
+        mockMvc.perform(delete("/marketplace/listings/{id}/reviews/{reviewId}", listingId, reviewId)
+                        .header("Authorization", "Bearer " + buyerToken))
+                .andExpect(status().isOk());
+        Listing after = listingRepository.findById(UUID.fromString(listingId)).orElseThrow();
+        assertThat(after.getRatingSum()).isZero();
+        assertThat(after.getRatingCount()).isZero();
+    }
+
+    // ------------------------------------------------------------------
     // Plumbing (the OrderFlowIT shapes)
     // ------------------------------------------------------------------
 
@@ -271,6 +486,10 @@ class ReviewFlowIT extends PostgresTestContainer {
     }
 
     private String createActiveListing(String body) throws Exception {
+        return createActiveListing(body, merchantToken);
+    }
+
+    private String createActiveListing(String body, String merchantToken) throws Exception {
         String created = mockMvc.perform(post("/marketplace/listings")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -291,17 +510,59 @@ class ReviewFlowIT extends PostgresTestContainer {
     }
 
     /** Buyer orders one unit and the payments service confirms it PAID over
-     *  the internal S2S surface — minting review eligibility. */
-    private void payOrderFor(String listingId, String customerToken) throws Exception {
-        payOrder("{\"listingId\":\"%s\",\"quantity\":1}".formatted(listingId), customerToken);
+     *  the internal S2S surface. Paid is NOT reviewable yet — the parcel is
+     *  PREPARING. Returns the order id. */
+    private String payOrderFor(String listingId, String customerToken) throws Exception {
+        return payOrder("{\"listingId\":\"%s\",\"quantity\":1}".formatted(listingId), customerToken);
+    }
+
+    /** {@link #payOrderFor} and then the buyer confirms receipt of the
+     *  parcel — minting review eligibility. */
+    private void receivedOrderFor(String listingId, String customerToken) throws Exception {
+        confirmReceived(payOrderFor(listingId, customerToken), merchantId, customerToken);
+    }
+
+    /** The buyer's own "I received it" on {@code merchant}'s parcel of the order. */
+    private void confirmReceived(String orderId, UUID merchant, String customerToken) throws Exception {
+        mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/received",
+                        orderId, fulfilmentIdOf(orderId, merchant))
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk());
+        assertThat(parcelStatus(orderId, merchant)).isEqualTo("DELIVERED");
+    }
+
+    private String fulfilmentIdOf(String orderId, UUID merchant) {
+        return jdbc.queryForObject("""
+                SELECT id::text FROM order_fulfilment
+                 WHERE order_id = ?::uuid AND merchant_id = ?""", String.class, orderId, merchant);
+    }
+
+    private String parcelStatus(String orderId, UUID merchant) {
+        return jdbc.queryForObject("""
+                SELECT status FROM order_fulfilment
+                 WHERE order_id = ?::uuid AND merchant_id = ?""", String.class, orderId, merchant);
+    }
+
+    private void assertReviewRefused(String listingId, String customerToken) throws Exception {
+        mockMvc.perform(post("/marketplace/listings/{id}/reviews", listingId)
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rating\":5}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("review_requires_purchase"))
+                .andExpect(jsonPath("$.message").value(REQUIRES_DELIVERY));
     }
 
     /** {@link #payOrderFor} for any one line ({@code itemJson}, e.g. naming an
      *  option); returns the paid order's id. */
     private String payOrder(String itemJson, String customerToken) throws Exception {
-        String orderBody = """
+        return payOrderBody("""
                 {"buyerMsisdn":"+263771234567","items":[%s]}"""
-                .formatted(itemJson);
+                .formatted(itemJson), customerToken);
+    }
+
+    /** Places {@code orderBody} as-is and confirms it PAID; returns the order id. */
+    private String payOrderBody(String orderBody, String customerToken) throws Exception {
         String createdOrder = mockMvc.perform(post("/marketplace/orders")
                         .header("Authorization", "Bearer " + customerToken)
                         .header("Idempotency-Key", "review-it-" + UUID.randomUUID())
