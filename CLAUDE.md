@@ -903,6 +903,20 @@ never change either casually.
     stance applied to money): an account number in the audit log is an account
     number in one more place, and the method plus who-and-when is what a
     redirect is investigated with.
+  * **The payout report is hostile-input-safe, uncached and audited.** Its
+    trading name and three destination text columns are SELLER-typed, and
+    `TextSanitizer` strips HTML, not spreadsheet syntax — so it once let an
+    account name of `=HYPERLINK(...)` run on the finance workstation of the
+    person about to pay, through a quoting-only `csvField` beside the
+    statement's formula-safe `csvText`. `csvText` is now the ONE text cell of
+    every CSV here (apostrophe on a leading `= + - @` TAB/CR, then RFC-4180
+    quoting; a wallet number reads `'+263...`); ids, counts, cents, currency
+    and the method stay raw. Do not add a second cell helper. The response is
+    `Cache-Control: no-store`, and every export writes ONE
+    `PAYOUT_REPORT_EXPORTED` row (actor, filename as target, row/parcel counts,
+    net per currency, sellers without a destination) — counts, never a name
+    or an account. Pinned by `StatementCsvTest`, `PayoutReportCsvTest` and
+    `EscrowFlowIT.thePayoutReportIsFormulaSafeUncachedAndAudited`.
   * `payoutDestinationConfigured` rides the seller's own
     `GET /marketplace/settlements/summary` — the screen a seller is on when
     "where is my money" matters to them, and the only place they would learn

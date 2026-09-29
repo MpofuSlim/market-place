@@ -20,6 +20,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -172,6 +173,55 @@ class EscrowFlowIT extends PostgresTestContainer {
                                 .formatted(merchantId)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("nothing_releasable"));
+    }
+
+    @Test
+    @DisplayName("Payout report: a seller's formula is text, never cached, and the export is audited")
+    void thePayoutReportIsFormulaSafeUncachedAndAudited() throws Exception {
+        // The seller types a formula as their account name: the sheet is opened
+        // in Excel by the person about to move money.
+        mockMvc.perform(put("/marketplace/sellers/me/payout-destination")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"method":"BANK","accountName":"=HYPERLINK(\\"http://evil.example\\",\\"Pay\\")",
+                                 "bankName":"@CBZ Bank","accountNumber":"01123456789012"}"""))
+                .andExpect(status().isOk());
+        Map<String, String> order = placePaidOrder("escrow-report-1");
+        mockMvc.perform(post("/marketplace/orders/{id}/fulfilments/{fid}/received",
+                        order.get("orderId"), order.get("fulfilmentId"))
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk());
+
+        String csv = mockMvc.perform(get("/marketplace/settlements/payout-report")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                // Every payable seller's bank details: no browser or proxy keeps a copy.
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(csv).contains(merchantId + ",", ",1,1550,USD,BANK,"
+                + "\"'=HYPERLINK(\"\"http://evil.example\"\",\"\"Pay\"\")\",,'@CBZ Bank,"
+                + "01123456789012,");
+        assertThat(csv).doesNotContain(",=HYPERLINK", ",\"=HYPERLINK", ",@CBZ");
+
+        // One audit row per export: who, and how big — never whose account.
+        String metadata = jdbc.queryForObject("""
+                SELECT metadata::text FROM audit_events
+                 WHERE event_type = 'PAYOUT_REPORT_EXPORTED'""", String.class);
+        assertThat(JsonPath.<Integer>read(metadata, "$.rows")).isEqualTo(1);
+        assertThat(JsonPath.<Integer>read(metadata, "$.parcels")).isEqualTo(1);
+        assertThat(JsonPath.<Integer>read(metadata, "$.netCentsByCurrency.USD")).isEqualTo(1550);
+        assertThat(JsonPath.<Integer>read(metadata, "$.withoutDestination")).isZero();
+        assertThat(metadata).doesNotContain("01123456789012", "HYPERLINK", "CBZ",
+                merchantId.toString());
+        assertThat(jdbc.queryForMap("""
+                SELECT actor_uuid, target_id FROM audit_events
+                 WHERE event_type = 'PAYOUT_REPORT_EXPORTED'"""))
+                .satisfies(row -> {
+                    assertThat((String) row.get("actor_uuid")).isNotBlank();
+                    assertThat((String) row.get("target_id"))
+                            .startsWith("marketplace-payout-report-").endsWith(".csv");
+                });
     }
 
     @Test

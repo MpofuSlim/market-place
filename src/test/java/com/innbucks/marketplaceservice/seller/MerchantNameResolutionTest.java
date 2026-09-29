@@ -226,7 +226,7 @@ class MerchantNameResolutionTest {
                 OrderService.class.getMethod("getMine", AuthenticatedUser.class, Pageable.class),
                 OrderService.class.getMethod("getAll", UUID.class, Pageable.class),
                 OrderService.class.getMethod("getOrder", AuthenticatedUser.class, UUID.class),
-                SettlementQueryService.class.getMethod("payoutReportCsv"),
+                SettlementQueryService.class.getMethod("payoutReportCsv", AuthenticatedUser.class),
                 SellerService.class.getMethod("list", SellerStatus.class, int.class, int.class),
                 SellerService.class.getMethod("displayNames", List.class));
 

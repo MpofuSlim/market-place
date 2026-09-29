@@ -1,6 +1,8 @@
 package com.innbucks.marketplaceservice.settlement;
 
 import com.innbucks.marketplaceservice.api.ApiException;
+import com.innbucks.marketplaceservice.audit.AuditEventType;
+import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.config.MarketZone;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
@@ -27,8 +29,10 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
@@ -52,6 +56,7 @@ public class SettlementQueryService {
     private final SellerService sellerService;
     private final SettlementViewAssembler views;
     private final MarketZone marketZone;
+    private final AuditService auditService;
 
     /**
      * The earnings rows, newest first. Every filter is optional; {@code from}
@@ -184,9 +189,22 @@ public class SettlementQueryService {
      * and this report is read in the moment BEFORE money moves — the last
      * point at which a human can notice that a destination moved yesterday.
      * The seller is warned at change time too; this is the other side of it.
+     *
+     * <p><b>Every text cell is formula-neutralised ({@link #csvText}).</b> The
+     * trading name and all three destination text columns are typed by the
+     * SELLER (or come from the organization registry), and TextSanitizer strips
+     * HTML, not spreadsheet syntax — so an account name of
+     * {@code =HYPERLINK(...)} would otherwise run on the finance workstation
+     * of the one person about to move money. Ids, counts, cents, currency and
+     * the method enum are ours and stay raw.
+     *
+     * <p><b>Every export is audited</b> ({@code PAYOUT_REPORT_EXPORTED}): the
+     * sheet holds every payable seller's bank details, and "who exported
+     * them, when" must be answerable. The row carries counts and totals only —
+     * never a name or an account (V13's stance on the destination audit).
      */
     @NameResolvingRead
-    public Csv payoutReportCsv() {
+    public Csv payoutReportCsv(AuthenticatedUser operator) {
         List<PayoutRow> rows = settlementRepository.payoutReport();
         List<UUID> merchantIds = rows.stream().map(PayoutRow::getMerchantId).toList();
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(merchantIds);
@@ -202,7 +220,7 @@ public class SettlementQueryService {
         for (PayoutRow row : rows) {
             MarketplaceSeller seller = sellers.get(row.getMerchantId());
             csv.append(row.getMerchantId()).append(',')
-                    .append(csvField(names.get(row.getMerchantId()))).append(',')
+                    .append(csvText(names.get(row.getMerchantId()))).append(',')
                     .append(row.getParcels()).append(',')
                     .append(row.getNetCents()).append(',')
                     .append(row.getCurrency()).append(',')
@@ -214,9 +232,38 @@ public class SettlementQueryService {
                             ? ",,,,," : destinationFields(seller))
                     .append('\n');
         }
-        String filename = "marketplace-payout-report-"
-                + LocalDate.now(ZoneOffset.UTC) + ".csv";
+        LocalDate reportDate = LocalDate.now(ZoneOffset.UTC);
+        String filename = "marketplace-payout-report-" + reportDate + ".csv";
+        auditExport(operator, filename, reportDate, rows, sellers);
         return new Csv(filename, csv.toString());
+    }
+
+    /** One audit row per export, carrying what a reviewer needs to size it —
+     *  how many sellers, parcels and how much money per currency, and how many
+     *  sellers could not be paid for want of a destination — and nothing that
+     *  identifies an account. The filename is the target, because it is what
+     *  survives into someone's Downloads folder. */
+    private void auditExport(AuthenticatedUser operator, String filename, LocalDate reportDate,
+                             List<PayoutRow> rows, Map<UUID, MarketplaceSeller> sellers) {
+        long parcels = 0;
+        Map<String, Long> netByCurrency = new TreeMap<>();
+        int withoutDestination = 0;
+        for (PayoutRow row : rows) {
+            parcels += row.getParcels();
+            netByCurrency.merge(row.getCurrency(), row.getNetCents(), Long::sum);
+            MarketplaceSeller seller = sellers.get(row.getMerchantId());
+            if (seller == null || !seller.hasPayoutDestination()) {
+                withoutDestination++;
+            }
+        }
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("reportDate", reportDate.toString());
+        metadata.put("rows", rows.size());
+        metadata.put("parcels", parcels);
+        metadata.put("netCentsByCurrency", netByCurrency);
+        metadata.put("withoutDestination", withoutDestination);
+        auditService.record(AuditEventType.PAYOUT_REPORT_EXPORTED, operator.uuid(), filename,
+                metadata);
     }
 
     /** The six destination columns, in header order. Bank and wallet fields
@@ -224,22 +271,11 @@ public class SettlementQueryService {
      *  exactly one of them is ever populated on a row. */
     private static String destinationFields(MarketplaceSeller seller) {
         return seller.getPayoutMethod().name() + ','
-                + csvField(seller.getPayoutAccountName()) + ','
-                + csvField(seller.getPayoutMsisdn()) + ','
-                + csvField(seller.getPayoutBankName()) + ','
-                + csvField(seller.getPayoutAccountNumber()) + ','
+                + csvText(seller.getPayoutAccountName()) + ','
+                + csvText(seller.getPayoutMsisdn()) + ','
+                + csvText(seller.getPayoutBankName()) + ','
+                + csvText(seller.getPayoutAccountNumber()) + ','
                 + (seller.getPayoutUpdatedAt() == null ? "" : seller.getPayoutUpdatedAt());
-    }
-
-    /** RFC-4180 quoting for the one free-text column. */
-    private static String csvField(String value) {
-        if (value == null || value.isEmpty()) {
-            return "";
-        }
-        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
-            return '"' + value.replace("\"", "\"\"") + '"';
-        }
-        return value;
     }
 
     /** A statement longer than this is refused, not truncated: a statement
@@ -320,9 +356,16 @@ public class SettlementQueryService {
     }
 
     /**
-     * RFC-4180 quoting, plus a neutralising apostrophe on anything a
-     * spreadsheet would run as a formula: item titles and reasons are other
-     * people's free text, and this file is opened in Excel by design.
+     * THE text cell of every CSV this service writes (the statement and the
+     * payout report): RFC-4180 quoting, plus a neutralising apostrophe on
+     * anything a spreadsheet would run as a formula ({@code = + - @}, TAB, CR).
+     * Item titles, reasons, trading names and payout details are other
+     * people's free text, and both files are opened in Excel by design. The
+     * apostrophe goes on FIRST, so a cell needing both is quoted around it.
+     * A second, quoting-only helper used to serve the payout report and let a
+     * seller's {@code =HYPERLINK(...)} account name through — keep this the
+     * only one. A {@code +263...} number becomes {@code '+263...}: text, where
+     * a spreadsheet would otherwise read it as a number and drop the plus.
      */
     static String csvText(String value) {
         if (value == null || value.isEmpty()) {
