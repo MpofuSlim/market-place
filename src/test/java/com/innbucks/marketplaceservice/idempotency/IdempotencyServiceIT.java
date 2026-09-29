@@ -201,4 +201,32 @@ class IdempotencyServiceIT {
         assertThat(result).isInstanceOf(ClaimResult.Replay.class);
         assertThat(((ClaimResult.Replay) result).responseBody()).contains("MKT-kept");
     }
+
+    @Test
+    void completeIfInFlightStoresOnAnInFlightClaimAndNeverOverwritesAStoredBody() {
+        // First stored body wins: a slow owner and the caller that took its
+        // claim over can both answer with the same committed order, and the
+        // second to store must get the first's bytes back, not replace them.
+        String keyHash = key("first-store-wins");
+        service.claim(keyHash, REQUEST_HASH);
+
+        assertThat(service.completeIfInFlight(keyHash, 201, "{\"orderRef\":\"MKT-first\"}"))
+                .isEmpty();
+        assertThat(service.completeIfInFlight(keyHash, 201, "{\"orderRef\":\"MKT-second\"}"))
+                .contains("{\"orderRef\":\"MKT-first\"}");
+
+        ClaimResult result = service.claim(keyHash, REQUEST_HASH);
+        assertThat(result).isInstanceOf(ClaimResult.Replay.class);
+        assertThat(((ClaimResult.Replay) result).responseBody()).contains("MKT-first");
+    }
+
+    @Test
+    void completeIfInFlightOnAReleasedClaimStoresNothingAndDefersToTheCaller() {
+        String keyHash = key("released-before-store");
+        service.claim(keyHash, REQUEST_HASH);
+        service.release(keyHash);
+
+        assertThat(service.completeIfInFlight(keyHash, 201, "{}")).isEmpty();
+        assertThat(service.claim(keyHash, REQUEST_HASH)).isInstanceOf(ClaimResult.New.class);
+    }
 }

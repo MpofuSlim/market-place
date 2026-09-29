@@ -25,6 +25,15 @@ public interface MarketOrderRepository extends JpaRepository<MarketOrder, UUID> 
 
     boolean existsByOrderRef(String orderRef);
 
+    /**
+     * The order already committed under a namespaced idempotency key, if any.
+     * Backed by the V1 partial unique index {@code uq_order_idempotency_key},
+     * so it is one index probe and never more than one row. Order creation
+     * asks it before running and after a non-business failure, so a key whose
+     * order committed REPLAYS that order instead of re-running into the index.
+     */
+    Optional<MarketOrder> findByIdempotencyKey(String idempotencyKey);
+
     /** Expiry-sweep candidates; the sweeper passes a bounded, oldest-first
      *  {@link Pageable} and re-checks each row inside its own transaction. */
     List<MarketOrder> findByStatusAndExpiresAtBefore(OrderStatus status, Instant cutoff, Pageable pageable);
