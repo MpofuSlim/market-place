@@ -118,26 +118,38 @@ public class FulfilmentService {
                 .collect(Collectors.toMap(
                         MarketOrderDeliveryFee::getMerchantId,
                         MarketOrderDeliveryFee::getFeeCents));
-        // Each seller's delivery method as recorded at order time (V20). An
-        // order created by a V19 replica during the rollout has no rows; every
-        // such order is uniform, so the order's own method is exact for each
-        // of its sellers.
+        // Each seller's delivery method as recorded at order time (V20). Every
+        // order has a row per seller since V21 backfilled the stragglers, so
+        // a missing one is an integrity fault, never a reason to guess.
         Map<UUID, DeliveryMethod> methodByMerchant = orderSellers.findByOrderId(order.getId()).stream()
                 .collect(Collectors.toMap(
                         MarketOrderSeller::getMerchantId,
                         MarketOrderSeller::getDeliveryMethod));
-        for (UUID merchantId : itemRepository.findByOrderId(order.getId()).stream()
+        List<UUID> merchants = itemRepository.findByOrderId(order.getId()).stream()
                 .map(MarketOrderItem::getMerchantId)
                 .distinct()
                 .sorted()   // deterministic insert order: two concurrent
                             // confirms of the same order cannot deadlock
-                .toList()) {
+                .toList();
+        // Checked for EVERY seller before any parcel is opened. Refusing rolls
+        // the PAID transition back with it, which is the point: a parcel opened
+        // with a guessed method would be closed, tracked and settled by the
+        // wrong rules, and the database would refuse it anyway
+        // (fk_fulfilment_seller_method).
+        List<UUID> unrecorded = merchants.stream()
+                .filter(merchantId -> !methodByMerchant.containsKey(merchantId))
+                .toList();
+        if (!unrecorded.isEmpty()) {
+            throw new IllegalStateException("Order " + order.getOrderRef()
+                    + " has no market_order_seller row for merchant(s) " + unrecorded
+                    + " - every order records each seller's delivery method");
+        }
+        for (UUID merchantId : merchants) {
             // A replayed confirm hits the unique index and inserts nothing, so
             // the tracking code minted for it is simply discarded.
-            DeliveryMethod method = methodByMerchant.getOrDefault(merchantId, order.getDeliveryMethod());
             opened += fulfilmentRepository.openIfAbsent(UUID.randomUUID(), order.getId(),
                     merchantId, feeByMerchant.getOrDefault(merchantId, 0L),
-                    method.name(), TrackingCodes.mint(), now);
+                    methodByMerchant.get(merchantId).name(), TrackingCodes.mint(), now);
         }
         if (opened > 0) {
             metrics.fulfilmentOutcome("opened", opened);
@@ -240,7 +252,7 @@ public class FulfilmentService {
         OrderFulfilment parcel = requireSellerScope(caller, fulfilmentId);
         MarketOrder order = requireOrder(parcel);
         String note = request == null ? null : blankToNull(TextSanitizer.sanitize(request.note()));
-        transition(parcel, order.getDeliveryMethod(), FulfilmentStatus.DISPATCHED,
+        transition(parcel, FulfilmentStatus.DISPATCHED,
                 note == null ? "Dispatched by seller" : "Dispatched by seller: " + note, caller,
                 p -> {
                     p.setDispatchNote(note);
@@ -257,7 +269,9 @@ public class FulfilmentService {
      * the escrow makes the money wait out the buyer's whole dispute window, and
      * the buyer is TOLD, after commit, so they know that window is running.
      *
-     * <p><b>Refused on a COLLECTION order, for every caller.</b> A collection
+     * <p><b>Refused on a COLLECTION parcel, for every caller</b> — the
+     * PARCEL's own method, so on a mixed order the collected seller is held to
+     * this however the rest of the order travels. A collection
      * happens at the seller's own counter, so "the buyer collected" is the one
      * claim a seller could make about a parcel that never left the shelf — and
      * it is also the one case where the platform can do better than take their
@@ -272,7 +286,7 @@ public class FulfilmentService {
     public MerchantFulfilmentResponse markDelivered(AuthenticatedUser caller, UUID fulfilmentId) {
         OrderFulfilment parcel = requireSellerScope(caller, fulfilmentId);
         MarketOrder order = requireOrder(parcel);
-        if (order.getDeliveryMethod() == DeliveryMethod.COLLECTION) {
+        if (parcel.getDeliveryMethod() == DeliveryMethod.COLLECTION) {
             metrics.fulfilmentOutcome("self_close_refused", 1);
             log.warn("Self-close of a collection parcel refused id={} orderRef={} merchantId={}",
                     parcel.getId(), order.getOrderRef(), parcel.getMerchantId());
@@ -308,7 +322,7 @@ public class FulfilmentService {
         // transition() would: a buyer's "received" losing a race to the
         // seller's "delivered" is what that counter exists to show.
         BuyerParcelRules.Refusal refused =
-                buyerRules.confirmReceiptRefusal(parcel, order.getDeliveryMethod());
+                buyerRules.confirmReceiptRefusal(parcel);
         if (refused != null) {
             countIllegal(parcel, parcel.getStatus(), FulfilmentStatus.DELIVERED);
             throw refused.toException();
@@ -319,7 +333,7 @@ public class FulfilmentService {
 
     /**
      * The seller declares they cannot supply this parcel (V12) — the exit V9
-     * never gave them — or, on a COLLECTION order, that the buyer never came
+     * never gave them — or, on a COLLECTION parcel, that the buyer never came
      * for it.
      *
      * <p>Until this existed, a seller who was out of stock had two options:
@@ -332,11 +346,11 @@ public class FulfilmentService {
      * them alone is a lie: the parcel ends, its units go back on the shelf, and
      * the buyer's money turns around onto the refund queue.
      *
-     * <p>From PREPARING on every order. From DISPATCHED on a COLLECTION order
+     * <p>From PREPARING on every parcel. From DISPATCHED on a COLLECTION parcel
      * only, where it means "set aside at the counter and never picked up":
      * the goods never left, so returning them and refunding the buyer is the
      * truth, and it is the only way a no-show can end now that a seller cannot
-     * self-close a collection. On a DELIVERY order a dispatched parcel is with
+     * self-close a collection. On a DELIVERY parcel a dispatched one is with
      * a courier, and a failed delivery is the buyer's dispute instead — see
      * {@link FulfilmentStateMachine}.
      */
@@ -355,9 +369,9 @@ public class FulfilmentService {
 
         // Read before the move: a collection that was waiting at the counter is
         // a buyer who never came, not a seller who could not supply.
-        boolean notCollected = order.getDeliveryMethod() == DeliveryMethod.COLLECTION
+        boolean notCollected = parcel.getDeliveryMethod() == DeliveryMethod.COLLECTION
                 && parcel.getStatus() == FulfilmentStatus.DISPATCHED;
-        transition(parcel, order.getDeliveryMethod(), FulfilmentStatus.UNFULFILLED,
+        transition(parcel, FulfilmentStatus.UNFULFILLED,
                 (notCollected ? "Not collected: " : "Seller cannot fulfil: ") + reason, caller, p -> {
                     p.setUnfulfilledAt(Instant.now());
                     p.setUnfulfilledReason(reason);
@@ -424,7 +438,7 @@ public class FulfilmentService {
         MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
         throwIfRefused(buyerRules.cancelRefusal(parcel, settlement));
         String reason = blankToNull(TextSanitizer.sanitize(rawReason));
-        transition(parcel, order.getDeliveryMethod(), FulfilmentStatus.UNFULFILLED,
+        transition(parcel, FulfilmentStatus.UNFULFILLED,
                 reason == null ? "Cancelled by buyer" : "Cancelled by buyer: " + reason, buyer,
                 p -> {
                     p.setUnfulfilledAt(Instant.now());
@@ -519,7 +533,7 @@ public class FulfilmentService {
         // The rule the buyer's canRequestCollectCode flag is computed from. It
         // refuses an UNFULFILLED parcel too: a code for goods that are no
         // longer coming would text the collector for nothing.
-        throwIfRefused(buyerRules.collectCodeRefusal(parcel, order.getDeliveryMethod()));
+        throwIfRefused(buyerRules.collectCodeRefusal(parcel));
 
         String code = CollectCodes.mint();
         Instant now = Instant.now();
@@ -561,7 +575,7 @@ public class FulfilmentService {
                                               CollectRequest request) {
         OrderFulfilment parcel = requireSellerScope(caller, fulfilmentId);
         MarketOrder order = requireOrder(parcel);
-        requireCollection(order);
+        requireCollection(parcel);
         // The parcel's own state is checked FIRST — before whether a code
         // exists, and before the compare. A closed parcel has nothing to hand
         // over whatever the code situation, and telling the seller to "ask the
@@ -624,11 +638,13 @@ public class FulfilmentService {
                 parcel.getId(), parcel.getOrderId(), from, to);
     }
 
-    /** A code only means anything where somebody physically collects. */
-    private static void requireCollection(MarketOrder order) {
-        if (order.getDeliveryMethod() != DeliveryMethod.COLLECTION) {
+    /** A code only means anything where somebody physically collects — THIS
+     *  parcel, whatever the rest of the order does. The same refusal the
+     *  buyer's mint gets ({@link BuyerParcelRules#collectCodeRefusal}). */
+    private static void requireCollection(OrderFulfilment parcel) {
+        if (parcel.getDeliveryMethod() != DeliveryMethod.COLLECTION) {
             throw ApiException.conflict("collect_code_not_applicable",
-                    "This is a delivery order - there is nothing to collect in person");
+                    BuyerParcelRules.NOT_A_COLLECTION);
         }
     }
 
@@ -646,7 +662,7 @@ public class FulfilmentService {
     private void close(OrderFulfilment parcel, MarketOrder order, DeliveryConfirmer by,
                        String detail, AuthenticatedUser actor,
                        java.util.function.Consumer<OrderFulfilment> extra) {
-        transition(parcel, order.getDeliveryMethod(), FulfilmentStatus.DELIVERED, detail, actor, p -> {
+        transition(parcel, FulfilmentStatus.DELIVERED, detail, actor, p -> {
             p.setDeliveredAt(Instant.now());
             p.setDeliveredBy(by);
             extra.accept(p);
@@ -675,11 +691,13 @@ public class FulfilmentService {
      * had, which the rollback happens to discard today but which no caller
      * should have to rely on.
      */
-    private void transition(OrderFulfilment parcel, DeliveryMethod method, FulfilmentStatus to,
+    private void transition(OrderFulfilment parcel, FulfilmentStatus to,
                             String detail, AuthenticatedUser actor,
                             java.util.function.Consumer<OrderFulfilment> mutation) {
         FulfilmentStatus from = parcel.getStatus();
-        if (!FulfilmentStateMachine.isLegal(from, to, method)) {
+        // The PARCEL's method decides the collection-only edges: on a mixed
+        // order the order's summary is wrong for at least one parcel.
+        if (!FulfilmentStateMachine.isLegal(from, to, parcel.getDeliveryMethod())) {
             countIllegal(parcel, from, to);
             throw ApiException.conflict("illegal_fulfilment_state",
                     "This parcel is " + from + " and cannot move to " + to);
@@ -769,8 +787,10 @@ public class FulfilmentService {
     private void publishProgress(MarketOrder order, OrderFulfilment parcel) {
         boolean partOfOrder = fulfilmentRepository
                 .findByOrderIdOrderByCreatedAtAsc(order.getId()).size() > 1;
+        // The PARCEL's method, so the buyer reads "ready to collect" or "on
+        // its way" for this seller's goods, not the order's summary.
         eventPublisher.publishEvent(new ParcelProgressed(order.getId(), order.getOrderRef(),
-                order.getBuyerMsisdn(), order.getDeliveryMethod(), parcel.getStatus(),
+                order.getBuyerMsisdn(), parcel.getDeliveryMethod(), parcel.getStatus(),
                 partOfOrder, parcel.getId()));
     }
 

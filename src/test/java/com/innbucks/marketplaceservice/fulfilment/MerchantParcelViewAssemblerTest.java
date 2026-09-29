@@ -37,6 +37,8 @@ class MerchantParcelViewAssemblerTest {
     private MerchantSettlementRepository settlements;
     private SettlementDisputeRepository disputes;
     private MerchantParcelViewAssembler assembler;
+    private com.innbucks.marketplaceservice.pickup.CollectionPointViews collectionPoints;
+    private MarketOrder order;
 
     @BeforeEach
     void setUp() {
@@ -44,19 +46,72 @@ class MerchantParcelViewAssemblerTest {
         items = mock(MarketOrderItemRepository.class);
         settlements = mock(MerchantSettlementRepository.class);
         disputes = mock(SettlementDisputeRepository.class);
+        collectionPoints = mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class);
         assembler = new MerchantParcelViewAssembler(orders, items, settlements, disputes,
-                mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class), 10);
-        MarketOrder order = new MarketOrder();
+                collectionPoints, 10);
+        order = new MarketOrder();
         order.setId(ORDER);
         order.setOrderRef("MKT-4F9A1C22B7D3");
-        order.setDeliveryMethod(DeliveryMethod.COLLECTION);
+        order.setDeliverySummary(DeliveryMethod.COLLECTION);
         order.setCurrency("USD");
         when(orders.findAllById(any())).thenReturn(List.of(order));
     }
 
     private OrderFulfilment parcel(FulfilmentStatus status) {
+        return parcel(status, DeliveryMethod.COLLECTION);
+    }
+
+    private OrderFulfilment parcel(FulfilmentStatus status, DeliveryMethod method) {
         return OrderFulfilment.builder().id(UUID.randomUUID()).orderId(ORDER).merchantId(SELLER)
-                .status(status).createdAt(Instant.now()).trackingCode("TRK-7F3K9Q2M4X").build();
+                .status(status).deliveryMethod(method).createdAt(Instant.now())
+                .trackingCode("TRK-7F3K9Q2M4X").build();
+    }
+
+    /** A mixed basket's order: summary DELIVERY with a destination (another
+     *  seller delivers), bought as a gift for someone who collects. */
+    private void mixedOrder() {
+        order.setDeliverySummary(DeliveryMethod.DELIVERY);
+        order.setDeliveryRecipientName("Tariro Moyo");
+        order.setDeliveryRecipientMsisdn("+263771234567");
+        order.setDeliveryLine1("14 Samora Machel Ave");
+        order.setDeliveryCity("Harare");
+        order.setRecipientName("Gogo Chipo Moyo");
+    }
+
+    @Test
+    @DisplayName("MIXED: a COLLECTION parcel's card has no destination, names the collector, and closes as NOT_COLLECTED")
+    void mixedCollectedCardReadsTheParcel() {
+        mixedOrder();
+        OrderFulfilment collected = parcel(FulfilmentStatus.UNFULFILLED, DeliveryMethod.COLLECTION);
+        collected.setDispatchedAt(Instant.parse("2026-09-20T10:00:00Z"));
+        collected.setUnfulfilledAt(Instant.parse("2026-09-28T10:00:00Z"));
+        collected.setUnfulfilledBy(UnfulfilledBy.SELLER);
+
+        MerchantFulfilmentResponse card = assembler.toView(collected);
+
+        assertThat(card.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        // The delivering seller's destination is none of this seller's business.
+        assertThat(card.destination()).isNull();
+        assertThat(card.collectorName()).isEqualTo("Gogo Chipo Moyo");
+        assertThat(card.closedBy()).isEqualTo(ParcelCloseMethod.NOT_COLLECTED);
+        // Its collection point is looked up, although the order's summary is DELIVERY.
+        verify(collectionPoints).snapshotsFor(List.of(ORDER));
+    }
+
+    @Test
+    @DisplayName("MIXED: the DELIVERY sibling's card carries the destination, names no collector, and asks for no collection point")
+    void mixedDeliveredCardReadsTheParcel() {
+        mixedOrder();
+        OrderFulfilment delivered = parcel(FulfilmentStatus.DISPATCHED, DeliveryMethod.DELIVERY);
+
+        MerchantFulfilmentResponse card = assembler.toView(delivered);
+
+        assertThat(card.deliveryMethod()).isEqualTo(DeliveryMethod.DELIVERY);
+        assertThat(card.destination()).isNotNull();
+        assertThat(card.destination().line1()).isEqualTo("14 Samora Machel Ave");
+        assertThat(card.collectorName()).isNull();
+        assertThat(card.collectionPoint()).isNull();
+        verify(collectionPoints).snapshotsFor(List.of());
     }
 
     @Test

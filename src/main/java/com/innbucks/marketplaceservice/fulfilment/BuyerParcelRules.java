@@ -18,6 +18,11 @@ import java.time.Instant;
  *
  * <p><b>Why one place.</b> The app used to decide which buttons to show from
  * the parcel's stage and delivery method, re-deriving rules the server owns.
+ *
+ * <p><b>Every rule reads the PARCEL's own delivery method</b>
+ * ({@link OrderFulfilment#getDeliveryMethod()}), never the order's summary: on
+ * a mixed order one seller delivers and another is collected, and each
+ * parcel is held to its own rules.
  * That works until a rule changes here and not there. Each method below
  * returns the refusal the endpoint throws (or {@code null} when the action is
  * allowed), so the endpoint and the {@code actions} flags cannot disagree: a
@@ -41,6 +46,15 @@ import java.time.Instant;
 @Component
 public class BuyerParcelRules {
 
+    /**
+     * Why a DELIVERY parcel has no collection code — worded for the PARCEL
+     * (V21): "this is a delivery order" was false for the delivery parcel of
+     * an order whose other seller is collected. The code is unchanged, and
+     * clients branch on the code.
+     */
+    public static final String NOT_A_COLLECTION =
+            "This parcel is being delivered - there is nothing to collect in person";
+
     private final Duration disputeWindow;
 
     public BuyerParcelRules(
@@ -59,8 +73,9 @@ public class BuyerParcelRules {
      * close cannot be "upgraded" by the buyer (the money then waits for the
      * grace window — see {@code SettlementService.onParcelDelivered}).
      */
-    public Refusal confirmReceiptRefusal(OrderFulfilment parcel, DeliveryMethod method) {
-        if (!FulfilmentStateMachine.isLegal(parcel.getStatus(), FulfilmentStatus.DELIVERED, method)) {
+    public Refusal confirmReceiptRefusal(OrderFulfilment parcel) {
+        if (!FulfilmentStateMachine.isLegal(parcel.getStatus(), FulfilmentStatus.DELIVERED,
+                parcel.getDeliveryMethod())) {
             return new Refusal("illegal_fulfilment_state", "This parcel is "
                     + parcel.getStatus() + " and cannot move to " + FulfilmentStatus.DELIVERED);
         }
@@ -73,10 +88,9 @@ public class BuyerParcelRules {
      * (cancelled, or never collected) would send the collector an SMS for
      * goods that are no longer theirs to collect.
      */
-    public Refusal collectCodeRefusal(OrderFulfilment parcel, DeliveryMethod method) {
-        if (method != DeliveryMethod.COLLECTION) {
-            return new Refusal("collect_code_not_applicable",
-                    "This is a delivery order - there is nothing to collect in person");
+    public Refusal collectCodeRefusal(OrderFulfilment parcel) {
+        if (parcel.getDeliveryMethod() != DeliveryMethod.COLLECTION) {
+            return new Refusal("collect_code_not_applicable", NOT_A_COLLECTION);
         }
         if (parcel.getStatus() == FulfilmentStatus.DELIVERED) {
             return new Refusal("illegal_fulfilment_state",
@@ -196,17 +210,17 @@ public class BuyerParcelRules {
      * @param settlement      the parcel's settlement row, or null when none exists
      * @param alreadyDisputed whether a dispute row exists for the parcel
      */
-    public BuyerParcelState stateOf(OrderStatus orderStatus, DeliveryMethod method,
-                                    OrderFulfilment parcel, MerchantSettlement settlement,
-                                    boolean alreadyDisputed, Instant now) {
+    public BuyerParcelState stateOf(OrderStatus orderStatus, OrderFulfilment parcel,
+                                    MerchantSettlement settlement, boolean alreadyDisputed,
+                                    Instant now) {
         boolean canDispute = disputeRefusal(orderStatus, parcel, settlement, alreadyDisputed,
                 now) == null;
         ParcelActions actions = new ParcelActions(
-                confirmReceiptRefusal(parcel, method) == null,
-                collectCodeRefusal(parcel, method) == null,
+                confirmReceiptRefusal(parcel) == null,
+                collectCodeRefusal(parcel) == null,
                 cancelRefusal(parcel, settlement) == null,
                 canDispute);
-        ParcelCloseMethod closedBy = ParcelCloseMethod.of(parcel, method);
+        ParcelCloseMethod closedBy = ParcelCloseMethod.of(parcel);
         return new BuyerParcelState(
                 actions,
                 receivedAt(parcel),

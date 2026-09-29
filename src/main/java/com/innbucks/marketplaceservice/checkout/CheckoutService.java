@@ -8,6 +8,7 @@ import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteResponse;
 import com.innbucks.marketplaceservice.checkout.dto.PaymentInstruction;
 import com.innbucks.marketplaceservice.checkout.dto.PaymentOption;
 import com.innbucks.marketplaceservice.checkout.dto.PricedLineResponse;
+import com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddressService;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
@@ -25,6 +26,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -101,13 +104,16 @@ public class CheckoutService {
                                 .map(item -> new BasketLine(item.listingId(), item.quantity(),
                                         item.variantId()))
                                 .toList());
-        DeliveryMethod method = resolveMethod(request.deliveryMethod());
-        // Load, then plan, then price (V20) - in the same order as the order.
-        LoadedBasket loaded = pricer.load(basket);
-        DeliveryPlan plan = resolvePlan(method);
+        // Load, then plan, then price (V20) - through the SAME resolver as the
+        // order, so a quote and the order made from it plan a basket alike.
+        PlannedCheckout planned = plan(basket, request.deliveryMethod(),
+                request.sellerDeliveryMethods());
+        LoadedBasket loaded = planned.loaded();
+        DeliveryPlan plan = planned.plan();
         // Resolved even when the basket turns out unbuyable: a shopper fixing a
-        // sold-out line must not ALSO lose the address they just picked.
-        DeliveryAddress address = resolveAddress(buyer, plan.summary(), request.deliveryAddressId());
+        // sold-out line must not ALSO lose the address they just picked. Only
+        // when some seller delivers - strictly, with the usual refusals.
+        DeliveryAddress address = resolveAddress(buyer, plan, request.deliveryAddressId());
         // With nobody delivering there is no destination to price against, but
         // the shopper still needs to know which sellers COULD deliver, and
         // where: judged against the address they named, else their default -
@@ -139,7 +145,9 @@ public class CheckoutService {
                 priced.deliveryFeesByMerchant().entrySet().stream()
                         .map(e -> new CheckoutQuoteResponse.SellerDeliveryFee(e.getKey(), e.getValue()))
                         .toList(),
-                summary == DeliveryMethod.COLLECTION
+                // Present when some seller collects - every seller on a uniform
+                // COLLECTION quote, only the collecting ones on a mixed one.
+                plan.someoneCollects()
                         ? collectionView(priced, resolveCollectionPoints(priced,
                                 request.collectionPoints()))
                         : null,
@@ -286,16 +294,99 @@ public class CheckoutService {
     }
 
     /**
-     * The delivery plan for a basket: which method each seller's goods travel
-     * by. Shared by the quote and order creation so the two cannot plan the
-     * same basket differently. Today it is always {@link DeliveryPlan#uniform}
-     * - the basket's one method for every seller - over the methods this cell
-     * offers, which is what every order meant before V20.
-     *
-     * @param method the basket's method, already through {@link #resolveMethod}
+     * THE delivery plan for a basket - which method each seller's goods travel
+     * by - shared by the quote and order creation so the two can never plan the
+     * same basket differently (V20). In this order, every refusal before any
+     * stock is touched:
+     * <ol>
+     *   <li>the basket's default method, through {@link #resolveMethod}
+     *       (unstated = COLLECTION, exactly as before);</li>
+     *   <li>the per-seller choices, through {@link #resolveSellerChoices};</li>
+     *   <li>the basket loaded ({@link CheckoutPricer#load});</li>
+     *   <li>{@link DeliveryPlan#forSellers} over the sellers actually on sale -
+     *       uniform when nothing was chosen, and naming every seller when
+     *       something was, so a seller left to the default is never priced
+     *       without the address a delivery needs.</li>
+     * </ol>
      */
-    public DeliveryPlan resolvePlan(DeliveryMethod method) {
-        return DeliveryPlan.uniform(method, offeredMethods());
+    public PlannedCheckout plan(List<BasketLine> basket, DeliveryMethod requested,
+                                List<SellerDeliveryChoice> choices) {
+        DeliveryMethod basketDefault = resolveMethod(requested);
+        Map<UUID, DeliveryMethod> chosen = resolveSellerChoices(choices);
+        LoadedBasket loaded = pricer.load(basket);
+        return new PlannedCheckout(loaded,
+                DeliveryPlan.forSellers(basketDefault, chosen, loaded.sellers(), offeredMethods()));
+    }
+
+    /**
+     * The buyer's per-seller methods ({@code sellerDeliveryMethods}), checked
+     * before anything is loaded: seller to method, empty when none was named.
+     *
+     * <p>A null entry - or one missing a field, which Bean Validation refuses
+     * 400 at the controller before this runs - is skipped, as
+     * {@code collectionPoints} does; a list of nothing but those names nobody.
+     * A choice for a seller who turns out not to be in the basket is kept here
+     * and dropped by {@link DeliveryPlan#forSellers}: the basket may have
+     * changed since the screen was drawn.
+     *
+     * @throws ApiException 422 {@code seller_delivery_methods_disabled} when
+     *         this cell has not switched per-seller methods on; 400
+     *         {@code duplicate_delivery_method_choice} for a seller named twice;
+     *         422 {@code delivery_method_unavailable} ({@code data.merchantId}
+     *         names whose) for a method the cell does not offer
+     */
+    public Map<UUID, DeliveryMethod> resolveSellerChoices(List<SellerDeliveryChoice> choices) {
+        List<SellerDeliveryChoice> named = choices == null ? List.of() : choices.stream()
+                .filter(choice -> choice != null && choice.merchantId() != null
+                        && choice.deliveryMethod() != null)
+                .toList();
+        if (named.isEmpty()) {
+            return Map.of();
+        }
+        if (!properties.getDelivery().isPerSellerMethodsEnabled()) {
+            throw ApiException.unprocessable("seller_delivery_methods_disabled",
+                    "Choosing delivery or collection per seller is not available yet - choose one "
+                            + "method for the whole order");
+        }
+        Map<UUID, DeliveryMethod> chosen = new LinkedHashMap<>();
+        for (SellerDeliveryChoice choice : named) {
+            if (chosen.putIfAbsent(choice.merchantId(), choice.deliveryMethod()) != null) {
+                throw ApiException.badRequest("duplicate_delivery_method_choice",
+                        "sellerDeliveryMethods names the same seller more than once");
+            }
+        }
+        Set<DeliveryMethod> offered = offeredMethods();
+        for (SellerDeliveryChoice choice : named) {
+            if (!offered.contains(choice.deliveryMethod())) {
+                // resolveMethod's wording, plus the seller: a basket of several
+                // must know WHICH choice to change.
+                throw ApiException.unprocessable("delivery_method_unavailable",
+                                choice.deliveryMethod() + " is not available in this market")
+                        .withDetails(Map.of("merchantId", choice.merchantId().toString()));
+            }
+        }
+        return Collections.unmodifiableMap(chosen);
+    }
+
+    /** Whether this cell lets a basket choose a method per seller - switched on
+     *  AND offering both methods, since with one method there is no choice. */
+    public boolean perSellerMethodsOffered() {
+        return properties.getDelivery().isPerSellerMethodsEnabled()
+                && offeredMethods().containsAll(EnumSet.allOf(DeliveryMethod.class));
+    }
+
+    /**
+     * The address the plan's delivering sellers send to, or null when nobody
+     * delivers. Strict: the same refusals as {@link #resolveAddress(
+     * AuthenticatedUser, DeliveryMethod, UUID)}, asked exactly when
+     * {@link DeliveryPlan#needsDestination()}.
+     */
+    @Transactional(readOnly = true)
+    public DeliveryAddress resolveAddress(AuthenticatedUser buyer, DeliveryPlan plan,
+                                          UUID addressId) {
+        return plan.needsDestination()
+                ? resolveAddress(buyer, DeliveryMethod.DELIVERY, addressId)
+                : null;
     }
 
     /**
@@ -345,7 +436,8 @@ public class CheckoutService {
                 currency,
                 paymentOptions(),
                 PAYMENTS_ENDPOINT,
-                PAYMENTS_ORDER_TYPE);
+                PAYMENTS_ORDER_TYPE,
+                perSellerMethodsOffered());
     }
 
     /**

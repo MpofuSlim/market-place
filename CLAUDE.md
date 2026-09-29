@@ -1508,7 +1508,7 @@ never change either casually.
     `VariantStockDriftSweeperIT` (through the ShedLock proxy) and the option
     cases in `NotificationFlowIT`, `CatalogTaxonomyBrowseIT`, `ReviewFlowIT`
     and the public-test ITs.
-* **A seller can be DELIVERY-ONLY (V20, PR A of two).** Collection had always
+* **A seller can be DELIVERY-ONLY, and one order can mix methods (V20 + V21).** Collection had always
   been allowed: a seller with no collection point meant "arranged with the
   seller after you order", so a seller who only delivers could not be
   expressed, and the app offered Collect on their items until the quote
@@ -1568,24 +1568,82 @@ never change either casually.
     seller's method into `order_fulfilment.delivery_method` at PAID
     (`chk_fulfilment_collection_no_fee`). Fulfilment, settlement and notify never
     read the live setting, so a collection paid before an opt-out still mints a
-    code and closes. **Readers still use the ORDER's method in PR A** (exact:
-    every order is still uniform); the column is nullable because a V19 replica
-    during the rollout opens parcels without it.
-  * **PR B (next)**: `sellerDeliveryMethods` on the quote and order (a method per
-    seller, behind its own flag; `DeliveryPlan.forSellers` already names every
-    seller so a partial choice cannot leave a delivering seller without an
-    address), `OrderResponse.sellers`, a migration backfilling and NOT NULL-ing
-    the parcel column, and every parcel-level reader switched to the parcel's
-    method. Once that migration runs, PR A is the oldest image that can run.
-  * Keep the switch OFF until the super app renders `sellers[].availableMethods`,
-    or a delivery-only seller's items read as collectable up to the quote.
-  * Pinned by `SellerCollectionTest`, `DeliveryPlanTest`, the V20 cases in
-    `CheckoutPricerTest` (incl. the `availableMethodsParity` matrix) /
-    `CheckoutServiceTest` / `OrderServiceTest` / `CartServiceTest` /
-    `ListingServiceTest` / `CatalogServiceTest` / `ListingViewAssemblerTest` /
-    `FulfilmentServiceTest`, `OrderLineRejectionTest`, and against real Postgres
-    by `CollectionToggleFlowIT`, `CollectionToggleDefaultOffIT` and
-    `DeliveryOnlySellerCheckoutIT`.
+    code and closes.
+  * **A method PER SELLER in one order (V21, the second PR).** The quote and
+    the order take `sellerDeliveryMethods: [{merchantId, deliveryMethod}]`
+    (appended last, `NON_NULL`, so a body without it fingerprints as before),
+    behind `marketplace.delivery.per-seller-methods-enabled` (default **false**;
+    422 `seller_delivery_methods_disabled` on a non-empty list). One resolver
+    (`CheckoutService.plan`) serves both: the basket default is today's
+    `resolveMethod` (unstated = COLLECTION); then 400
+    `duplicate_delivery_method_choice`, 422 `delivery_method_unavailable`
+    (`data.merchantId`); null elements skipped, a choice for a seller not in the
+    basket ignored; then `DeliveryPlan.forSellers` names EVERY seller (a partial
+    map can never leave a delivering seller without an address); the strict
+    address lookup runs only when some seller delivers. Order writes: one
+    seller row per seller with ITS method, fee rows for delivering sellers,
+    point snapshots for collecting ones. `OrderResponse.sellers`
+    (`[{merchantId, deliveryMethod, deliveryFeeCents?}]`, from placement, one
+    query per table per page), `FulfilmentResponse.deliveryMethod` (the
+    parcel's), `CheckoutOptionsResponse.perSellerDeliveryMethods`, metric
+    `marketplace.orders.seller_plan{shape=uniform|mixed}`.
+  * **The order-level method is a SUMMARY** (`MarketOrder.deliverySummary`,
+    column `delivery_method`): DELIVERY when any seller delivers, else
+    COLLECTION. There is no MIXED value — the two-value wire enum stays, and
+    DELIVERY keeps `chk_order_delivery_destination` guarding every order that
+    ships a parcel. **Every parcel-level rule reads the PARCEL's method**:
+    self-close (`collect_code_required`), confirm-receipt, the no-show exit,
+    collection codes, `ParcelProgressed`, the courier run (`findRun` on
+    `f.delivery_method`), location pings (`recordLocation` adds
+    `delivery_method = 'DELIVERY'`), the seller card (destination only on a
+    DELIVERY parcel via `FulfilmentDestination.forParcel`, collector name only
+    on a COLLECTION one), tracking, buyer action flags, `ParcelCloseMethod`,
+    the queue filter and split counts, the overdue sweep. The delivery-recipient
+    phone/name search arms match DELIVERY parcels only, or the collecting
+    seller of a mixed order could probe the courier's destination.
+    `ParcelMethodSourceTest` fails if the summary is read in `fulfilment/`,
+    `settlement/`, `notify/` or `pickup/` — by getter, JPQL, Criteria or native
+    SQL through a `market_order` alias.
+  * **V21 is the CONTRACT half**: backfills a seller row for every order placed
+    before V20, the parcel method (seller row, else order), clears two
+    meaningless stray values with a WARNING, then NOT NULL + the
+    (order, seller, method) key + the parcel -> seller-row FK + CHECKs that a
+    collection code sits only on a COLLECTION parcel and a courier position only
+    on a DELIVERY one. It REFUSES (RAISE EXCEPTION) rather than rewrite money.
+    Its header carries the pre-flight SELECTs.
+  * **Rollout order is load-bearing** (V21 header, `application.yaml`):
+    (1) a cell on the V19 image takes the PR A image FIRST, never straight to
+    V21 (a V19 replica's parcel INSERT fails NOT NULL after the buyer paid;
+    repair = re-run V21 step 1's INSERT); (2) switch
+    `MARKETPLACE_PER_SELLER_DELIVERY_METHODS_ENABLED` on only as a SEPARATE
+    step after the V21 image is 100% rolled out — a PR A pod ignores the
+    choices and reads the order's method for every parcel; (3) once a mixed
+    order exists, roll forward only; before any rollback to PR A, switch the
+    flag off and confirm no open mixed parcel remains (query in V21's header).
+  * Keep both switches OFF in production until the super app renders
+    `sellers[].availableMethods` and sends `sellerDeliveryMethods`.
+  * **Tests with a switch ON share ONE Spring context**: `CollectionToggleFlowIT`
+    and `MixedBasketFlowIT` use the identical property set on purpose
+    (`PublicTestOrderRailIT` keeps the context it already had, with the
+    per-seller flag added to it rather than a new one). Every distinct context
+    holds its own pool to the one test Postgres, and enough of them ran it out
+    of clients ("too many clients already") - ORDER-dependent, so green locally
+    and red on CI. The fix is structural: `application-test.yaml` keeps each
+    cached pool's idle size small (`minimum-idle: 2`, `idle-timeout: 10s`) and
+    `PostgresTestContainer` starts Postgres with `max_connections=200`. Still,
+    prefer adding a flag to an existing set over a new combination.
+  * Pinned by `SellerCollectionTest`, `DeliveryPlanTest`, `DeliveryOnlyPolicyTest`,
+    the V20 cases in `CheckoutPricerTest` (incl. the `availableMethodsParity`
+    matrix) / `CheckoutServiceTest` / `OrderServiceTest` / `CartServiceTest` /
+    `ListingServiceTest` / `CatalogServiceTest` / `ListingViewAssemblerTest`,
+    the mixed-order cases in `FulfilmentServiceTest` / `CollectCodeServiceTest` /
+    `ParcelTrackingServiceTest` / `MerchantParcelViewAssemblerTest` /
+    `SettlementViewAssemblerTest` / `ParcelCloseMethodTest` /
+    `SellerParcelSearchTest`, `ParcelMethodSourceTest`, `OrderLineRejectionTest`,
+    `VariantWireCompatTest`, and against real Postgres by `V21MigrationIT`,
+    `MixedParcelFlowIT`, `MixedBasketFlowIT`, `MixedBasketDefaultOffIT`,
+    `CollectionToggleFlowIT`, `CollectionToggleDefaultOffIT`,
+    `DeliveryOnlySellerCheckoutIT` and the mixed case in `PublicTestOrderRailIT`.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling

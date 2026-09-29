@@ -102,8 +102,9 @@ public class OrderFulfilment {
     private Instant collectionOverdueAlertedAt;
 
     // ---- Collection handover code (V11) --------------------------------
-    // Set only on a COLLECTION parcel, and only once the buyer has asked for a
-    // code. The plaintext is never stored — see CollectCodes.
+    // Set only on a COLLECTION parcel (chk_fulfilment_code_on_collection,
+    // V21), and only once the buyer has asked for a code. The plaintext is
+    // never stored — see CollectCodes.
 
     /** SHA-256 hex of the live code. Null until one is minted; REPLACED, never
      *  appended to, when the buyer mints a fresh one (the old code dies with
@@ -127,20 +128,25 @@ public class OrderFulfilment {
     // ---- Delivery + tracking (V14) --------------------------------------
 
     /** This seller's delivery fee on the order, copied from the order's
-     *  per-seller snapshot when the parcel opens. 0 on a COLLECTION order. */
+     *  per-seller snapshot when the parcel opens. 0 on a COLLECTION parcel
+     *  ({@code chk_fulfilment_collection_no_fee}). */
     @Column(name = "delivery_fee_cents", nullable = false, updatable = false)
     private long deliveryFeeCents;
 
     /**
      * How THIS parcel reaches the buyer (V20), copied from its seller's
      * {@code market_order_seller} row when the order is paid and never changed
-     * after. Null only on a parcel opened before V20 or by a V19 replica
-     * during the rollout; every such order is uniform, so the order's own
-     * method is exact for it. Readers still use the order's method until the
-     * column is backfilled and made NOT NULL.
+     * after. NOT NULL since V21, and tied to that row by
+     * {@code fk_fulfilment_seller_method}, so it cannot disagree with it.
+     *
+     * <p>THE source of truth for every parcel-level rule: who may close it,
+     * whether a collection code or a courier position means anything, whether
+     * a destination is shown, which queue count it lands in. Never the
+     * order's own delivery summary, which is wrong for at least one parcel
+     * of a mixed order.
      */
     @Enumerated(EnumType.STRING)
-    @Column(name = "delivery_method", length = 16, updatable = false)
+    @Column(name = "delivery_method", nullable = false, length = 16, updatable = false)
     private DeliveryMethod deliveryMethod;
 
     /** {@code TRK-XXXXXXXXXX}: a lookup key for the seller, an operator and
@@ -148,9 +154,10 @@ public class OrderFulfilment {
     @Column(name = "tracking_code", nullable = false, updatable = false, length = 20)
     private String trackingCode;
 
-    // The courier's LAST known position. Read-only through this entity: only
-    // OrderFulfilmentRepository.recordLocation writes them, so a seller's
-    // save of this row can never put a stale position back.
+    // The courier's LAST known position — DELIVERY parcels only
+    // (chk_fulfilment_location_on_delivery, V21). Read-only through this
+    // entity: only OrderFulfilmentRepository.recordLocation writes them, so a
+    // seller's save of this row can never put a stale position back.
 
     @Column(name = "last_latitude", precision = 9, scale = 6, insertable = false, updatable = false)
     private java.math.BigDecimal lastLatitude;

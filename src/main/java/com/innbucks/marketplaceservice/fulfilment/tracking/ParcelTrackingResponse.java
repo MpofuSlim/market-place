@@ -26,7 +26,10 @@ public record ParcelTrackingResponse(
         @Schema(example = "TRK-7F3K9Q2M4X")
         String trackingCode,
 
-        @Schema(example = "DELIVERY")
+        @Schema(description = "How THIS parcel reaches the buyer - its own method, which on an "
+                + "order with several sellers can differ from the order's `deliveryMethod`. Read "
+                + "DISPATCHED as \"ready to collect\" and DELIVERED as \"collected\" when it is "
+                + "COLLECTION.", example = "DELIVERY")
         DeliveryMethod deliveryMethod,
 
         @Schema(example = "DISPATCHED")
@@ -35,7 +38,9 @@ public record ParcelTrackingResponse(
         @Schema(description = "Every stage this parcel has reached, oldest first")
         List<Stage> timeline,
 
-        @Schema(description = "Where it is going (DELIVERY only)", nullable = true)
+        @Schema(description = "Where it is going - present only when THIS parcel is a DELIVERY; "
+                + "absent on a collected parcel even when another seller on the order delivers.",
+                nullable = true)
         FulfilmentDestination destination,
 
         @Schema(description = "Where the courier last reported it. Present only while a DELIVERY "

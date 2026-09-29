@@ -18,13 +18,13 @@ import java.util.Set;
  * a status column stops meaning anything.
  *
  * <p>{@code PREPARING → UNFULFILLED} (V12) is the seller's way out of a parcel
- * they cannot supply. On a DELIVERY order it is deliberately NOT reachable from
+ * they cannot supply. On a DELIVERY parcel it is deliberately NOT reachable from
  * {@code DISPATCHED}: once goods are with a courier, "I cannot fulfil this" has
  * stopped being true. What happens then is a delivery failure, and the buyer's
  * dispute is the path for it — one that an operator looks at, because by then
  * the two sides can disagree about what happened.
  *
- * <p>{@code DISPATCHED → UNFULFILLED} IS legal on a COLLECTION order, where
+ * <p>{@code DISPATCHED → UNFULFILLED} IS legal on a COLLECTION parcel, where
  * DISPATCHED means "ready at the counter": the goods never left the seller, so
  * a buyer who never came is a parcel that genuinely was not fulfilled. It is
  * the exit that makes the collection handover rule safe to enforce — a
@@ -43,7 +43,7 @@ public final class FulfilmentStateMachine {
             FulfilmentStatus.DELIVERED, Set.of(),
             FulfilmentStatus.UNFULFILLED, Set.of());
 
-    /** Legal only on a COLLECTION order, on top of the common set. */
+    /** Legal only on a COLLECTION parcel, on top of the common set. */
     private static final Map<FulfilmentStatus, Set<FulfilmentStatus>> COLLECTION_ONLY = Map.of(
             FulfilmentStatus.DISPATCHED, EnumSet.of(FulfilmentStatus.UNFULFILLED));
 
@@ -55,7 +55,8 @@ public final class FulfilmentStateMachine {
         return LEGAL_TRANSITIONS.getOrDefault(from, Set.of()).contains(to);
     }
 
-    /** The transitions legal for a parcel of an order delivered by {@code method}. */
+    /** The transitions legal for a parcel travelling by {@code method} — always
+     *  the PARCEL's own method (V21), never its order's summary. */
     public static boolean isLegal(FulfilmentStatus from, FulfilmentStatus to, DeliveryMethod method) {
         return isLegal(from, to)
                 || (method == DeliveryMethod.COLLECTION

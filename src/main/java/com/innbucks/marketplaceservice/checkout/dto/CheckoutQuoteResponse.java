@@ -39,8 +39,8 @@ public record CheckoutQuoteResponse(
         @Schema(description = "Sum of the SELLABLE lines, in minor units", example = "4798")
         long subtotalCents,
 
-        @Schema(description = "Delivery fee in minor units: the sum of each seller's fee to the "
-                + "address's town (see deliveryFees). 0 for COLLECTION.", example = "800")
+        @Schema(description = "Delivery fee in minor units: the sum of each DELIVERING seller's fee "
+                + "to the address's town (see deliveryFees). 0 when nobody delivers.", example = "800")
         long deliveryFeeCents,
 
         @Schema(description = "subtotalCents + deliveryFeeCents — what the payments service will "
@@ -50,14 +50,17 @@ public record CheckoutQuoteResponse(
         @Schema(example = "USD")
         String currency,
 
-        @Schema(description = "The delivery method this quote priced", example = "DELIVERY")
+        @Schema(description = "The delivery method this quote priced - with `sellerDeliveryMethods`, "
+                + "the SUMMARY: DELIVERY when any seller delivers, else COLLECTION. Each seller's "
+                + "own method is `sellers[].deliveryMethod`.", example = "DELIVERY")
         DeliveryMethod deliveryMethod,
 
         @Schema(description = "The methods this cell offers, so the app renders only what it can "
                 + "actually pick")
         List<DeliveryMethod> deliveryMethods,
 
-        @Schema(description = "Where it would be sent. Absent for COLLECTION.", nullable = true)
+        @Schema(description = "Where it would be sent - present exactly when some seller delivers.",
+                nullable = true)
         AddressResponse deliveryAddress,
 
         @Schema(description = "Every line that would be refused, so the whole correction can be "
@@ -72,17 +75,19 @@ public record CheckoutQuoteResponse(
                 + "them — the same list the order's `payment` block will carry.")
         List<PaymentOption> paymentMethods,
 
-        @Schema(description = "DELIVERY only: each seller's delivery fee to the address's town. "
-                + "One parcel per seller, so a seller's fee is the highest of their items' fees to "
-                + "that town, not the sum. Empty for COLLECTION.")
+        @Schema(description = "Each DELIVERING seller's delivery fee to the address's town. One "
+                + "parcel per seller, so a seller's fee is the highest of their items' fees to "
+                + "that town, not the sum. Empty when nobody delivers; a collecting seller is "
+                + "never listed.")
         List<SellerDeliveryFee> deliveryFees,
 
-        @Schema(description = "COLLECTION only: where each seller's goods would be collected — "
-                + "the point the buyer chose, else the seller's default. A seller with no "
-                + "collection point is listed without one: say \"arrange collection with the "
-                + "seller\". Only sellers who OFFER collection are listed (V20): a delivery-only "
-                + "seller is never here, and their lines are in `rejections` as "
-                + "`COLLECTION_NOT_OFFERED`. Absent for DELIVERY.", nullable = true)
+        @Schema(description = "Where each COLLECTING seller's goods would be collected — the point "
+                + "the buyer chose, else the seller's default. A seller with no collection point is "
+                + "listed without one: say \"arrange collection with the seller\". Only sellers "
+                + "priced with COLLECTION who OFFER it are listed (V20): a delivery-only seller is "
+                + "never here (their lines are in `rejections` as `COLLECTION_NOT_OFFERED`), nor "
+                + "is a seller chosen for DELIVERY in `sellerDeliveryMethods`. Present when some "
+                + "seller collects; absent when nobody does.", nullable = true)
         List<SellerCollectionPoint> collectionPoints,
 
         @Schema(description = "V20: every seller with an item on sale in the basket, in basket "
@@ -109,7 +114,8 @@ public record CheckoutQuoteResponse(
     public record QuoteSeller(
             @Schema(example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54") java.util.UUID merchantId,
 
-            @Schema(description = "The method this quote priced the seller's goods with",
+            @Schema(description = "The method this quote priced the seller's goods with: their "
+                    + "entry in `sellerDeliveryMethods`, else the request's `deliveryMethod`",
                     example = "DELIVERY")
             DeliveryMethod deliveryMethod,
 

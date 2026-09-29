@@ -90,7 +90,7 @@ class DisputeServiceTest {
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(BUYER_UUID)
                 .buyerMsisdn("+263771234567").status(status)
                 .subtotalCents(4798).deliveryFeeCents(0).totalCents(4798).currency("USD")
-                .deliveryMethod(DeliveryMethod.COLLECTION)
+                .deliverySummary(DeliveryMethod.COLLECTION)
                 .expiresAt(now).paidAt(now).createdAt(now).updatedAt(now).build();
     }
 

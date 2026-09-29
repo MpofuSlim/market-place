@@ -25,8 +25,9 @@ public enum ParcelCloseMethod {
     /** The buyer called it off before it left (V16). */
     BUYER_CANCELLED;
 
-    /** Null while the parcel is still open. */
-    public static ParcelCloseMethod of(OrderFulfilment parcel, DeliveryMethod method) {
+    /** Null while the parcel is still open. Reads the PARCEL's own method: on
+     *  a mixed order the order's summary is wrong for at least one parcel. */
+    public static ParcelCloseMethod of(OrderFulfilment parcel) {
         if (parcel == null) {
             return null;
         }
@@ -36,7 +37,8 @@ public enum ParcelCloseMethod {
             }
             // Only a COLLECTION can be declined after it was set aside
             // (FulfilmentStateMachine), and that is exactly "never collected".
-            return method == DeliveryMethod.COLLECTION && parcel.getDispatchedAt() != null
+            return parcel.getDeliveryMethod() == DeliveryMethod.COLLECTION
+                    && parcel.getDispatchedAt() != null
                     ? NOT_COLLECTED : CANNOT_SUPPLY;
         }
         if (parcel.getStatus() != FulfilmentStatus.DELIVERED || parcel.getDeliveredBy() == null) {

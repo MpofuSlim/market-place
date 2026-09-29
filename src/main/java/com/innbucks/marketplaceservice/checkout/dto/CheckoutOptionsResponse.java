@@ -38,5 +38,13 @@ public record CheckoutOptionsResponse(
 
         @Schema(description = "Send as `orderType` on that request, with the order's `orderRef`.",
                 example = "MARKETPLACE")
-        String paymentOrderType) {
+        String paymentOrderType,
+
+        @Schema(description = "V20: true when one basket may be delivered from one seller and "
+                + "collected from another - send `sellerDeliveryMethods` on the quote and the "
+                + "order. True only when the cell has switched it on AND offers both methods; "
+                + "when false, offer one method for the whole basket (a non-empty "
+                + "`sellerDeliveryMethods` is refused 422 `seller_delivery_methods_disabled`).",
+                example = "true")
+        boolean perSellerDeliveryMethods) {
 }

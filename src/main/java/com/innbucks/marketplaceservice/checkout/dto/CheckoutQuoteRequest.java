@@ -42,26 +42,51 @@ public record CheckoutQuoteRequest(
                 example = "DELIVERY", nullable = true)
         DeliveryMethod deliveryMethod,
 
-        @Schema(description = "Which saved address to deliver to. Ignored for COLLECTION. Omitted "
-                + "on a DELIVERY quote means the buyer's default address; a buyer with no saved "
-                + "address gets 400 `delivery_address_required` rather than a quote missing a "
-                + "destination.",
+        @Schema(description = "Which saved address to deliver to. Used when some seller delivers "
+                + "(ignored when every seller is collected). Omitted on such a quote means the "
+                + "buyer's default address; a buyer with no saved address gets 400 "
+                + "`delivery_address_required` rather than a quote missing a destination.",
                 example = "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45", nullable = true)
         UUID deliveryAddressId,
 
-        @Schema(description = "COLLECTION only: which of each seller's collection points to "
-                + "collect from. A seller you do not name is collected from their DEFAULT point; "
-                + "a seller with no points is arranged directly with them. Ignored for DELIVERY.",
+        @Schema(description = "For the sellers who are COLLECTED: which of each seller's "
+                + "collection points to collect from. A seller you do not name is collected from "
+                + "their DEFAULT point; a seller with no points is arranged directly with them. An "
+                + "entry for a seller who delivers is ignored.",
                 nullable = true)
         @JsonInclude(JsonInclude.Include.NON_NULL)
         @Valid
         @Size(max = 50)
-        List<CollectionPointChoice> collectionPoints) {
+        List<CollectionPointChoice> collectionPoints,
+
+        @Schema(description = "V20: a method per SELLER, for a basket that is delivered from one "
+                + "seller and collected from another. Each entry names a seller in the basket and "
+                + "how their goods reach you; a seller you do not name takes `deliveryMethod`. "
+                + "The address is needed exactly when some seller delivers. Only on a cell with "
+                + "`perSellerDeliveryMethods: true` in `GET /marketplace/checkout/options` - "
+                + "elsewhere a non-empty list is 422 `seller_delivery_methods_disabled`. A seller "
+                + "named twice is 400 `duplicate_delivery_method_choice`; a method the cell does not "
+                + "offer is 422 `delivery_method_unavailable` whose `data` names the seller. A null "
+                + "entry is skipped, and an entry for a seller no longer in the basket is ignored. "
+                + "Read each seller's method back from `sellers[].deliveryMethod` in the response.",
+                nullable = true)
+        // NON_NULL keeps a body that does not use this field byte-identical to
+        // what it was before the field existed (the collectionPoints technique).
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        @Valid
+        @Size(max = 50)
+        List<SellerDeliveryChoice> sellerDeliveryMethods) {
 
     /** The shape before collection points existed. */
     public CheckoutQuoteRequest(Boolean fromCart, List<Item> items, DeliveryMethod deliveryMethod,
                                 UUID deliveryAddressId) {
-        this(fromCart, items, deliveryMethod, deliveryAddressId, null);
+        this(fromCart, items, deliveryMethod, deliveryAddressId, null, null);
+    }
+
+    /** The shape before a method could be chosen per seller (V18-V20). */
+    public CheckoutQuoteRequest(Boolean fromCart, List<Item> items, DeliveryMethod deliveryMethod,
+                                UUID deliveryAddressId, List<CollectionPointChoice> collectionPoints) {
+        this(fromCart, items, deliveryMethod, deliveryAddressId, collectionPoints, null);
     }
 
     @Schema(description = "One line to quote")

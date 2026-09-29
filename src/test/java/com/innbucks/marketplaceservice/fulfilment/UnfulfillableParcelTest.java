@@ -64,6 +64,10 @@ class UnfulfillableParcelTest {
     private ApplicationEventPublisher eventPublisher;
     private SimpleMeterRegistry registry;
     private FulfilmentService service;
+    /** How the parcels this test builds travel. The helper that sets the
+     *  order's summary sets this too (a uniform order); the MIXED cases set it
+     *  apart from the summary (V21 — the parcel's method is the one read). */
+    private DeliveryMethod parcelMethod = DeliveryMethod.COLLECTION;
 
     @BeforeEach
     void setUp() {
@@ -94,12 +98,13 @@ class UnfulfillableParcelTest {
     }
 
     private void orderDeliveredBy(DeliveryMethod method) {
+        parcelMethod = method;
         Instant now = Instant.now();
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(MarketOrder.builder()
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(UUID.randomUUID())
                 .buyerMsisdn("+263771234567").status(OrderStatus.PAID)
                 .subtotalCents(3100).deliveryFeeCents(0).totalCents(3100).currency("USD")
-                .deliveryMethod(method)
+                .deliverySummary(method)
                 .expiresAt(now).paidAt(now).createdAt(now).updatedAt(now).build()));
     }
 
@@ -107,6 +112,7 @@ class UnfulfillableParcelTest {
         Instant now = Instant.now();
         OrderFulfilment p = OrderFulfilment.builder()
                 .id(UUID.randomUUID()).orderId(ORDER_ID).merchantId(MERCHANT_A).status(status)
+                .deliveryMethod(parcelMethod)
                 .createdAt(now).updatedAt(now).version(0L).build();
         when(fulfilmentRepository.findById(p.getId())).thenReturn(Optional.of(p));
         return p;

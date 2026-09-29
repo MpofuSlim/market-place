@@ -80,6 +80,12 @@ class SellerStatsIT extends PostgresTestContainer {
                 java.sql.Timestamp.from(paidAt.plus(1, ChronoUnit.HOURS)),
                 java.sql.Timestamp.from(paidAt.minus(1, ChronoUnit.HOURS)),
                 java.sql.Timestamp.from(paidAt));
+        // Every order records each seller's method (V20), and a parcel must
+        // travel the way its seller row says (V21's foreign key).
+        jdbc.update("""
+                INSERT INTO market_order_seller (order_id, merchant_id, delivery_method)
+                VALUES (?, ?, 'COLLECTION')
+                """, orderId, merchantId);
         Instant dispatchedAt = dispatchDelayHours == null ? null
                 : paidAt.plus(dispatchDelayHours, ChronoUnit.HOURS);
         Instant deliveredAt = "DELIVERED".equals(status)
@@ -87,8 +93,8 @@ class SellerStatsIT extends PostgresTestContainer {
         jdbc.update("""
                 INSERT INTO order_fulfilment (id, order_id, merchant_id, status,
                     dispatched_at, delivered_at, delivered_by, created_at, updated_at,
-                    tracking_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tracking_code, delivery_method)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COLLECTION')
                 """,
                 UUID.randomUUID(), orderId, merchantId, status,
                 dispatchedAt == null ? null : java.sql.Timestamp.from(dispatchedAt),

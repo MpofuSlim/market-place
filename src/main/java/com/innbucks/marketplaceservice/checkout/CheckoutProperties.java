@@ -53,6 +53,22 @@ public class CheckoutProperties {
          */
         private Set<DeliveryMethod> methods = EnumSet.allOf(DeliveryMethod.class);
 
+        /**
+         * V20: whether a basket may choose delivery or collection per SELLER
+         * ({@code sellerDeliveryMethods} on the quote and the order). OFF by
+         * default, like {@code variants-enabled}: it gates only a NON-EMPTY
+         * choice list (422 {@code seller_delivery_methods_disabled}), so a body
+         * without one behaves exactly as before, and switching it off never
+         * touches an order already placed with one.
+         *
+         * <p><b>Rollout:</b> switch it on only after the V21 image is fully
+         * rolled out, as its own step. A pod on the previous image ignores the
+         * choices and reads the order's method for every parcel, which is
+         * wrong for a mixed order; once one exists, roll forward only (the
+         * rollback check is in V21's header).
+         */
+        private boolean perSellerMethodsEnabled = false;
+
         /** Abuse guard on the address book. A real shopper has a handful of
          *  destinations; a thousand is someone using it as free storage. */
         private int maxAddressesPerBuyer = 25;

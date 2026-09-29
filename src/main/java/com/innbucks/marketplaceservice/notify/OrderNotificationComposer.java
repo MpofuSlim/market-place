@@ -178,7 +178,7 @@ public final class OrderNotificationComposer {
     /**
      * Told to the BUYER when a seller dispatches a parcel, e.g. {@code "Your
      * InnBucks Marketplace order MKT-4F2A9C1B77D0 is on its way. Ref
-     * MKT-4F2A9C1B77D0"}, or — on a COLLECTION order, where DISPATCHED means set
+     * MKT-4F2A9C1B77D0"}, or — for a COLLECTION parcel, where DISPATCHED means set
      * aside at the counter — {@code "... is ready to collect. Get your
      * collection code in the app and show it at the counter. Ref ..."}.
      *

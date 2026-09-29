@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.order.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.pickup.dto.CollectionPointChoice;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -54,10 +55,10 @@ public record CreateOrderRequest(
                 + "422 `delivery_method_unavailable`.", example = "DELIVERY", nullable = true)
         DeliveryMethod deliveryMethod,
 
-        @Schema(description = "Which saved address to deliver to. Ignored for COLLECTION. Omitted "
-                + "on a DELIVERY order means the buyer's default address; a buyer with no saved "
-                + "address gets 400 `delivery_address_required` rather than an order with nowhere "
-                + "to send it. The address is SNAPSHOT onto the order, so editing or deleting it "
+        @Schema(description = "Which saved address to deliver to. Used when some seller delivers "
+                + "(ignored when every seller is collected). Omitted on such an order means the "
+                + "buyer's default address; a buyer with no saved address gets 400 "
+                + "`delivery_address_required` rather than an order with nowhere to send it. The address is SNAPSHOT onto the order, so editing or deleting it "
                 + "afterwards never redirects a parcel already in flight.",
                 example = "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45", nullable = true)
         UUID deliveryAddressId,
@@ -70,23 +71,48 @@ public record CreateOrderRequest(
         @Valid
         Recipient recipient,
 
-        @Schema(description = "COLLECTION only: which of each seller's collection points to "
-                + "collect from. A seller you do not name is collected from their DEFAULT point; "
-                + "a seller with no points is arranged directly with them. The chosen point is "
-                + "SNAPSHOT onto the order, so the seller editing or removing it afterwards never "
-                + "moves your collection. Ignored for DELIVERY.", nullable = true)
+        @Schema(description = "For the sellers who are COLLECTED: which of each seller's "
+                + "collection points to collect from. A seller you do not name is collected from "
+                + "their DEFAULT point; a seller with no points is arranged directly with them. The "
+                + "chosen point is SNAPSHOT onto the order, so the seller editing or removing it "
+                + "afterwards never moves your collection. An entry for a seller who delivers is "
+                + "ignored.", nullable = true)
         // NON_NULL keeps the idempotency fingerprint of a body that does not use
         // this field byte-identical to what it was before the field existed.
         @JsonInclude(JsonInclude.Include.NON_NULL)
         @Valid
         @Size(max = 50)
-        List<CollectionPointChoice> collectionPoints) {
+        List<CollectionPointChoice> collectionPoints,
+
+        @Schema(description = "V20: a method per SELLER - the same field, rules and refusals as "
+                + "on the quote, so send the body you quoted with. A seller you do not name takes "
+                + "`deliveryMethod`. The order's own `deliveryMethod` is then DELIVERY when any "
+                + "seller delivers (the address is snapshot once, for those sellers), and each "
+                + "seller's method is in the response's `sellers[]` - trust that, not the request. "
+                + "Only on a cell with `perSellerDeliveryMethods: true`; elsewhere a non-empty list "
+                + "is 422 `seller_delivery_methods_disabled` and nothing is reserved.",
+                nullable = true)
+        // NON_NULL: an order body without this field fingerprints exactly as it
+        // did before the field existed, so an idempotent retry that straddles
+        // the deploy still replays.
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        @Valid
+        @Size(max = 50)
+        List<SellerDeliveryChoice> sellerDeliveryMethods) {
 
     /** The shape before collection points existed. */
     public CreateOrderRequest(String buyerMsisdn, Boolean fromCart, List<Item> items,
                               DeliveryMethod deliveryMethod, UUID deliveryAddressId,
                               Recipient recipient) {
-        this(buyerMsisdn, fromCart, items, deliveryMethod, deliveryAddressId, recipient, null);
+        this(buyerMsisdn, fromCart, items, deliveryMethod, deliveryAddressId, recipient, null, null);
+    }
+
+    /** The shape before a method could be chosen per seller (V18-V20). */
+    public CreateOrderRequest(String buyerMsisdn, Boolean fromCart, List<Item> items,
+                              DeliveryMethod deliveryMethod, UUID deliveryAddressId,
+                              Recipient recipient, List<CollectionPointChoice> collectionPoints) {
+        this(buyerMsisdn, fromCart, items, deliveryMethod, deliveryAddressId, recipient,
+                collectionPoints, null);
     }
 
     @Schema(description = "The person an order is bought for")

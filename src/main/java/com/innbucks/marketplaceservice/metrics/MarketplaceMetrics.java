@@ -56,6 +56,12 @@ public class MarketplaceMetrics {
     public static final String REVOCATION_STORE_DENYLIST = "denylist";
     public static final String REVOCATION_STORE_TOKEN_VERSION = "token_version";
 
+    /** The {@code shape} tag values of {@code marketplace.orders.seller_plan}
+     *  (V20): every seller receives their goods the same way, or one delivers
+     *  and another collects. */
+    public static final String SELLER_PLAN_UNIFORM = "uniform";
+    public static final String SELLER_PLAN_MIXED = "mixed";
+
     private final MeterRegistry registry;
     private final Counter listingsCreated;
     private final Counter confirmMismatch;
@@ -153,6 +159,10 @@ public class MarketplaceMetrics {
         }
         revocationCheckFailedCounter(REVOCATION_STORE_DENYLIST);
         revocationCheckFailedCounter(REVOCATION_STORE_TOKEN_VERSION);
+        // Both shapes exist at 0 from boot, so the FIRST mixed order is an
+        // increase() a dashboard can see rather than a series appearing at 1.
+        sellerPlanCounter(SELLER_PLAN_UNIFORM);
+        sellerPlanCounter(SELLER_PLAN_MIXED);
     }
 
     public void listingCreated() {
@@ -188,6 +198,25 @@ public class MarketplaceMetrics {
                 .tag("step", step == null ? "unknown" : step)
                 .register(registry)
                 .increment();
+    }
+
+    /**
+     * One created order's delivery plan (V20),
+     * {@code marketplace.orders.seller_plan{shape=uniform|mixed}}: whether its
+     * sellers all receive the same way, or one is delivered and another
+     * collected. Counted after the order commits. The mixed share is how far
+     * per-seller methods are actually used once the cell switches them on.
+     */
+    public void orderSellerPlan(String shape) {
+        sellerPlanCounter(SELLER_PLAN_MIXED.equals(shape) ? SELLER_PLAN_MIXED : SELLER_PLAN_UNIFORM)
+                .increment();
+    }
+
+    private Counter sellerPlanCounter(String shape) {
+        return Counter.builder("marketplace.orders.seller_plan")
+                .description("Created orders by delivery plan: every seller one way, or mixed")
+                .tag("shape", shape)
+                .register(registry);
     }
 
     public void orderIdempotentRecovery() {

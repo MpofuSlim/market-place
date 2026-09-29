@@ -3,9 +3,11 @@ package com.innbucks.marketplaceservice.order;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteRequest;
+import com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
+import com.innbucks.marketplaceservice.pickup.dto.CollectionPointChoice;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -149,6 +151,78 @@ class VariantWireCompatTest {
     }
 
     // ------------------------------------------------------------------
+    // A method per seller (V20): sellerDeliveryMethods
+    // ------------------------------------------------------------------
+
+    private static final UUID SELLER_A = UUID.fromString("7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54");
+    private static final UUID POINT = UUID.fromString("5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e");
+
+    @Test
+    @DisplayName("A body without sellerDeliveryMethods is the pre-V20 bytes, whichever constructor built it")
+    void noPerSellerChoicesMeansNoKey() throws Exception {
+        String order = "{\"buyerMsisdn\":null,\"fromCart\":true,\"items\":null,"
+                + "\"deliveryMethod\":\"COLLECTION\",\"deliveryAddressId\":null,\"recipient\":null}";
+        assertThat(mapper.writeValueAsString(new CreateOrderRequest(null, true, null,
+                DeliveryMethod.COLLECTION, null, null))).isEqualTo(order);
+        assertThat(mapper.writeValueAsString(new CreateOrderRequest(null, true, null,
+                DeliveryMethod.COLLECTION, null, null, null))).isEqualTo(order);
+        assertThat(mapper.writeValueAsString(new CreateOrderRequest(null, true, null,
+                DeliveryMethod.COLLECTION, null, null, null, null))).isEqualTo(order);
+
+        String quote = "{\"fromCart\":true,\"items\":null,\"deliveryMethod\":\"COLLECTION\","
+                + "\"deliveryAddressId\":null}";
+        assertThat(mapper.writeValueAsString(new CheckoutQuoteRequest(true, null,
+                DeliveryMethod.COLLECTION, null))).isEqualTo(quote);
+        assertThat(mapper.writeValueAsString(new CheckoutQuoteRequest(true, null,
+                DeliveryMethod.COLLECTION, null, null))).isEqualTo(quote);
+        assertThat(mapper.writeValueAsString(new CheckoutQuoteRequest(true, null,
+                DeliveryMethod.COLLECTION, null, null, null))).isEqualTo(quote);
+    }
+
+    @Test
+    @DisplayName("When set, sellerDeliveryMethods is appended LAST - after collectionPoints - on the order and the quote alike")
+    void perSellerChoicesAreAppendedLast() throws Exception {
+        List<SellerDeliveryChoice> choices =
+                List.of(new SellerDeliveryChoice(SELLER_A, DeliveryMethod.DELIVERY));
+        String tail = "\"sellerDeliveryMethods\":[{\"merchantId\":\"7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54\","
+                + "\"deliveryMethod\":\"DELIVERY\"}]}";
+
+        assertThat(mapper.writeValueAsString(new CreateOrderRequest(null, true, null,
+                DeliveryMethod.COLLECTION, null, null, null, choices))).isEqualTo(
+                "{\"buyerMsisdn\":null,\"fromCart\":true,\"items\":null,"
+                        + "\"deliveryMethod\":\"COLLECTION\",\"deliveryAddressId\":null,"
+                        + "\"recipient\":null," + tail);
+        assertThat(mapper.writeValueAsString(new CreateOrderRequest(null, true, null,
+                DeliveryMethod.COLLECTION, null, null,
+                List.of(new CollectionPointChoice(SELLER_A, POINT)), choices))).isEqualTo(
+                "{\"buyerMsisdn\":null,\"fromCart\":true,\"items\":null,"
+                        + "\"deliveryMethod\":\"COLLECTION\",\"deliveryAddressId\":null,"
+                        + "\"recipient\":null,\"collectionPoints\":[{\"merchantId\":"
+                        + "\"7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54\",\"collectionPointId\":"
+                        + "\"5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e\"}]," + tail);
+        assertThat(mapper.writeValueAsString(new CheckoutQuoteRequest(true, null,
+                DeliveryMethod.COLLECTION, null, null, choices))).isEqualTo(
+                "{\"fromCart\":true,\"items\":null,\"deliveryMethod\":\"COLLECTION\","
+                        + "\"deliveryAddressId\":null," + tail);
+        // A body with the list reads back to the same request.
+        CreateOrderRequest read = mapper.readValue("{\"fromCart\":true," + tail,
+                CreateOrderRequest.class);
+        assertThat(read.sellerDeliveryMethods()).isEqualTo(choices);
+    }
+
+    @Test
+    @DisplayName("OrderResponse.Seller: a collecting seller has no fee key; a delivering one appends it")
+    void orderSellerSerialisation() throws Exception {
+        assertThat(mapper.writeValueAsString(new OrderResponse.Seller(SELLER_A,
+                DeliveryMethod.COLLECTION, null))).isEqualTo(
+                "{\"merchantId\":\"7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54\",\"deliveryMethod\":\"COLLECTION\"}");
+        assertThat(mapper.writeValueAsString(new OrderResponse.Seller(SELLER_A,
+                DeliveryMethod.DELIVERY, 800L))).isEqualTo(
+                "{\"merchantId\":\"7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54\",\"deliveryMethod\":\"DELIVERY\","
+                        + "\"deliveryFeeCents\":800}");
+    }
+
+    // ------------------------------------------------------------------
     // Stored replay bodies
     // ------------------------------------------------------------------
 
@@ -211,6 +285,7 @@ class VariantWireCompatTest {
                 }));
         // Newer additions are simply absent from an old body.
         assertThat(stored.actions()).isNull();
+        assertThat(stored.sellers()).isNull();
         assertThat(stored.fulfilments().getFirst().actions()).isNull();
     }
 

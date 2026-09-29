@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.dto.DispatchRequest;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse;
+import com.innbucks.marketplaceservice.fulfilment.dto.UnfulfillableRequest;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.order.MarketOrder;
 import com.innbucks.marketplaceservice.order.MarketOrderEvent;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
 import java.util.List;
@@ -77,6 +79,9 @@ class FulfilmentServiceTest {
     private MarketOrderDeliveryFeeRepository deliveryFees;
     private com.innbucks.marketplaceservice.order.MarketOrderSellerRepository orderSellers;
     private FulfilmentService service;
+    /** How the parcels {@link #parcel} builds travel — the PARCEL's method is
+     *  the only one any rule reads (V21). */
+    private DeliveryMethod parcelMethod = DeliveryMethod.DELIVERY;
 
     @BeforeEach
     void setUp() {
@@ -104,6 +109,12 @@ class FulfilmentServiceTest {
         when(itemRepository.findByOrderId(ORDER_ID)).thenReturn(List.of(
                 item(MERCHANT_A, "Solar Lantern 20W", 2, 3100),
                 item(MERCHANT_B, "Garden Hose", 1, 2599)));
+        // Every order records each seller's method (V20, backfilled by V21).
+        when(orderSellers.findByOrderId(ORDER_ID)).thenReturn(List.of(
+                new com.innbucks.marketplaceservice.order.MarketOrderSeller(
+                        ORDER_ID, MERCHANT_A, DeliveryMethod.DELIVERY),
+                new com.innbucks.marketplaceservice.order.MarketOrderSeller(
+                        ORDER_ID, MERCHANT_B, DeliveryMethod.DELIVERY)));
     }
 
     private static MarketOrder order() {
@@ -112,7 +123,7 @@ class FulfilmentServiceTest {
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(BUYER_UUID)
                 .buyerMsisdn("+263771234567").status(OrderStatus.PAID)
                 .subtotalCents(5699).deliveryFeeCents(200).totalCents(5899).currency("USD")
-                .deliveryMethod(DeliveryMethod.DELIVERY)
+                .deliverySummary(DeliveryMethod.DELIVERY)
                 .deliveryRecipientName("Tariro Moyo").deliveryRecipientMsisdn("+263771234567")
                 .deliveryLine1("14 Samora Machel Ave").deliveryCity("Harare")
                 .expiresAt(now.plusSeconds(1800)).paidAt(now)
@@ -130,6 +141,7 @@ class FulfilmentServiceTest {
         Instant now = Instant.now();
         OrderFulfilment p = OrderFulfilment.builder()
                 .id(id).orderId(ORDER_ID).merchantId(merchantId).status(status)
+                .deliveryMethod(parcelMethod)
                 .createdAt(now).updatedAt(now).version(0L).build();
         when(fulfilmentRepository.findById(id)).thenReturn(Optional.of(p));
         return p;
@@ -360,7 +372,8 @@ class FulfilmentServiceTest {
 
     private MarketOrder collectionOrder() {
         MarketOrder collection = order();
-        collection.setDeliveryMethod(DeliveryMethod.COLLECTION);
+        collection.setDeliverySummary(DeliveryMethod.COLLECTION);
+        parcelMethod = DeliveryMethod.COLLECTION;
         collection.setDeliveryLine1(null);
         collection.setDeliveryRecipientName(null);
         collection.setDeliveryRecipientMsisdn(null);
@@ -580,7 +593,8 @@ class FulfilmentServiceTest {
     @DisplayName("A COLLECTION parcel carries no destination")
     void collectionParcelHasNoDestination() {
         MarketOrder collection = order();
-        collection.setDeliveryMethod(DeliveryMethod.COLLECTION);
+        collection.setDeliverySummary(DeliveryMethod.COLLECTION);
+        parcelMethod = DeliveryMethod.COLLECTION;
         collection.setDeliveryLine1(null);
         collection.setDeliveryRecipientName(null);
         collection.setDeliveryRecipientMsisdn(null);
@@ -618,23 +632,165 @@ class FulfilmentServiceTest {
     }
 
     @Test
-    @DisplayName("Each parcel carries ITS seller's method from the order; a seller with no row takes the order's")
+    @DisplayName("Each parcel carries ITS seller's method from the order - never the order's summary")
     void openingStampsEachSellersMethod() {
-        // MERCHANT_A has a V20 row saying COLLECTION; MERCHANT_B has none (an
-        // order a V19 replica created during the rollout) and so takes the
-        // order's own method, which is exact for such a uniform order.
+        // A mixed order: the summary says DELIVERY (someone delivers), but
+        // MERCHANT_A's row says COLLECTION and that is what its parcel carries.
         when(orderSellers.findByOrderId(ORDER_ID)).thenReturn(List.of(
                 new com.innbucks.marketplaceservice.order.MarketOrderSeller(
-                        ORDER_ID, MERCHANT_A, DeliveryMethod.COLLECTION)));
+                        ORDER_ID, MERCHANT_A, DeliveryMethod.COLLECTION),
+                new com.innbucks.marketplaceservice.order.MarketOrderSeller(
+                        ORDER_ID, MERCHANT_B, DeliveryMethod.DELIVERY)));
         when(fulfilmentRepository.openIfAbsent(any(), any(), any(), anyLong(), any(), any(), any()))
                 .thenReturn(1);
 
-        service.openForOrder(order());   // the order itself says DELIVERY
+        service.openForOrder(order());   // the order's summary says DELIVERY
 
         verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_A), anyLong(),
                 eq("COLLECTION"), any(), any());
         verify(fulfilmentRepository).openIfAbsent(any(), eq(ORDER_ID), eq(MERCHANT_B), anyLong(),
                 eq("DELIVERY"), any(), any());
+    }
+
+    @Test
+    @DisplayName("A seller with no market_order_seller row is an integrity fault: nothing is opened, nothing guessed (V21)")
+    void aMissingSellerRowOpensNothing() {
+        // Every order has a row per seller since V21. The PR A fallback to the
+        // order's method is gone: a parcel opened on a guess would be closed,
+        // tracked and settled by the wrong rules. Refusing rolls the PAID
+        // transition back with it (MANDATORY propagation).
+        when(orderSellers.findByOrderId(ORDER_ID)).thenReturn(List.of(
+                new com.innbucks.marketplaceservice.order.MarketOrderSeller(
+                        ORDER_ID, MERCHANT_B, DeliveryMethod.DELIVERY)));
+
+        assertThatThrownBy(() -> service.openForOrder(order()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("MKT-4F9A1C22B7D3")
+                .hasMessageContaining(MERCHANT_A.toString());
+
+        // Checked for every seller BEFORE the first insert, so not even the
+        // seller who does have a row gets a parcel.
+        verify(fulfilmentRepository, never())
+                .openIfAbsent(any(), any(), any(), anyLong(), any(), any(), any());
+        verify(eventRepository, never()).save(any());
+    }
+
+    // ------------------------------------------------------------------
+    // A MIXED order (V21): the summary says DELIVERY, one parcel is collected
+    // ------------------------------------------------------------------
+
+    /** The order as a mixed basket leaves it: summary DELIVERY with a
+     *  destination (MERCHANT_B delivers), and gift recipient named. */
+    private MarketOrder mixedOrder() {
+        MarketOrder mixed = order();   // summary DELIVERY, destination set
+        mixed.setRecipientName("Gogo Chipo Moyo");
+        mixed.setRecipientMsisdn("+263772000111");
+        when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(mixed));
+        return mixed;
+    }
+
+    private OrderFulfilment mixedParcel(UUID merchantId, DeliveryMethod method,
+                                        FulfilmentStatus status) {
+        parcelMethod = method;
+        return parcel(UUID.randomUUID(), merchantId, status);
+    }
+
+    @Test
+    @DisplayName("MIXED: the collected parcel cannot be self-closed even though the order's summary is DELIVERY")
+    void mixedCollectedParcelCannotBeSelfClosed() {
+        mixedOrder();
+        OrderFulfilment collected = mixedParcel(MERCHANT_A, DeliveryMethod.COLLECTION,
+                FulfilmentStatus.DISPATCHED);
+
+        assertThatThrownBy(() -> service.markDelivered(SELLER_A, collected.getId()))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    assertThat(((ApiException) ex).code()).isEqualTo("collect_code_required");
+                    assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.CONFLICT);
+                });
+        assertThat(collected.getStatus()).isEqualTo(FulfilmentStatus.DISPATCHED);
+        verify(settlementService, never()).onParcelDelivered(any());
+        assertThat(outcome("self_close_refused")).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("MIXED: the delivered sibling parcel CAN be self-closed, and the buyer is told it was on its way")
+    void mixedDeliveredSiblingCanBeSelfClosed() {
+        mixedOrder();
+        OrderFulfilment delivered = mixedParcel(MERCHANT_B, DeliveryMethod.DELIVERY,
+                FulfilmentStatus.DISPATCHED);
+
+        MerchantFulfilmentResponse view = service.markDelivered(SELLER_B, delivered.getId());
+
+        assertThat(view.status()).isEqualTo(FulfilmentStatus.DELIVERED);
+        assertThat(view.deliveryMethod()).isEqualTo(DeliveryMethod.DELIVERY);
+        assertThat(delivered.getDeliveredBy()).isEqualTo(DeliveryConfirmer.MERCHANT);
+        verify(settlementService).onParcelDelivered(delivered);
+        assertThat(publishedProgress().deliveryMethod()).isEqualTo(DeliveryMethod.DELIVERY);
+    }
+
+    @Test
+    @DisplayName("MIXED: a collected parcel set aside at the counter can close as NOT_COLLECTED, and the card shows no destination but the collector")
+    void mixedCollectedParcelHasTheNoShowExit() {
+        mixedOrder();
+        OrderFulfilment collected = mixedParcel(MERCHANT_A, DeliveryMethod.COLLECTION,
+                FulfilmentStatus.DISPATCHED);
+        collected.setDispatchedAt(Instant.now().minusSeconds(86_400));
+
+        MerchantFulfilmentResponse view = service.markUnfulfillable(SELLER_A, collected.getId(),
+                new UnfulfillableRequest("Waited a week, never collected"));
+
+        assertThat(collected.getStatus()).isEqualTo(FulfilmentStatus.UNFULFILLED);
+        assertThat(view.closedBy()).isEqualTo(ParcelCloseMethod.NOT_COLLECTED);
+        assertThat(view.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        // The collecting seller never sees where the other seller's half goes...
+        assertThat(view.destination()).isNull();
+        // ...but does see who is coming to the counter.
+        assertThat(view.collectorName()).isEqualTo("Gogo Chipo Moyo");
+        ArgumentCaptor<Object> events = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher).publishEvent(events.capture());
+        assertThat(((ParcelUnfulfilled) events.getValue()).notCollected()).isTrue();
+    }
+
+    @Test
+    @DisplayName("MIXED: the delivered sibling has no no-show exit once dispatched - it is with a courier")
+    void mixedDeliveredSiblingCannotBeDeclinedOnceDispatched() {
+        mixedOrder();
+        OrderFulfilment delivered = mixedParcel(MERCHANT_B, DeliveryMethod.DELIVERY,
+                FulfilmentStatus.DISPATCHED);
+
+        assertThatThrownBy(() -> service.markUnfulfillable(SELLER_B, delivered.getId(),
+                new UnfulfillableRequest("Courier lost it")))
+                .isInstanceOf(ApiException.class)
+                .extracting(ex -> ((ApiException) ex).code())
+                .isEqualTo("illegal_fulfilment_state");
+        assertThat(delivered.getStatus()).isEqualTo(FulfilmentStatus.DISPATCHED);
+    }
+
+    @Test
+    @DisplayName("MIXED: dispatching the collected parcel announces it as ready to collect, and its card carries the destination only on the delivered sibling")
+    void mixedDispatchAnnouncesTheParcelsOwnMethod() {
+        mixedOrder();
+        OrderFulfilment collected = mixedParcel(MERCHANT_A, DeliveryMethod.COLLECTION,
+                FulfilmentStatus.PREPARING);
+
+        MerchantFulfilmentResponse card = service.dispatch(SELLER_A, collected.getId(), null);
+
+        assertThat(publishedProgress().deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        assertThat(card.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        assertThat(card.destination()).isNull();
+
+        OrderFulfilment delivered = mixedParcel(MERCHANT_B, DeliveryMethod.DELIVERY,
+                FulfilmentStatus.PREPARING);
+        delivered.setTrackingCode("TRK-7F3K9Q2M4X");
+        when(fulfilmentRepository.findByTrackingCode("TRK-7F3K9Q2M4X"))
+                .thenReturn(Optional.of(delivered));
+        MerchantFulfilmentResponse sibling = service.byTrackingCode(SELLER_B, "TRK-7F3K9Q2M4X");
+        assertThat(sibling.destination()).isNotNull();
+        assertThat(sibling.destination().line1()).isEqualTo("14 Samora Machel Ave");
+        // A courier delivery names its recipient in the destination; no
+        // second "collector" name beside it.
+        assertThat(sibling.collectorName()).isNull();
     }
 
     private OrderFulfilment tracked(UUID merchantId, String code) {

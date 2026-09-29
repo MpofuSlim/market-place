@@ -40,6 +40,9 @@ class ExpirySweepIT extends PostgresTestContainer {
     @Autowired
     private MarketOrderItemRepository itemRepository;
 
+    @Autowired
+    private MarketOrderSellerRepository orderSellerRepository;
+
     @Test
     void lapsedOrderExpiresAndRestocksExactlyOnce() {
         UUID listingId = seedActiveListing(3);
@@ -120,7 +123,7 @@ class ExpirySweepIT extends PostgresTestContainer {
                 .currency("USD")
                 // COLLECTION, so the order needs no destination — the V9 CHECK
                 // refuses a DELIVERY order without one.
-                .deliveryMethod(DeliveryMethod.COLLECTION)
+                .deliverySummary(DeliveryMethod.COLLECTION)
                 .expiresAt(expiresAt)
                 .stockReleased(false)
                 .createdAt(createdAt)
@@ -137,6 +140,9 @@ class ExpirySweepIT extends PostgresTestContainer {
                 .quantity(quantity)
                 .lineTotalCents(1550L * quantity)
                 .build());
+        // Every order records each seller's method (V20; backfilled by V21).
+        orderSellerRepository.save(new MarketOrderSeller(order.getId(), merchantId,
+                DeliveryMethod.COLLECTION));
         return order.getId();
     }
 

@@ -29,13 +29,15 @@ class BuyerParcelRulesTest {
     private static final Instant NOW = Instant.parse("2026-09-24T12:00:00Z");
     private final BuyerParcelRules rules = new BuyerParcelRules(WINDOW_DAYS);
 
+    /** A parcel travelling by {@code method} — the ONLY method the rules read (V21). */
     private static OrderFulfilment parcel(FulfilmentStatus status, DeliveryConfirmer by,
-                                          Instant deliveredAt) {
+                                          Instant deliveredAt, DeliveryMethod method) {
         return OrderFulfilment.builder()
                 .id(UUID.randomUUID())
                 .orderId(UUID.randomUUID())
                 .merchantId(UUID.randomUUID())
                 .status(status)
+                .deliveryMethod(method)
                 .deliveredBy(by)
                 .deliveredAt(deliveredAt)
                 .unfulfilledAt(status == FulfilmentStatus.UNFULFILLED ? NOW.minusSeconds(60) : null)
@@ -43,8 +45,18 @@ class BuyerParcelRulesTest {
                 .build();
     }
 
+    /** For the rules that do not read the method (cancel, dispute). */
+    private static OrderFulfilment parcel(FulfilmentStatus status, DeliveryConfirmer by,
+                                          Instant deliveredAt) {
+        return parcel(status, by, deliveredAt, DeliveryMethod.DELIVERY);
+    }
+
     private static OrderFulfilment open(FulfilmentStatus status) {
         return parcel(status, null, null);
+    }
+
+    private static OrderFulfilment open(FulfilmentStatus status, DeliveryMethod method) {
+        return parcel(status, null, null, method);
     }
 
     private static MerchantSettlement money(SettlementStatus status, Instant releasableAt) {
@@ -86,14 +98,15 @@ class BuyerParcelRulesTest {
                                 NOW.minus(Duration.ofDays(8))}) {
                             OrderFulfilment p = parcel(status,
                                     status == FulfilmentStatus.DELIVERED ? DeliveryConfirmer.BUYER : null,
-                                    status == FulfilmentStatus.DELIVERED ? deliveredAt : null);
+                                    status == FulfilmentStatus.DELIVERED ? deliveredAt : null,
+                                    method);
                             for (OrderStatus orderStatus : OrderStatus.values()) {
-                                ParcelActions a = rules.stateOf(orderStatus, method, p, money,
+                                ParcelActions a = rules.stateOf(orderStatus, p, money,
                                         disputed, NOW).actions();
                                 assertThat(a.canConfirmReceipt())
-                                        .isEqualTo(rules.confirmReceiptRefusal(p, method) == null);
+                                        .isEqualTo(rules.confirmReceiptRefusal(p) == null);
                                 assertThat(a.canRequestCollectCode())
-                                        .isEqualTo(rules.collectCodeRefusal(p, method) == null);
+                                        .isEqualTo(rules.collectCodeRefusal(p) == null);
                                 assertThat(a.canCancel())
                                         .isEqualTo(rules.cancelRefusal(p, money) == null);
                                 assertThat(a.canDispute()).isEqualTo(rules.disputeRefusal(
@@ -117,14 +130,14 @@ class BuyerParcelRulesTest {
             + "machine's own message")
     void confirmReceipt() {
         for (DeliveryMethod method : DeliveryMethod.values()) {
-            assertThat(rules.confirmReceiptRefusal(open(FulfilmentStatus.PREPARING), method)).isNull();
-            assertThat(rules.confirmReceiptRefusal(open(FulfilmentStatus.DISPATCHED), method)).isNull();
+            assertThat(rules.confirmReceiptRefusal(open(FulfilmentStatus.PREPARING, method))).isNull();
+            assertThat(rules.confirmReceiptRefusal(open(FulfilmentStatus.DISPATCHED, method))).isNull();
             BuyerParcelRules.Refusal closed = rules.confirmReceiptRefusal(
-                    parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, NOW), method);
+                    parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, NOW, method));
             assertThat(closed.code()).isEqualTo("illegal_fulfilment_state");
             assertThat(closed.message())
                     .isEqualTo("This parcel is DELIVERED and cannot move to DELIVERED");
-            assertThat(code(rules.confirmReceiptRefusal(open(FulfilmentStatus.UNFULFILLED), method)))
+            assertThat(code(rules.confirmReceiptRefusal(open(FulfilmentStatus.UNFULFILLED, method))))
                     .isEqualTo("illegal_fulfilment_state");
         }
     }
@@ -138,18 +151,23 @@ class BuyerParcelRulesTest {
             + "or cancelled parcel")
     void collectCode() {
         for (FulfilmentStatus status : FulfilmentStatus.values()) {
-            assertThat(code(rules.collectCodeRefusal(open(status), DeliveryMethod.DELIVERY)))
-                    .isEqualTo("collect_code_not_applicable");
+            BuyerParcelRules.Refusal delivery =
+                    rules.collectCodeRefusal(open(status, DeliveryMethod.DELIVERY));
+            assertThat(code(delivery)).isEqualTo("collect_code_not_applicable");
+            // Worded for the PARCEL (V21): on a mixed order "this is a delivery
+            // order" was false for the order's other half.
+            assertThat(delivery.message())
+                    .isEqualTo("This parcel is being delivered - there is nothing to collect in person");
         }
-        assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.PREPARING),
-                DeliveryMethod.COLLECTION)).isNull();
-        assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.DISPATCHED),
-                DeliveryMethod.COLLECTION)).isNull();
-        assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.DELIVERED),
-                DeliveryMethod.COLLECTION).message())
+        assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.PREPARING,
+                DeliveryMethod.COLLECTION))).isNull();
+        assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.DISPATCHED,
+                DeliveryMethod.COLLECTION))).isNull();
+        assertThat(rules.collectCodeRefusal(open(FulfilmentStatus.DELIVERED,
+                DeliveryMethod.COLLECTION)).message())
                 .isEqualTo("This parcel has already been handed over");
-        BuyerParcelRules.Refusal cancelled = rules.collectCodeRefusal(open(FulfilmentStatus.UNFULFILLED),
-                DeliveryMethod.COLLECTION);
+        BuyerParcelRules.Refusal cancelled = rules.collectCodeRefusal(open(FulfilmentStatus.UNFULFILLED,
+                DeliveryMethod.COLLECTION));
         assertThat(cancelled.code()).isEqualTo("illegal_fulfilment_state");
         assertThat(cancelled.message())
                 .isEqualTo("This parcel was cancelled - there is nothing to collect");
@@ -249,18 +267,18 @@ class BuyerParcelRulesTest {
             + "seller's own 'delivered'")
     void receivedAt() {
         Instant at = NOW.minusSeconds(3600);
-        assertThat(rules.stateOf(OrderStatus.PAID, DeliveryMethod.COLLECTION,
-                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.RECIPIENT, at),
+        assertThat(rules.stateOf(OrderStatus.PAID,
+                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.RECIPIENT, at, DeliveryMethod.COLLECTION),
                 money(SettlementStatus.RELEASABLE, null), false, NOW).receivedAt()).isEqualTo(at);
-        assertThat(rules.stateOf(OrderStatus.PAID, DeliveryMethod.DELIVERY,
-                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.BUYER, at),
+        assertThat(rules.stateOf(OrderStatus.PAID,
+                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.BUYER, at, DeliveryMethod.DELIVERY),
                 money(SettlementStatus.RELEASABLE, null), false, NOW).receivedAt()).isEqualTo(at);
-        assertThat(rules.stateOf(OrderStatus.PAID, DeliveryMethod.DELIVERY,
-                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, at),
+        assertThat(rules.stateOf(OrderStatus.PAID,
+                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, at, DeliveryMethod.DELIVERY),
                 money(SettlementStatus.HELD, at.plus(Duration.ofHours(168))), false, NOW)
                 .receivedAt()).isNull();
-        assertThat(rules.stateOf(OrderStatus.PAID, DeliveryMethod.DELIVERY,
-                open(FulfilmentStatus.DISPATCHED), money(SettlementStatus.HELD, null), false, NOW)
+        assertThat(rules.stateOf(OrderStatus.PAID,
+                open(FulfilmentStatus.DISPATCHED, DeliveryMethod.DELIVERY), money(SettlementStatus.HELD, null), false, NOW)
                 .receivedAt()).isNull();
     }
 
@@ -270,8 +288,7 @@ class BuyerParcelRulesTest {
     void codeHandoverState() {
         Instant at = NOW.minusSeconds(3600);
         BuyerParcelRules.BuyerParcelState state = rules.stateOf(OrderStatus.PAID,
-                DeliveryMethod.COLLECTION,
-                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.RECIPIENT, at),
+                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.RECIPIENT, at, DeliveryMethod.COLLECTION),
                 money(SettlementStatus.RELEASABLE, null), false, NOW);
 
         assertThat(state.actions()).isEqualTo(new ParcelActions(false, false, false, true));
@@ -289,8 +306,7 @@ class BuyerParcelRulesTest {
         Instant at = NOW.minusSeconds(3600);
         Instant releasesAt = at.plus(Duration.ofHours(168));
         BuyerParcelRules.BuyerParcelState state = rules.stateOf(OrderStatus.PAID,
-                DeliveryMethod.DELIVERY,
-                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, at),
+                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.MERCHANT, at, DeliveryMethod.DELIVERY),
                 money(SettlementStatus.HELD, releasesAt), false, NOW);
 
         assertThat(state.actions()).isEqualTo(new ParcelActions(false, false, false, true));
@@ -305,8 +321,7 @@ class BuyerParcelRulesTest {
     void pastTheWindow() {
         Instant at = NOW.minus(Duration.ofDays(8));
         BuyerParcelRules.BuyerParcelState state = rules.stateOf(OrderStatus.PAID,
-                DeliveryMethod.DELIVERY,
-                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.BUYER, at),
+                parcel(FulfilmentStatus.DELIVERED, DeliveryConfirmer.BUYER, at, DeliveryMethod.DELIVERY),
                 money(SettlementStatus.RELEASABLE, null), false, NOW);
 
         assertThat(state.actions()).isEqualTo(ParcelActions.NONE);
@@ -318,7 +333,7 @@ class BuyerParcelRulesTest {
     @DisplayName("A paid parcel being prepared: everything but a code is possible on a delivery")
     void preparingDelivery() {
         BuyerParcelRules.BuyerParcelState state = rules.stateOf(OrderStatus.PAID,
-                DeliveryMethod.DELIVERY, open(FulfilmentStatus.PREPARING),
+                open(FulfilmentStatus.PREPARING, DeliveryMethod.DELIVERY),
                 money(SettlementStatus.HELD, null), false, NOW);
 
         assertThat(state.actions()).isEqualTo(new ParcelActions(true, false, true, true));

@@ -69,7 +69,9 @@ public class SettlementViewAssembler {
             rows.add(SettlementResponse.from(s, new SettlementResponse.Context(
                     order == null ? null : order.getOrderRef(),
                     itemSummary(mine),
-                    order == null ? null : ParcelCloseMethod.of(parcel, order.getDeliveryMethod()),
+                    // The PARCEL's own method decides NOT_COLLECTED vs
+                    // CANNOT_SUPPLY (V21), never the order's summary.
+                    ParcelCloseMethod.of(parcel),
                     ParcelCloseMethod.closedAt(parcel),
                     refundReason(s, parcel, dispute),
                     ParcelDisputeSummary.of(dispute))));

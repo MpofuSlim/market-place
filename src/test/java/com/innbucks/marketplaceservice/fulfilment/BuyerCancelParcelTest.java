@@ -64,6 +64,10 @@ class BuyerCancelParcelTest {
     private ApplicationEventPublisher eventPublisher;
     private SimpleMeterRegistry registry;
     private FulfilmentService service;
+    /** How the parcels this test builds travel. The helper that sets the
+     *  order's summary sets this too (a uniform order); the MIXED cases set it
+     *  apart from the summary (V21 — the parcel's method is the one read). */
+    private DeliveryMethod parcelMethod = DeliveryMethod.DELIVERY;
 
     @BeforeEach
     void setUp() {
@@ -89,12 +93,13 @@ class BuyerCancelParcelTest {
     }
 
     private void order(DeliveryMethod method) {
+        parcelMethod = method;
         Instant now = Instant.now();
         when(orderRepository.findById(ORDER_ID)).thenReturn(Optional.of(MarketOrder.builder()
                 .id(ORDER_ID).orderRef("MKT-4F9A1C22B7D3").buyerUuid(BUYER_UUID)
                 .buyerMsisdn("+263771234567").status(OrderStatus.PAID)
                 .subtotalCents(3100).deliveryFeeCents(800).totalCents(3900).currency("USD")
-                .deliveryMethod(method)
+                .deliverySummary(method)
                 .expiresAt(now).paidAt(now).createdAt(now).updatedAt(now).build()));
     }
 
@@ -102,7 +107,10 @@ class BuyerCancelParcelTest {
         Instant now = Instant.now();
         OrderFulfilment p = OrderFulfilment.builder()
                 .id(UUID.randomUUID()).orderId(ORDER_ID).merchantId(MERCHANT).status(status)
-                .trackingCode("TRK-7F3K9Q2M4X").deliveryFeeCents(800)
+                .trackingCode("TRK-7F3K9Q2M4X")
+                // A collected parcel carries no fee (chk_fulfilment_collection_no_fee).
+                .deliveryFeeCents(parcelMethod == DeliveryMethod.DELIVERY ? 800 : 0)
+                .deliveryMethod(parcelMethod)
                 .createdAt(now).updatedAt(now).version(0L).build();
         when(fulfilmentRepository.findById(p.getId())).thenReturn(Optional.of(p));
         return p;
@@ -131,7 +139,7 @@ class BuyerCancelParcelTest {
         assertThat(parcel.getUnfulfilledBy()).isEqualTo(UnfulfilledBy.BUYER);
         assertThat(parcel.getUnfulfilledReason()).isEqualTo("Ordered the wrong size");
         assertThat(parcel.getUnfulfilledAt()).isNotNull();
-        assertThat(ParcelCloseMethod.of(parcel, DeliveryMethod.DELIVERY))
+        assertThat(ParcelCloseMethod.of(parcel))
                 .isEqualTo(ParcelCloseMethod.BUYER_CANCELLED);
         verify(stockReturner).returnOnce(parcel);
         verify(settlementService).markRefundDueCancelledByBuyer(settlement);
@@ -257,7 +265,7 @@ class BuyerCancelParcelTest {
                 new com.innbucks.marketplaceservice.fulfilment.dto.UnfulfillableRequest("Out of stock"));
 
         assertThat(parcel.getUnfulfilledBy()).isEqualTo(UnfulfilledBy.SELLER);
-        assertThat(ParcelCloseMethod.of(parcel, DeliveryMethod.DELIVERY))
+        assertThat(ParcelCloseMethod.of(parcel))
                 .isEqualTo(ParcelCloseMethod.CANNOT_SUPPLY);
     }
 }

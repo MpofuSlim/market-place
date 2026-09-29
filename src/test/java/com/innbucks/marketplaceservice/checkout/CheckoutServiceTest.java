@@ -579,4 +579,231 @@ class CheckoutServiceTest {
         assertThat(collected.get("sellers").get(0).has("deliveryFeeCents")).isFalse();
         assertThat(collected.has("availabilityTownCode")).isFalse();
     }
+
+    // ------------------------------------------------------------------
+    // A method per seller (V20, sellerDeliveryMethods)
+    // ------------------------------------------------------------------
+
+    private static final UUID STALE_SELLER = UUID.fromString("0f0e0d0c-0b0a-4908-8706-050403020100");
+
+    private CheckoutQuoteRequest perSeller(DeliveryMethod basketDefault, UUID addressId,
+                                           List<com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice> choices) {
+        return new CheckoutQuoteRequest(null, List.of(new CheckoutQuoteRequest.Item(LISTING, 1),
+                new CheckoutQuoteRequest.Item(OTHER_LISTING, 1)), basketDefault, addressId, null,
+                choices);
+    }
+
+    private static com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice choice(
+            UUID merchantId, DeliveryMethod method) {
+        return new com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice(merchantId, method);
+    }
+
+    /** SELLER delivers Harare for 200 and OTHER_SELLER for 500; both collect. */
+    private void twoSellersBothWays() {
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(1550, 10),
+                sellableBy(OTHER_LISTING, OTHER_SELLER, "Wireless Earbuds", 2599)));
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(LISTING, "harare", 200),
+                new ListingDeliveryTown(OTHER_LISTING, "harare", 500)));
+    }
+
+    @Test
+    @DisplayName("A per-seller choice on a cell that has not switched it on is 422, before anything is loaded")
+    void perSellerChoicesRefusedWhileTheSwitchIsOff() {
+        ApiException ex = catchApi(() -> service.quote(BUYER, perSeller(DeliveryMethod.COLLECTION,
+                null, List.of(choice(SELLER, DeliveryMethod.DELIVERY)))));
+
+        assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT);
+        assertThat(ex.code()).isEqualTo("seller_delivery_methods_disabled");
+        assertThat(ex.getMessage()).isEqualTo("Choosing delivery or collection per seller is not "
+                + "available yet - choose one method for the whole order");
+        verifyNoInteractions(listingRepository, coverage, addressService);
+    }
+
+    @Test
+    @DisplayName("An absent, empty or all-null choice list is no choice at all - allowed with the switch off")
+    void noRealChoiceIsAllowedWhileTheSwitchIsOff() {
+        twoSellersBothWays();
+        java.util.List<com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice> onlyNulls =
+                new java.util.ArrayList<>();
+        onlyNulls.add(null);
+
+        for (var choices : java.util.Arrays.asList(null, List.<com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice>of(), onlyNulls)) {
+            CheckoutQuoteResponse quote = service.quote(BUYER,
+                    perSeller(DeliveryMethod.COLLECTION, null, choices));
+            assertThat(quote.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+            assertThat(quote.sellers()).extracting(CheckoutQuoteResponse.QuoteSeller::deliveryMethod)
+                    .containsOnly(DeliveryMethod.COLLECTION);
+        }
+        assertThat(service.resolveSellerChoices(onlyNulls)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("One seller named twice is 400 - even with the same method both times")
+    void aSellerNamedTwiceIsRefused() {
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+
+        ApiException ex = catchApi(() -> service.quote(BUYER, perSeller(DeliveryMethod.COLLECTION,
+                null, List.of(choice(SELLER, DeliveryMethod.DELIVERY),
+                        choice(SELLER, DeliveryMethod.DELIVERY)))));
+
+        assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST);
+        assertThat(ex.code()).isEqualTo("duplicate_delivery_method_choice");
+        assertThat(ex.getMessage()).isEqualTo("sellerDeliveryMethods names the same seller more than once");
+        verifyNoInteractions(listingRepository);
+    }
+
+    @Test
+    @DisplayName("A method the cell does not offer is 422 in resolveMethod's words, naming the seller")
+    void anUnofferedChoiceNamesTheSeller() {
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+        properties.getDelivery().setMethods(EnumSet.of(DeliveryMethod.COLLECTION));
+
+        ApiException ex = catchApi(() -> service.quote(BUYER, perSeller(null, null,
+                List.of(choice(OTHER_SELLER, DeliveryMethod.COLLECTION),
+                        choice(SELLER, DeliveryMethod.DELIVERY)))));
+
+        assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT);
+        assertThat(ex.code()).isEqualTo("delivery_method_unavailable");
+        assertThat(ex.getMessage()).isEqualTo("DELIVERY is not available in this market");
+        assertThat(ex.details()).isEqualTo(java.util.Map.of("merchantId", SELLER.toString()));
+        verifyNoInteractions(listingRepository);
+    }
+
+    @Test
+    @DisplayName("A null entry is skipped and a choice for a seller not in the basket is ignored")
+    void nullEntriesSkippedAndStaleSellersIgnored() {
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+        twoSellersBothWays();
+        when(addressService.requireForCheckout(any(), any())).thenReturn(address());
+        java.util.List<com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice> choices =
+                new java.util.ArrayList<>();
+        choices.add(null);
+        choices.add(choice(STALE_SELLER, DeliveryMethod.DELIVERY));
+        choices.add(choice(OTHER_SELLER, DeliveryMethod.DELIVERY));
+
+        CheckoutQuoteResponse quote = service.quote(BUYER,
+                perSeller(DeliveryMethod.COLLECTION, null, choices));
+
+        // The stale seller is nowhere; the named one delivers, the other keeps the default.
+        assertThat(quote.sellers()).containsExactly(
+                new CheckoutQuoteResponse.QuoteSeller(SELLER, DeliveryMethod.COLLECTION,
+                        List.of(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION), null),
+                new CheckoutQuoteResponse.QuoteSeller(OTHER_SELLER, DeliveryMethod.DELIVERY,
+                        List.of(DeliveryMethod.DELIVERY, DeliveryMethod.COLLECTION), 500L));
+        assertThat(quote.checkoutReady()).isTrue();
+        // A choice list naming ONLY a stale seller is the uniform plan.
+        CheckoutQuoteResponse onlyStale = service.quote(BUYER, perSeller(DeliveryMethod.COLLECTION,
+                null, List.of(choice(STALE_SELLER, DeliveryMethod.DELIVERY))));
+        assertThat(onlyStale.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        assertThat(onlyStale.sellers()).extracting(CheckoutQuoteResponse.QuoteSeller::deliveryMethod)
+                .containsOnly(DeliveryMethod.COLLECTION);
+    }
+
+    @Test
+    @DisplayName("A mixed quote: the address is resolved, only the delivering seller is charged, only the collecting one is on collectionPoints")
+    void aMixedQuoteChargesAndCollectsPerSeller() {
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+        twoSellersBothWays();
+        when(addressService.requireForCheckout(any(), any())).thenReturn(address());
+
+        CheckoutQuoteResponse quote = service.quote(BUYER, perSeller(DeliveryMethod.COLLECTION,
+                null, List.of(choice(OTHER_SELLER, DeliveryMethod.DELIVERY))));
+
+        // The summary: DELIVERY, because someone delivers - and so an address.
+        assertThat(quote.deliveryMethod()).isEqualTo(DeliveryMethod.DELIVERY);
+        assertThat(quote.deliveryAddress()).isNotNull();
+        assertThat(quote.availabilityTownCode()).isEqualTo("harare");
+        verify(addressService).requireForCheckout(BUYER, null);
+        verify(addressService, never()).findForQuote(any(), any());
+        // One fee: the delivering seller's.
+        assertThat(quote.deliveryFees()).containsExactly(
+                new CheckoutQuoteResponse.SellerDeliveryFee(OTHER_SELLER, 500));
+        assertThat(quote.deliveryFeeCents()).isEqualTo(500);
+        assertThat(quote.subtotalCents()).isEqualTo(1550 + 2599);
+        assertThat(quote.totalCents()).isEqualTo(1550 + 2599 + 500);
+        // Where the collecting seller is collected - and only them.
+        verify(collectionPoints).resolve(List.of(SELLER), null);
+        assertThat(quote.collectionPoints()).extracting(
+                com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint::merchantId)
+                .containsExactly(SELLER);
+        assertThat(quote.checkoutReady()).isTrue();
+    }
+
+    @Test
+    @DisplayName("The address is needed exactly when some seller delivers: a DELIVERY default whose every seller collects asks for none")
+    void addressRequiredExactlyWhenSomeoneDelivers() {
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+        twoSellersBothWays();
+        when(addressService.findForQuote(any(), any())).thenReturn(Optional.empty());
+
+        CheckoutQuoteResponse quote = service.quote(BUYER, perSeller(DeliveryMethod.DELIVERY, null,
+                List.of(choice(SELLER, DeliveryMethod.COLLECTION),
+                        choice(OTHER_SELLER, DeliveryMethod.COLLECTION))));
+
+        assertThat(quote.deliveryMethod()).isEqualTo(DeliveryMethod.COLLECTION);
+        assertThat(quote.deliveryAddress()).isNull();
+        assertThat(quote.deliveryFees()).isEmpty();
+        verify(addressService, never()).requireForCheckout(any(), any());
+        assertThat(quote.collectionPoints()).extracting(
+                com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint::merchantId)
+                .containsExactly(SELLER, OTHER_SELLER);
+
+        // ...and a COLLECTION default with ONE seller delivering needs one: with
+        // no saved address that is the usual 400, never a quote with nowhere to send.
+        when(addressService.requireForCheckout(any(), any()))
+                .thenThrow(ApiException.badRequest("delivery_address_required",
+                        "Choose a delivery address, or add one first"));
+        assertThat(catchApi(() -> service.quote(BUYER, perSeller(DeliveryMethod.COLLECTION, null,
+                List.of(choice(SELLER, DeliveryMethod.DELIVERY))))).code())
+                .isEqualTo("delivery_address_required");
+    }
+
+    @Test
+    @DisplayName("A delivery-only seller chosen for DELIVERY beside a collecting seller is ready; the same basket uniform is not")
+    void aDeliveryOnlySellerBesideACollectingOneIsReadyWhenMixed() {
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+        when(listingRepository.findAllById(any())).thenReturn(List.of(sellable(1550, 10),
+                sellableBy(OTHER_LISTING, OTHER_SELLER, "Wireless Earbuds", 2599)));
+        // SELLER does not deliver to Harare; OTHER_SELLER only delivers.
+        when(coverage.findByListingIdIn(any())).thenReturn(List.of(
+                new ListingDeliveryTown(LISTING, "bulawayo", 900),
+                new ListingDeliveryTown(OTHER_LISTING, "harare", 500)));
+        when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of(OTHER_SELLER));
+        when(addressService.requireForCheckout(any(), any())).thenReturn(address());
+        when(addressService.findForQuote(any(), any())).thenReturn(Optional.of(address()));
+
+        assertThat(service.quote(BUYER, twoSellers(DeliveryMethod.DELIVERY, null)).checkoutReady())
+                .isFalse();
+        assertThat(service.quote(BUYER, twoSellers(DeliveryMethod.COLLECTION, null)).checkoutReady())
+                .isFalse();
+
+        CheckoutQuoteResponse mixed = service.quote(BUYER, perSeller(DeliveryMethod.COLLECTION, null,
+                List.of(choice(OTHER_SELLER, DeliveryMethod.DELIVERY))));
+        assertThat(mixed.checkoutReady()).isTrue();
+        assertThat(mixed.rejections()).isNull();
+        assertThat(mixed.sellers()).containsExactly(
+                new CheckoutQuoteResponse.QuoteSeller(SELLER, DeliveryMethod.COLLECTION,
+                        List.of(DeliveryMethod.COLLECTION), null),
+                new CheckoutQuoteResponse.QuoteSeller(OTHER_SELLER, DeliveryMethod.DELIVERY,
+                        List.of(DeliveryMethod.DELIVERY), 500L));
+    }
+
+    @Test
+    @DisplayName("options says perSellerDeliveryMethods only when the switch is on AND the cell offers both methods")
+    void optionsAdvertisePerSellerOnlyWhenItCanWork() {
+        assertThat(service.options().perSellerDeliveryMethods()).isFalse();
+
+        properties.getDelivery().setPerSellerMethodsEnabled(true);
+        assertThat(service.options().perSellerDeliveryMethods()).isTrue();
+
+        properties.getDelivery().setMethods(EnumSet.of(DeliveryMethod.DELIVERY));
+        assertThat(service.options().perSellerDeliveryMethods()).isFalse();
+    }
+
+    private static ApiException catchApi(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(call);
+        assertThat(thrown).isInstanceOf(ApiException.class);
+        return (ApiException) thrown;
+    }
 }

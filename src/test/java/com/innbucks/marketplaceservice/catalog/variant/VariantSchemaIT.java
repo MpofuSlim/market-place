@@ -431,12 +431,19 @@ class VariantSchemaIT extends PostgresTestContainer {
     }
 
     private void insertOrderItem(UUID orderId, UUID listingId, UUID variantId, String variantLabel) {
+        UUID merchantId = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO market_order_item (id, order_id, listing_id, merchant_id,
                     title_snapshot, unit_price_cents, quantity, line_total_cents,
                     variant_id, variant_label)
                 VALUES (?, ?, ?, ?, 'Cotton Crew Tee', 1999, 1, 1999, ?, ?)
-                """, UUID.randomUUID(), orderId, listingId, UUID.randomUUID(), variantId, variantLabel);
+                """, UUID.randomUUID(), orderId, listingId, merchantId, variantId, variantLabel);
+        // Every order records each seller's method (V20; V21 backfilled the
+        // stragglers), so a hand-built order does too.
+        jdbc.update("""
+                INSERT INTO market_order_seller (order_id, merchant_id, delivery_method)
+                VALUES (?, ?, 'COLLECTION')
+                """, orderId, merchantId);
     }
 
     private static String setValue(UUID variantId, String value1, String optionKey) {

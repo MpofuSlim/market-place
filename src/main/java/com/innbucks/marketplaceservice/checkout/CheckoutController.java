@@ -554,6 +554,143 @@ public class CheckoutController {
               }
             }""";
 
+    /**
+     * V20: the per-seller request - the speaker's seller (who collects) at their
+     * counter, the earbuds' seller (who only delivers) to the Harare address.
+     * Same basket, sellers and address as the examples above; the order
+     * examples place exactly this body (MKT-8B3E5D7F9A1C).
+     */
+    public static final String EXAMPLE_MIXED_REQUEST = """
+            {
+              "items": [
+                { "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93", "quantity": 2 },
+                { "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58", "quantity": 1 }
+              ],
+              "deliveryMethod": "COLLECTION",
+              "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45",
+              "sellerDeliveryMethods": [
+                { "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d", "deliveryMethod": "DELIVERY" }
+              ]
+            }""";
+
+    /**
+     * V20: {@link #EXAMPLE_MIXED_REQUEST} quoted. One method would not do - the
+     * earbuds' seller only delivers, and the speaker's seller is collected -
+     * so each seller has their own: {@code deliveryMethod} is the summary
+     * (DELIVERY, someone delivers), the address is resolved for the delivering
+     * seller, ONE fee is charged (theirs), and {@code collectionPoints} lists
+     * the collecting seller alone.
+     */
+    private static final String EXAMPLE_QUOTE_MIXED_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "items": [
+                  {
+                    "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    "quantity": 2,
+                    "lineTotalCents": 4798,
+                    "unitPriceCents": 2399
+                  },
+                  {
+                    "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                    "quantity": 1,
+                    "lineTotalCents": 2599,
+                    "unitPriceCents": 2599
+                  }
+                ],
+                "lineCount": 2,
+                "totalQuantity": 3,
+                "subtotalCents": 7397,
+                "deliveryFeeCents": 500,
+                "totalCents": 7897,
+                "currency": "USD",
+                "deliveryMethod": "DELIVERY",
+                "deliveryMethods": ["DELIVERY", "COLLECTION"],
+                "deliveryAddress": {
+                  "id": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45",
+                  "label": "Home",
+                  "recipientName": "Tariro Moyo",
+                  "recipientMsisdn": "+263771234567",
+                  "line1": "14 Samora Machel Ave",
+                  "line2": "Flat 3B",
+                  "city": "Harare",
+                  "townCode": "harare",
+                  "area": "Avondale",
+                  "landmark": "Opposite the clinic, blue gate",
+                  "defaultAddress": true,
+                  "createdAt": "2026-08-01T08:10:22Z",
+                  "updatedAt": "2026-08-01T08:10:22Z"
+                },
+                "checkoutReady": true,
+                "paymentMethods": [
+                  {
+                    "rail": "INNBUCKS_CODE",
+                    "label": "InnBucks app",
+                    "description": "Approve the payment code in your InnBucks app.",
+                    "completion": "APPROVE_IN_APP"
+                  }
+                ],
+                "deliveryFees": [
+                  { "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d", "feeCents": 500 }
+                ],
+                "collectionPoints": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "collectionPoint": {
+                      "id": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e",
+                      "name": "Avondale shop",
+                      "townCode": "harare",
+                      "townName": "Harare",
+                      "line1": "14 Samora Machel Ave",
+                      "line2": "Shop 3, Avondale Shopping Centre",
+                      "area": "Avondale",
+                      "landmark": "Next to the pharmacy",
+                      "phone": "+263242123456",
+                      "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
+                      "openNow": true
+                    }
+                  }
+                ],
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "COLLECTION",
+                    "availableMethods": ["DELIVERY", "COLLECTION"]
+                  },
+                  {
+                    "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d",
+                    "deliveryMethod": "DELIVERY",
+                    "availableMethods": ["DELIVERY"],
+                    "deliveryFeeCents": 500
+                  }
+                ],
+                "availabilityTownCode": "harare"
+              }
+            }""";
+
+    public static final String EXAMPLE_PER_SELLER_DISABLED_422 = """
+            {
+              "code": "seller_delivery_methods_disabled",
+              "message": "Choosing delivery or collection per seller is not available yet - choose one method for the whole order"
+            }""";
+
+    public static final String EXAMPLE_DUPLICATE_METHOD_CHOICE_400 = """
+            {
+              "code": "duplicate_delivery_method_choice",
+              "message": "sellerDeliveryMethods names the same seller more than once"
+            }""";
+
+    public static final String EXAMPLE_METHOD_CHOICE_UNAVAILABLE_422 = """
+            {
+              "code": "delivery_method_unavailable",
+              "message": "DELIVERY is not available in this market",
+              "data": {
+                "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d"
+              }
+            }""";
+
     private static final String EXAMPLE_OPTIONS_200 = """
             {
               "code": "OK",
@@ -577,7 +714,8 @@ public class CheckoutController {
                   }
                 ],
                 "paymentEndpoint": "POST /payments",
-                "paymentOrderType": "MARKETPLACE"
+                "paymentOrderType": "MARKETPLACE",
+                "perSellerDeliveryMethods": true
               }
             }""";
 
@@ -644,6 +782,22 @@ public class CheckoutController {
                     + "DELIVERY then means \"delivers somewhere\". An unstated method is still "
                     + "COLLECTION for the whole basket: a delivery-only seller never switches it to "
                     + "delivery behind the shopper's back.\n\n"
+                    + "**A method per seller (V20).** On a cell whose `GET /options` says "
+                    + "`perSellerDeliveryMethods: true`, send `sellerDeliveryMethods` "
+                    + "(`[{merchantId, deliveryMethod}]`) to have one seller deliver and another "
+                    + "be collected - the way through a basket no single method can buy (a "
+                    + "delivery-only seller beside one who does not deliver to the buyer's town). "
+                    + "A seller you do not name takes `deliveryMethod`. `sellers[].deliveryMethod` "
+                    + "is then each seller's own, `deliveryMethod` is the summary (DELIVERY when "
+                    + "any seller delivers), the address is resolved exactly when some seller "
+                    + "delivers, `deliveryFees` lists only the delivering sellers and "
+                    + "`collectionPoints` only the collecting ones. Refused before anything is "
+                    + "priced: a non-empty list on a cell without it (422 "
+                    + "`seller_delivery_methods_disabled`), a seller named twice (400 "
+                    + "`duplicate_delivery_method_choice`), a method the cell does not offer (422 "
+                    + "`delivery_method_unavailable`, `data.merchantId` names whose). A null entry "
+                    + "is skipped and an entry for a seller no longer in the basket is ignored. "
+                    + "Send the same body to `POST /marketplace/orders`.\n\n"
                     + "**Options (V19).** A line for a listing sold in options (`hasVariants: "
                     + "true` - sizes, colours) names the chosen one as `variantId`; two sizes of "
                     + "one listing are two lines. Send each option once: the order refuses the "
@@ -677,7 +831,9 @@ public class CheckoutController {
                                       ],
                                       "deliveryMethod": "DELIVERY",
                                       "deliveryAddressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
-                                    }""")})))
+                                    }"""),
+                            @ExampleObject(name = "One seller delivers, the other is collected",
+                                    value = EXAMPLE_MIXED_REQUEST)})))
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The priced checkout preview",
                     content = @Content(examples = {
@@ -691,25 +847,38 @@ public class CheckoutController {
                             @ExampleObject(name = "Collection, point resolved per seller",
                                     value = EXAMPLE_QUOTE_COLLECTION_200),
                             @ExampleObject(name = "Collection, one seller only delivers",
-                                    value = EXAMPLE_QUOTE_DELIVERY_ONLY_SELLER_200)})),
+                                    value = EXAMPLE_QUOTE_DELIVERY_ONLY_SELLER_200),
+                            @ExampleObject(name = "One seller delivers, the other is collected",
+                                    value = EXAMPLE_QUOTE_MIXED_200)})),
             @ApiResponse(responseCode = "400",
-                    description = "Both/neither basket source, an empty cart, a DELIVERY quote "
-                            + "with no address to send to, a collection-point choice that is not "
-                            + "that seller's, or one seller named twice in collectionPoints",
+                    description = "Both/neither basket source, an empty cart, a quote where some "
+                            + "seller delivers with no address to send to, a collection-point "
+                            + "choice that is not that seller's, one seller named twice in "
+                            + "collectionPoints or in sellerDeliveryMethods, or an "
+                            + "sellerDeliveryMethods entry missing a field (VALIDATION_ERROR)",
                     content = @Content(examples = {
                             @ExampleObject(name = "No address", value = EXAMPLE_ADDRESS_REQUIRED_400),
                             @ExampleObject(name = "Two basket sources", value = EXAMPLE_AMBIGUOUS_400),
                             @ExampleObject(name = "Stale collection point",
                                     value = EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
                             @ExampleObject(name = "Seller named twice",
-                                    value = EXAMPLE_DUPLICATE_COLLECTION_POINT_400)})),
+                                    value = EXAMPLE_DUPLICATE_COLLECTION_POINT_400),
+                            @ExampleObject(name = "Seller named twice in sellerDeliveryMethods",
+                                    value = EXAMPLE_DUPLICATE_METHOD_CHOICE_400)})),
             @ApiResponse(responseCode = "403", description = "Not a CUSTOMER",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_FORBIDDEN_403))),
             @ApiResponse(responseCode = "422", description = "The cell does not offer that delivery "
-                    + "method, or the chosen address has no town (saved before towns existed, "
-                    + "with a city that matched none) — edit the address and pick its town",
+                    + "method (for the basket, or for one seller - then `data.merchantId` names "
+                    + "whose), the cell has not switched per-seller methods on and "
+                    + "`sellerDeliveryMethods` names some, or the chosen address has no town "
+                    + "(saved before towns existed, with a city that matched none) — edit the "
+                    + "address and pick its town",
                     content = @Content(examples = {
                             @ExampleObject(name = "Method not offered", value = EXAMPLE_METHOD_422),
+                            @ExampleObject(name = "A seller's method not offered",
+                                    value = EXAMPLE_METHOD_CHOICE_UNAVAILABLE_422),
+                            @ExampleObject(name = "Per-seller methods not switched on",
+                                    value = EXAMPLE_PER_SELLER_DISABLED_422),
                             @ExampleObject(name = "Address has no town", value = """
                                     {
                                       "code": "address_town_required",
@@ -725,6 +894,10 @@ public class CheckoutController {
     @Operation(summary = "What this cell offers at checkout",
             description = "The per-cell picture the app can cache: delivery methods, the flat "
                     + "delivery fee, and the payment rails this cell is actually provisioned for.\n\n"
+                    + "**`perSellerDeliveryMethods` (V20)** says whether a basket may be delivered "
+                    + "from one seller and collected from another (`sellerDeliveryMethods` on the "
+                    + "quote and the order): true only when the cell has switched it on AND offers "
+                    + "both methods. When false, offer one method for the whole basket.\n\n"
                     + "**Read the payment rails from here rather than hardcoding them.** A cell "
                     + "advertises only the rails it can collect on — an app that assumed all three "
                     + "would offer a buyer a method that dead-ends in a 503 from the payments "
