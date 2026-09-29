@@ -476,16 +476,44 @@ public class SettlementController {
     @PreAuthorize("hasRole('SUPER_ADMIN')")
     @Operation(summary = "The payout report (CSV)",
             description = "Every merchant with RELEASABLE money, biggest owed first — the sheet "
-                    + "finance pays from, one row per merchant with parcels, net total and "
-                    + "trading name. The date rides the FILENAME, never a preamble row (a leading "
-                    + "comment breaks every parser that treats line 1 as the header).")
-    @ApiResponses(@ApiResponse(responseCode = "200", description = "CSV attachment",
-            content = @Content(mediaType = "text/csv", examples = @ExampleObject(value =
-                    "merchantId,displayName,parcels,netCents,currency\n"
-                            + "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54,Sunrise Electronics,12,185000,USD\n"))))
+                    + "finance pays from, one row per merchant with parcels, net total, "
+                    + "trading name and the seller's payout DESTINATION (unmasked: a masked "
+                    + "account cannot be paid into; every destination column is empty for a "
+                    + "seller who has none, and the row still appears). `payoutChangedAt` shows "
+                    + "a destination that moved recently. The date rides the FILENAME, never a "
+                    + "preamble row (a leading comment breaks every parser that treats line 1 "
+                    + "as the header).\n\n"
+                    + "Every text cell that starts with `=`, `+`, `-`, `@`, TAB or CR is "
+                    + "prefixed with an apostrophe so a spreadsheet shows it as text instead of "
+                    + "running it — so a mobile-money number reads `'+263771234567`. Sent "
+                    + "`Cache-Control: no-store`, and every export is recorded on the audit "
+                    + "trail (who, when, how many rows — never the account details).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "CSV attachment",
+                    content = @Content(mediaType = "text/csv", examples = @ExampleObject(value =
+                            "merchantId,displayName,parcels,netCents,currency,payoutMethod,"
+                                    + "payoutAccountName,payoutMsisdn,payoutBankName,"
+                                    + "payoutAccountNumber,payoutChangedAt\n"
+                                    + "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54,Sunrise Electronics,12,"
+                                    + "185000,USD,BANK,Rudo Chikwanha,,CBZ Bank,01123456789012,"
+                                    + "2026-09-02T08:14:03Z\n"
+                                    + "3b1f6e02-9c4d-4a7e-8f21-5d0c9a7b3e16,Harare Home Goods,3,"
+                                    + "4650,USD,MOBILE_MONEY,Tariro Moyo,'+263771234567,,,"
+                                    + "2026-08-20T11:40:55Z\n"
+                                    + "9d4c2a71-0e6b-4f58-b3a2-7c1e8f5d6a90,,1,1550,USD,,,,,,\n"))),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid token",
+                    content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """
+                            {"code":"UNAUTHORIZED","message":"Invalid or missing token","data":null}"""))),
+            @ApiResponse(responseCode = "403", description = "Not a SUPER_ADMIN",
+                    content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """
+                            {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}""")))
+    })
     public ResponseEntity<String> payoutReport() {
-        SettlementQueryService.Csv csv = queryService.payoutReportCsv();
+        SettlementQueryService.Csv csv = queryService.payoutReportCsv(CurrentUser.get());
+        // Every payable seller's bank details: never cached by a browser or a
+        // proxy, like the statement beside it.
         return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "attachment; filename=\"" + csv.filename() + "\"")
                 .contentType(MediaType.parseMediaType("text/csv"))

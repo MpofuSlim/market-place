@@ -109,6 +109,12 @@ public enum AuditEventType {
      *  merchant, parcel count, total net and the payout reference; the
      *  per-parcel trail lives in each order's journal. */
     SETTLEMENT_PAID_OUT,
+    /** A SUPER_ADMIN exported the finance payout report — every payable
+     *  seller's bank / mobile-money details in one file, so the export itself
+     *  is evidence. Target = the report's filename; metadata carries the row
+     *  and parcel counts, net per currency and how many sellers had no
+     *  destination — NEVER a name, number or account (V13's stance). */
+    PAYOUT_REPORT_EXPORTED,
     /** The 100x guard tripped: payment confirmation carried an amount that did
      *  not equal the order total. The order parked unconfirmed — any occurrence
      *  is a money incident. */
