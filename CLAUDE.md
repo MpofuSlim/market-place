@@ -1508,6 +1508,84 @@ never change either casually.
     `VariantStockDriftSweeperIT` (through the ShedLock proxy) and the option
     cases in `NotificationFlowIT`, `CatalogTaxonomyBrowseIT`, `ReviewFlowIT`
     and the public-test ITs.
+* **A seller can be DELIVERY-ONLY (V20, PR A of two).** Collection had always
+  been allowed: a seller with no collection point meant "arranged with the
+  seller after you order", so a seller who only delivers could not be
+  expressed, and the app offered Collect on their items until the quote
+  refused. `marketplace_seller.collection_enabled` (default TRUE = every seller
+  before V20) says whether buyers may collect from this seller.
+  * **Setting**: `GET/PUT /marketplace/sellers/me/collection` (MERCHANT_ADMIN,
+    scoped by SHAPE) and `/marketplace/admin/sellers/{merchantId}/collection`
+    (SUPER_ADMIN, audited `bySeller:false`), body `{"collectionEnabled":bool}`.
+    `SellerService.setCollectionEnabled` judges the NO-OP FIRST (a pure read,
+    missing record = collecting): re-saving the current value is always 200 and
+    writes, registers and audits nothing, however the gates stand. A real move to
+    delivery-only then needs, in order, the cell switch
+    (`marketplace.delivery.delivery-only-sellers-enabled`, default **false**, 422
+    `delivery_only_disabled`), a market that delivers (422
+    `delivery_not_offered`) and no ACTIVE listing without a delivery town (409
+    `collection_required`, `data.listings` names at most 20 plus `truncated`,
+    found by a NOT EXISTS over `listing_delivery_town`). All before any write;
+    then `ensureExistsAndLock`, a re-read under the lock, the ONE bulk UPDATE,
+    audit `SELLER_COLLECTION_CHANGED` (no free text) and
+    `marketplace.seller.collection_changed{enabled}`. Turning it back ON is never
+    gated. Stranded listings are refused, never deactivated for the seller.
+  * **`collection_enabled` is read-only on the entity** (`updatable = false`,
+    `@Builder.Default true`) and written only by
+    `MarketplaceSellerRepository.setCollectionEnabled`: the entity has no
+    `@Version`, and approval and the payout destination save the whole row.
+  * **Listing gates keep a delivery-only seller's items deliverable**: going
+    ACTIVE with no delivery town, or clearing the last town of an ACTIVE listing,
+    is 422 `delivery_towns_required`. A lock-free read of the flag, never the
+    seller lock after the listing lock (the `suspend` deadlock order).
+  * **Catalogue**: `ListingResponse.collectionEnabled` (from the seller row the
+    assembler already loads; `collectionTowns` `[]` when false),
+    `MerchantProfileResponse.collectionEnabled` (unknown merchant = true;
+    `collectionPoints` `[]` when false - kept, only hidden),
+    `SellerResponse.collectionEnabled`. `collectsIn` (and `availableIn`'s collect
+    arm) add a correlated NOT EXISTS on a delivery-only seller. The field is the
+    SELLER's setting: whether collection is possible at all also needs the
+    market to offer it, and for a basket the quote is the answer.
+  * **Checkout: one resolver still decides** (`CheckoutPricer`: load, then a
+    `DeliveryPlan`, then price). After `classify` (older reasons win), a
+    COLLECTION line of a delivery-only seller is `COLLECTION_NOT_OFFERED`
+    (ranked LAST in `refusalFor`: 422 `collection_not_offered`; every older
+    refusal byte-identical), and an unknown reason falls to 422
+    `order_line_refused` instead of a 500 (`everyReasonHasABranch` reflects over
+    the constants). `OrderLineRejection.merchantId` (NON_NULL) rides only
+    `NOT_DELIVERED_TO_TOWN` and `COLLECTION_NOT_OFFERED`; `not_delivered_to_town`
+    keeps its suffix unless that seller does not collect. The quote appends
+    `sellers[]` (`merchantId`, `deliveryMethod`, `availableMethods`,
+    `deliveryFeeCents?`) and `availabilityTownCode`, so the app can grey Deliver
+    or Collect out BEFORE the shopper picks; a COLLECTION quote judges delivery
+    against the named-or-default address through a lookup that never refuses.
+    **The cart asks no delivery question** (`DeliveryPlan.NONE`: no coverage and
+    no seller query), so `checkoutReady` cannot flip there; checkout pricing
+    makes exactly one coverage and one `findCollectionDisabledAmong` query.
+    A delivery-only seller is never rendered as "arranged with the seller".
+  * **Snapshot, never the live flag, after the order**: every order writes one
+    `market_order_seller` row per seller (its method) and each parcel copies its
+    seller's method into `order_fulfilment.delivery_method` at PAID
+    (`chk_fulfilment_collection_no_fee`). Fulfilment, settlement and notify never
+    read the live setting, so a collection paid before an opt-out still mints a
+    code and closes. **Readers still use the ORDER's method in PR A** (exact:
+    every order is still uniform); the column is nullable because a V19 replica
+    during the rollout opens parcels without it.
+  * **PR B (next)**: `sellerDeliveryMethods` on the quote and order (a method per
+    seller, behind its own flag; `DeliveryPlan.forSellers` already names every
+    seller so a partial choice cannot leave a delivering seller without an
+    address), `OrderResponse.sellers`, a migration backfilling and NOT NULL-ing
+    the parcel column, and every parcel-level reader switched to the parcel's
+    method. Once that migration runs, PR A is the oldest image that can run.
+  * Keep the switch OFF until the super app renders `sellers[].availableMethods`,
+    or a delivery-only seller's items read as collectable up to the quote.
+  * Pinned by `SellerCollectionTest`, `DeliveryPlanTest`, the V20 cases in
+    `CheckoutPricerTest` (incl. the `availableMethodsParity` matrix) /
+    `CheckoutServiceTest` / `OrderServiceTest` / `CartServiceTest` /
+    `ListingServiceTest` / `CatalogServiceTest` / `ListingViewAssemblerTest` /
+    `FulfilmentServiceTest`, `OrderLineRejectionTest`, and against real Postgres
+    by `CollectionToggleFlowIT`, `CollectionToggleDefaultOffIT` and
+    `DeliveryOnlySellerCheckoutIT`.
 * **A seller's NAME comes from the organization registry (user-service) when
   nobody here has set one.** This service stores seller IDS and no NAMES —
   `Listing.merchantId` and `MarketOrderItem.merchantId` are the selling
