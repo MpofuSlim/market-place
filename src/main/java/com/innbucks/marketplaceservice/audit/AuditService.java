@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.audit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -35,8 +36,10 @@ import java.util.Map;
  * </ul>
  *
  * <p>This is a deliberate trade-off (same stance as payment-service): an audit
- * gap is preferable to a hard outage. Operators reading the application logs
- * will see the {@code AUDIT_WRITE_FAILED} signal and can reconcile from other
+ * gap is preferable to a hard outage. The gap is COUNTED, not just logged —
+ * {@code marketplace.audit.write_failed{type}}, whose invariant is zero — so it
+ * reaches alerting rather than waiting for someone to read the
+ * {@code AUDIT_WRITE_FAILED} log line; operators then reconcile from other
  * sources (gateway access log, OTel spans).
  *
  * <h2>Sensitive data</h2>
@@ -60,13 +63,16 @@ public class AuditService {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final SecretKeySpec hmacKey;
+    private final MarketplaceMetrics metrics;
 
     public AuditService(AuditEventRepository repository,
                         AuditChainHeadRepository chainHeadRepository,
                         ObjectMapper objectMapper,
                         PlatformTransactionManager transactionManager,
-                        @Value("${marketplace.audit.hmac-secret}") String hmacSecret) {
+                        @Value("${marketplace.audit.hmac-secret}") String hmacSecret,
+                        MarketplaceMetrics metrics) {
         this.repository = repository;
+        this.metrics = metrics;
         this.chainHeadRepository = chainHeadRepository;
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
@@ -99,8 +105,9 @@ public class AuditService {
             transactionTemplate.execute(status -> appendChained(event));
         } catch (RuntimeException ex) {
             // Don't propagate: a broken audit path must not break the order flow.
-            // Operators reading logs will see this marker and can pivot to
-            // gateway access logs / OTel for reconstruction.
+            // Counted so alerting sees it; the log marker is for reconstruction
+            // (gateway access logs / OTel).
+            metrics.auditWriteFailed(type.name());
             log.error("AUDIT_WRITE_FAILED type={} actorUuid={} targetId={} reason={}",
                     type.name(), actorUuid, targetId, ex.getMessage(), ex);
         }

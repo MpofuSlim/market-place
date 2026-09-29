@@ -34,20 +34,30 @@ import java.util.UUID;
  * ShedLock's default {@code PROXY_METHOD} mode refuses a method returning a
  * primitive ({@code LockingNotSupportedException}), so an {@code int} return
  * made every scheduled run throw before the query, and the gauge could never
- * leave 0. Tests read the gauge.
+ * leave 0. Tests read the gauge. The scheduler heartbeat
+ * ({@code marketplace.scheduler.last_success{job="variantStockDriftSweeper"}})
+ * is what now makes that class of bug alertable: a run refused before the body
+ * never stamps it.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class VariantStockDriftSweeper {
 
+    /** ShedLock name and the scheduler heartbeat's {@code job} tag. */
+    static final String JOB = "variantStockDriftSweeper";
+
     private final ListingRepository listingRepository;
     private final MarketplaceMetrics metrics;
 
     @Scheduled(cron = "${marketplace.scheduler.variant-stock-drift-cron}")
-    @SchedulerLock(name = "variantStockDriftSweeper")
+    @SchedulerLock(name = JOB)
     @Transactional(readOnly = true)
     public void sweep() {
+        metrics.runScheduledJob(JOB, this::sweepOnce);
+    }
+
+    private void sweepOnce() {
         List<UUID> drifted = listingRepository.findStockDrift();
         metrics.stockDrift(drifted.size());
         if (!drifted.isEmpty()) {

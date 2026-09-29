@@ -1,6 +1,8 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.notify.SellerAlertService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -34,7 +36,8 @@ class CollectionOverdueSweeperTest {
     void setUp() {
         repository = mock(OrderFulfilmentRepository.class);
         alerts = mock(SellerAlertService.class);
-        sweeper = new CollectionOverdueSweeper(repository, alerts, 7);
+        sweeper = new CollectionOverdueSweeper(repository, alerts,
+                new MarketplaceMetrics(new SimpleMeterRegistry()), 7);
     }
 
     private static OrderFulfilmentRepository.OverdueCollection row(UUID id, UUID merchant,

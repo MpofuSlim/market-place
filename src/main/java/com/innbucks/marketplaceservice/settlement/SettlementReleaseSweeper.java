@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.settlement;
 
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -28,12 +29,20 @@ public class SettlementReleaseSweeper {
      *  releases first, and a backlog can't become an unbounded scan. */
     private static final int BATCH_SIZE = 500;
 
+    /** ShedLock name and the scheduler heartbeat's {@code job} tag. */
+    static final String JOB = "settlementReleaseSweeper";
+
     private final MerchantSettlementRepository settlementRepository;
     private final SettlementService settlementService;
+    private final MarketplaceMetrics metrics;
 
     @Scheduled(cron = "${marketplace.scheduler.settlement-release-cron}")
-    @SchedulerLock(name = "settlementReleaseSweeper")
+    @SchedulerLock(name = JOB)
     public void sweep() {
+        metrics.runScheduledJob(JOB, this::sweepOnce);
+    }
+
+    private void sweepOnce() {
         List<MerchantSettlement> due = settlementRepository.findByStatusAndReleasableAtBefore(
                 SettlementStatus.HELD, Instant.now(),
                 PageRequest.of(0, BATCH_SIZE, Sort.by(Sort.Direction.ASC, "releasableAt")));

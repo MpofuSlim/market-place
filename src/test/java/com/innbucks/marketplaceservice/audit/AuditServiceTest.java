@@ -1,6 +1,8 @@
 package com.innbucks.marketplaceservice.audit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -40,15 +42,19 @@ class AuditServiceTest {
     private AuditEventRepository repository;
     private AuditChainHeadRepository chainHeadRepository;
     private AuditService service;
+    private SimpleMeterRegistry registry;
+    private MarketplaceMetrics metrics;
 
     @BeforeEach
     void setUp() {
+        registry = new SimpleMeterRegistry();
+        metrics = new MarketplaceMetrics(registry);
         repository = mock(AuditEventRepository.class);
         chainHeadRepository = mock(AuditChainHeadRepository.class);
         PlatformTransactionManager ptm = mock(PlatformTransactionManager.class);
         when(ptm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new AuditService(repository, chainHeadRepository,
-                new ObjectMapper(), ptm, SECRET);
+                new ObjectMapper(), ptm, SECRET, metrics);
     }
 
     /** Independent HMAC-SHA256 recompute — deliberately NOT via AuditService. */
@@ -103,7 +109,7 @@ class AuditServiceTest {
         // without the key cannot re-seal a tampered row.
         PlatformTransactionManager ptm = mock(PlatformTransactionManager.class);
         AuditService otherKey = new AuditService(repository, chainHeadRepository,
-                new ObjectMapper(), ptm, "different-secret-0123456789abcdefghijklmn");
+                new ObjectMapper(), ptm, "different-secret-0123456789abcdefghijklmn", metrics);
         assertThat(otherKey.computeHmac(e)).isNotEqualTo(service.computeHmac(e));
     }
 
@@ -182,5 +188,41 @@ class AuditServiceTest {
         assertThatCode(() -> service.record(AuditEventType.ORDER_CREATED,
                 "actor", "target", Map.of("k", "v")))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aSwallowedWriteFailureIsCountedByEventType() {
+        // Swallowed is not silent: the gap in the tamper-evident trail must
+        // reach alerting, tagged by the bounded event type (never an id).
+        when(chainHeadRepository.lockHead())
+                .thenReturn(Optional.of(new AuditChainHead((short) 1, null, null)));
+        when(repository.save(any())).thenThrow(new RuntimeException("db down"));
+
+        service.record(AuditEventType.ORDER_PAID, "actor", "target", null);
+        service.record(AuditEventType.ORDER_PAID, "actor", "target", null);
+        service.record(AuditEventType.LISTING_CREATED, "actor", "target", null);
+
+        assertThat(writeFailed("ORDER_PAID")).isEqualTo(2.0);
+        assertThat(writeFailed("LISTING_CREATED")).isEqualTo(1.0);
+    }
+
+    @Test
+    void aSuccessfulWriteCountsNothing() {
+        when(chainHeadRepository.lockHead())
+                .thenReturn(Optional.of(new AuditChainHead((short) 1, null, null)));
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.record(AuditEventType.ORDER_PAID, "actor", "target", null);
+
+        // The series exist from boot (so the FIRST failure is an increase), and
+        // read 0 — for every event type, not only the one written.
+        assertThat(registry.find("marketplace.audit.write_failed").counters())
+                .hasSize(AuditEventType.values().length)
+                .allSatisfy(c -> assertThat(c.count()).isZero());
+    }
+
+    private double writeFailed(String type) {
+        var counter = registry.find("marketplace.audit.write_failed").tag("type", type).counter();
+        return counter == null ? 0 : counter.count();
     }
 }

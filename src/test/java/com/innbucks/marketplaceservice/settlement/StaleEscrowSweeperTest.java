@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -100,5 +101,32 @@ class StaleEscrowSweeperTest {
         assertThat(stale.getStatus()).isEqualTo(SettlementStatus.HELD);
         assertThat(stale.getReleasedAt()).isNull();
         assertThat(stale.getRefundDueAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("A pass that throws is a heartbeat failure, rethrown, and never stamps last_success")
+    void aFailedPassCountsAsAFailure() {
+        when(settlementService.staleHeld(StaleEscrowSweeper.SCAN_LIMIT))
+                .thenThrow(new IllegalStateException("db down"));
+
+        assertThatThrownBy(() -> sweeper.sweep()).isInstanceOf(IllegalStateException.class);
+
+        assertThat(registry.find("marketplace.scheduler.failures")
+                .tag("job", StaleEscrowSweeper.JOB).counter().count()).isEqualTo(1.0);
+        assertThat(registry.find("marketplace.scheduler.last_success")
+                .tag("job", StaleEscrowSweeper.JOB).gauge().value()).isZero();
+    }
+
+    @Test
+    @DisplayName("A clean pass stamps last_success, even when it found nothing")
+    void aQuietPassIsStillASuccess() {
+        when(settlementService.staleHeld(StaleEscrowSweeper.SCAN_LIMIT)).thenReturn(List.of());
+
+        sweeper.sweep();
+
+        assertThat(registry.find("marketplace.scheduler.last_success")
+                .tag("job", StaleEscrowSweeper.JOB).gauge().value()).isPositive();
+        assertThat(registry.find("marketplace.scheduler.failures")
+                .tag("job", StaleEscrowSweeper.JOB).counter().count()).isZero();
     }
 }

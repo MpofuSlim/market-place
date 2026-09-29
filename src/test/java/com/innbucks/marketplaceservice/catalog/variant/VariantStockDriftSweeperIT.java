@@ -124,6 +124,54 @@ class VariantStockDriftSweeperIT extends PostgresTestContainer {
         assertThat(stockOf(optionsListing)).isEqualTo(10);
     }
 
+    @Test
+    @DisplayName("Heartbeat through the proxy: a run stamps last_success; a run ShedLock skips counts as nothing")
+    void theHeartbeatMovesOnARealRunAndIgnoresASkippedOne() throws Exception {
+        sweeper.sweep();
+        double first = lastSuccess();
+        double failuresBefore = failures();
+        assertThat(first).isPositive();
+
+        // Another replica holds the lock (ShedLock compares against the DB's
+        // UTC clock, hence timezone('utc', ...)): the proxy never enters the
+        // method body, so the pass is neither a success nor a failure here.
+        jdbc.update("""
+                INSERT INTO shedlock (name, lock_until, locked_at, locked_by)
+                VALUES (?, timezone('utc', CURRENT_TIMESTAMP) + INTERVAL '1 hour',
+                        timezone('utc', CURRENT_TIMESTAMP), 'another-replica')
+                ON CONFLICT (name) DO UPDATE SET lock_until = EXCLUDED.lock_until,
+                                                 locked_by = EXCLUDED.locked_by""",
+                VariantStockDriftSweeper.JOB);
+        try {
+            Thread.sleep(20);
+            sweeper.sweep();
+            assertThat(lastSuccess()).isEqualTo(first);
+            assertThat(failures()).isEqualTo(failuresBefore);
+        } finally {
+            // shedlock is not truncated between tests: never leave the job
+            // locked. RELEASE the row, never delete it - the lock provider
+            // caches that the row exists and only UPDATEs it afterwards, so a
+            // deleted row would lock the job out for the rest of the context.
+            jdbc.update("UPDATE shedlock SET lock_until = timezone('utc', CURRENT_TIMESTAMP) "
+                    + "WHERE name = ?", VariantStockDriftSweeper.JOB);
+        }
+
+        Thread.sleep(20);
+        sweeper.sweep();
+        assertThat(lastSuccess()).isGreaterThan(first);
+        assertThat(failures()).isEqualTo(failuresBefore);
+    }
+
+    private double lastSuccess() {
+        return meterRegistry.find("marketplace.scheduler.last_success")
+                .tag("job", VariantStockDriftSweeper.JOB).gauge().value();
+    }
+
+    private double failures() {
+        return meterRegistry.find("marketplace.scheduler.failures")
+                .tag("job", VariantStockDriftSweeper.JOB).counter().count();
+    }
+
     private String create(String body) throws Exception {
         String json = mockMvc.perform(post("/marketplace/listings")
                         .header("Authorization", "Bearer " + merchantToken)
