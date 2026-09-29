@@ -1626,9 +1626,12 @@ never change either casually.
     and `MixedBasketFlowIT` use the identical property set on purpose
     (`PublicTestOrderRailIT` keeps the context it already had, with the
     per-seller flag added to it rather than a new one). Every distinct context
-    holds its own pool of up to 20 connections to the one test Postgres, and one
-    more context ran it out of clients ("too many clients already"), failing
-    unrelated ITs. Add a flag to an existing set rather than a new combination.
+    holds its own pool to the one test Postgres, and enough of them ran it out
+    of clients ("too many clients already") - ORDER-dependent, so green locally
+    and red on CI. The fix is structural: `application-test.yaml` keeps each
+    cached pool's idle size small (`minimum-idle: 2`, `idle-timeout: 10s`) and
+    `PostgresTestContainer` starts Postgres with `max_connections=200`. Still,
+    prefer adding a flag to an existing set over a new combination.
   * Pinned by `SellerCollectionTest`, `DeliveryPlanTest`, `DeliveryOnlyPolicyTest`,
     the V20 cases in `CheckoutPricerTest` (incl. the `availableMethodsParity`
     matrix) / `CheckoutServiceTest` / `OrderServiceTest` / `CartServiceTest` /

@@ -54,7 +54,16 @@ public abstract class PostgresTestContainer {
             new PostgreSQLContainer<>("postgres:16-alpine")
                     .withDatabaseName("marketplace_service")
                     .withUsername("marketplace")
-                    .withPassword("marketplace");
+                    .withPassword("marketplace")
+                    // Headroom for every cached test context's pool plus the
+                    // ITs that open their own connections (the migration ITs).
+                    // Postgres's default of 100 ran out once enough distinct
+                    // contexts were cached - order-dependent, so green locally
+                    // and red on CI. The test profile also keeps idle pools
+                    // small (application-test.yaml); this is the second layer.
+                    // fsync=off is the container's own default, restated
+                    // because withCommand replaces it.
+                    .withCommand("postgres", "-c", "fsync=off", "-c", "max_connections=200");
 
     @BeforeAll
     static void startContainer() {

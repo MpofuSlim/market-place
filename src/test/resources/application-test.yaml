@@ -13,6 +13,18 @@ spring:
     # a concrete value here keeps the profile self-sufficient (application.yaml's
     # ${DB_PASSWORD} has no default).
     password: test-local-password
+    hikari:
+      # Every DISTINCT test context (a different @TestPropertySource, a
+      # @MockitoBean set) is cached for the whole run with its own pool, all
+      # against the ONE test Postgres. With production's minimum-idle of 10,
+      # each cached context pinned 10 connections for the rest of the build,
+      # and once enough contexts existed the next one - or an IT opening its own
+      # connection, like the migration ITs - failed "FATAL: too many clients
+      # already". Which class failed depended on test ORDER, so it could pass
+      # locally and fail on CI. Keep idle pools small and shed idle connections
+      # quickly; the maximum stays 20 so the concurrency ITs still get theirs.
+      minimum-idle: 2
+      idle-timeout: 10000
   data:
     redis:
       # Deliberately points at localhost with no Redis expected to be running:
