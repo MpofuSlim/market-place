@@ -2,6 +2,8 @@ package com.innbucks.marketplaceservice.seller;
 
 import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.seller.dto.CollectionSettingRequest;
+import com.innbucks.marketplaceservice.seller.dto.CollectionSettingResponse;
 import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationRequest;
 import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerDecisionRequest;
@@ -61,7 +63,8 @@ public class SellerAdminController {
                 "decidedBy": "1f0e2d3c-4b5a-6978-8695-a4b3c2d1e0f9",
                 "decisionNote": null,
                 "createdAt": "2026-04-01T09:15:00Z",
-                "decidedAt": "2026-09-09T10:15:00Z"
+                "decidedAt": "2026-09-09T10:15:00Z",
+                "collectionEnabled": true
               }
             }""";
 
@@ -80,7 +83,8 @@ public class SellerAdminController {
                     "decidedBy": null,
                     "decisionNote": null,
                     "createdAt": "2026-04-01T09:15:00Z",
-                    "decidedAt": null
+                    "decidedAt": null,
+                    "collectionEnabled": true
                   }
                 ],
                 "page": 0,
@@ -275,5 +279,72 @@ public class SellerAdminController {
             @Valid @RequestBody PayoutDestinationRequest request) {
         return ApiResult.ok(sellerService.setPayoutDestination(
                 CurrentUser.get(), merchantId, request, false));
+    }
+
+    @GetMapping("/{merchantId}/collection")
+    @Operation(summary = "Whether buyers may collect from this seller",
+            description = "V20. `collectionEnabled: false` is a DELIVERY-ONLY seller. A merchant "
+                    + "with no seller record (or one who never changed it) reads `true` with "
+                    + "`updatedAt: null` — reading never creates a record.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The seller's setting",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "delivery-only",
+                                    value = SellerCollectionController.EXAMPLE_READ_OFF_200),
+                            @ExampleObject(name = "never changed",
+                                    value = SellerCollectionController.EXAMPLE_NEVER_CHANGED_200)})),
+            @ApiResponse(responseCode = "403", description = "Caller is not a SUPER_ADMIN")
+    })
+    public ApiResult<CollectionSettingResponse> collection(@PathVariable UUID merchantId) {
+        return ApiResult.ok("Collection setting", sellerService.collectionSetting(merchantId));
+    }
+
+    @PutMapping("/{merchantId}/collection")
+    @Operation(summary = "Turn collection on or off for a seller",
+            description = "The operator override — same rules as the seller's own "
+                    + "`PUT /marketplace/sellers/me/collection`, and the audit row records that it "
+                    + "was you (`bySeller: false`).\n\n"
+                    + "Turning collection OFF is refused while delivery-only sellers are not "
+                    + "switched on in this market (422 `delivery_only_disabled`), when the market "
+                    + "offers no delivery (422 `delivery_not_offered`), and while the seller has an "
+                    + "item on sale with no delivery town (409 `collection_required`, naming up to "
+                    + "20 of them). Their items are never changed for them. Turning it back ON is "
+                    + "never refused. Sending the value they already have changes nothing.")
+    @io.swagger.v3.oas.annotations.parameters.RequestBody(content = @Content(
+            mediaType = "application/json", examples = {
+                    @ExampleObject(name = "delivery only",
+                            value = SellerCollectionController.EXAMPLE_REQUEST_OFF),
+                    @ExampleObject(name = "collection back on",
+                            value = SellerCollectionController.EXAMPLE_REQUEST_ON)}))
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Saved (or already so)",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "now delivery-only",
+                                    value = SellerCollectionController.EXAMPLE_OFF_200),
+                            @ExampleObject(name = "collection back on",
+                                    value = SellerCollectionController.EXAMPLE_ON_200)})),
+            @ApiResponse(responseCode = "400", description = "`collectionEnabled` missing",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(
+                                    value = SellerCollectionController.EXAMPLE_VALIDATION_400))),
+            @ApiResponse(responseCode = "403", description = "Caller is not a SUPER_ADMIN"),
+            @ApiResponse(responseCode = "409", description = "The seller has items on sale that "
+                    + "could only be collected",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(
+                                    value = SellerCollectionController.EXAMPLE_COLLECTION_REQUIRED_409))),
+            @ApiResponse(responseCode = "422", description = "Not switched on in this market, or "
+                    + "this market offers no delivery",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "not-available-yet",
+                                    value = SellerCollectionController.EXAMPLE_DISABLED_422),
+                            @ExampleObject(name = "no-delivery-here",
+                                    value = SellerCollectionController.EXAMPLE_NOT_OFFERED_422)}))
+    })
+    public ApiResult<CollectionSettingResponse> setCollection(
+            @PathVariable UUID merchantId,
+            @Valid @RequestBody CollectionSettingRequest request) {
+        return ApiResult.ok("Collection setting saved", sellerService.setCollectionEnabled(
+                CurrentUser.get(), merchantId, request.collectionEnabled(), false));
     }
 }

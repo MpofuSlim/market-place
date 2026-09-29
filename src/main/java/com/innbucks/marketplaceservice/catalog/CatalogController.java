@@ -109,7 +109,8 @@ public class CatalogController {
                         "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                         "stockQty": 6 }
                     ],
-                    "maxPriceCents": 2299
+                    "maxPriceCents": 2299,
+                    "collectionEnabled": true
                   },
                   {
                     "id": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
@@ -150,7 +151,8 @@ public class CatalogController {
                     "hasVariants": false,
                     "options": [],
                     "variants": [],
-                    "maxPriceCents": 2399
+                    "maxPriceCents": 2399,
+                    "collectionEnabled": true
                   }
                 ],
                 "page": 0,
@@ -203,7 +205,8 @@ public class CatalogController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -263,7 +266,8 @@ public class CatalogController {
                     "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                     "stockQty": 6 }
                 ],
-                "maxPriceCents": 2299
+                "maxPriceCents": 2299,
+                "collectionEnabled": true
               }
             }""";
 
@@ -340,7 +344,8 @@ public class CatalogController {
                     + "GET /marketplace/delivery-towns) to show only listings whose seller delivers "
                     + "to that town — pass the shopper's default address town so they never add "
                     + "something that fails at checkout; collectsIn=<town code> for listings whose "
-                    + "seller has a collection point in that town; and availableIn=<town code> for "
+                    + "seller has a collection point in that town (a delivery-only seller, "
+                    + "`collectionEnabled: false`, never matches it); and availableIn=<town code> for "
                     + "either (delivered there OR collectable there) — the one a 'near me' toggle "
                     + "wants. The three town filters take codes from the town list and refuse an "
                     + "unknown one; `city` is different — the seller's free-text city, matched "
@@ -409,7 +414,8 @@ public class CatalogController {
                     example = "bulawayo")
             @RequestParam(value = "deliversTo", required = false) String deliversTo,
             @Parameter(description = "Only listings whose seller has a collection point in this "
-                    + "town code. Unknown code = 400 unknown_town.", example = "harare")
+                    + "town code and still offers collection (a delivery-only seller never "
+                    + "matches). Unknown code = 400 unknown_town.", example = "harare")
             @RequestParam(value = "collectsIn", required = false) String collectsIn,
             @Parameter(description = "Only listings the shopper can get in this town either way: "
                     + "delivered there OR collectable there. Unknown code = 400 unknown_town.",
@@ -478,7 +484,31 @@ public class CatalogController {
                     "defaultPoint": true,
                     "updatedAt": "2026-09-24T08:10:22Z"
                   }
-                ]
+                ],
+                "collectionEnabled": true
+              }
+            }""";
+
+    /** V20: a delivery-only seller — collection points kept but not shown. */
+    private static final String EXAMPLE_DELIVERY_ONLY_PROFILE_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "merchantId": "4b1c8e2f-7a3d-4c59-9e16-2d8f0a7b3c41",
+                "displayName": "Chipo Electronics",
+                "verified": true,
+                "since": "2026-05-12T10:00:00Z",
+                "ratingAvg": 4.6,
+                "reviewCount": 23,
+                "activeListingCount": 9,
+                "fulfilment": {
+                  "completedOrders": 41,
+                  "medianDispatchHours": 18,
+                  "buyerConfirmedPercent": 88
+                },
+                "collectionPoints": [],
+                "collectionEnabled": false
               }
             }""";
 
@@ -497,7 +527,9 @@ public class CatalogController {
                     + "exist. A null ratingAvg means unrated — render it as such, never as 0. "
                     + "collectionPoints lists where the seller's goods can be collected (default "
                     + "first, with hours and openNow in this market's time) and is an empty list "
-                    + "when they have none. "
+                    + "when they have none. collectionEnabled is false for a DELIVERY-ONLY seller "
+                    + "(V20): offer them no collection, and their collectionPoints is always "
+                    + "empty; an unknown merchant reads true. "
                     + "Logo, response time and return policy are deliberately absent: the platform "
                     + "stores none of them and will not invent them.")
     @SecurityRequirements({})
@@ -505,8 +537,11 @@ public class CatalogController {
             @ApiResponse(responseCode = "200", description = "The seller profile (zeroed for an "
                     + "unknown merchant)",
                     content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "profile",
-                                    value = EXAMPLE_MERCHANT_PROFILE_200))),
+                            examples = {
+                                    @ExampleObject(name = "profile",
+                                            value = EXAMPLE_MERCHANT_PROFILE_200),
+                                    @ExampleObject(name = "delivery-only seller",
+                                            value = EXAMPLE_DELIVERY_ONLY_PROFILE_200)})),
             @ApiResponse(responseCode = "400", description = "Malformed merchant id",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "invalid-merchant-id",

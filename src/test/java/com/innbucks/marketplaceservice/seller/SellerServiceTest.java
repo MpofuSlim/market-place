@@ -59,7 +59,10 @@ class SellerServiceTest {
                 mock(org.springframework.context.ApplicationEventPublisher.class),
                 // No registry in a plain unit test: names resolve locally only,
                 // which is exactly the pre-feature behaviour these cases pin.
-                ids -> java.util.Map.of());
+                ids -> java.util.Map.of(),
+                SellerCollectionTest.policy(false, true),
+                new com.innbucks.marketplaceservice.metrics.MarketplaceMetrics(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 
     private MarketplaceSeller existing(SellerStatus status) {

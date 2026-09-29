@@ -67,6 +67,25 @@ public interface MarketplaceSellerRepository extends JpaRepository<MarketplaceSe
                              @Param("now") Instant now,
                              @Param("by") UUID by);
 
+    /** A seller's collection setting, read as a projection. */
+    interface CollectionState {
+        Boolean getCollectionEnabled();
+
+        Instant getCollectionUpdatedAt();
+    }
+
+    /**
+     * The seller's collection setting as the DATABASE holds it, never the
+     * persistence context's copy — for the re-read under the seller lock,
+     * where an entity loaded before the lock was granted would be stale (a
+     * repeated {@code findById} hands back that same stale instance). Null
+     * when the seller has no record.
+     */
+    @Query("SELECT s.collectionEnabled AS collectionEnabled, "
+            + "s.collectionUpdatedAt AS collectionUpdatedAt "
+            + "FROM MarketplaceSeller s WHERE s.merchantId = :merchantId")
+    CollectionState collectionStateOf(@Param("merchantId") UUID merchantId);
+
     /**
      * Of the given sellers, the ones that do NOT collect. Selecting only the
      * delivery-only ones means a seller with no record reads as collecting,

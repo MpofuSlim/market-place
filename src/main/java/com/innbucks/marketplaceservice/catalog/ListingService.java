@@ -281,6 +281,18 @@ public class ListingService {
         // not reset when omitted (see ListingUpdateRequest#deliveryTowns).
         List<ListingDeliveryTown> coverage = request.deliveryTowns() == null
                 ? null : resolveCoverage(request.deliveryTowns());
+        // V20: clearing every town of an item ON SALE from a delivery-only
+        // seller would leave it on sale with no way to reach a buyer. Refused
+        // before anything is written. The seller flag is a plain read with no
+        // lock: this transaction already holds the LISTING lock, and taking
+        // the seller's after it would invert the order suspend takes them in
+        // (see SellerService#isDeliveryOnly).
+        if (coverage != null && coverage.isEmpty()
+                && listing.getStatus() == ListingStatus.ACTIVE
+                && sellerService.isDeliveryOnly(listing.getMerchantId())) {
+            throw ApiException.unprocessable("delivery_towns_required",
+                    "This seller only delivers - an item on sale needs at least one delivery town");
+        }
 
         // Decide the stock shape BEFORE any write, so every refusal leaves the
         // listing exactly as it was.
@@ -459,6 +471,12 @@ public class ListingService {
      * indefinitely; the guard sits on the transition only, so listings that
      * were already ACTIVE before V3 keep working (and an ACTIVE→ACTIVE no-op
      * is not a transition).
+     *
+     * <p>V20: on the same transition, a DELIVERY-ONLY seller's item needs at
+     * least one delivery town (422 {@code delivery_towns_required}). An
+     * advisory, lock-free read of the seller's flag — never the seller lock
+     * after the listing's — so a seller turning collection off at that very
+     * moment can let one item through, and checkout then refuses it.
      */
     @Transactional
     public ListingResponse changeStatus(AuthenticatedUser caller, UUID listingId, ListingStatusRequest request) {
@@ -477,6 +495,15 @@ public class ListingService {
             if (!sellerService.canPublish(listing.getMerchantId())) {
                 throw ApiException.forbidden("seller_not_permitted",
                         "This seller may not publish listings");
+            }
+            // V20: a delivery-only seller's item must be deliverable somewhere,
+            // or it goes on sale with no way to reach a buyer. The towns are
+            // only read for such a seller.
+            if (sellerService.isDeliveryOnly(listing.getMerchantId())
+                    && !deliveryTownRepository.existsByListingId(listing.getId())) {
+                throw ApiException.unprocessable("delivery_towns_required",
+                        "This seller only delivers - add at least one delivery town before "
+                                + "putting this item on sale");
             }
         }
         listing.setStatus(request.status());

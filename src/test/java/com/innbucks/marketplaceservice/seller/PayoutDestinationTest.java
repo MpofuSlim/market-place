@@ -56,7 +56,10 @@ class PayoutDestinationTest {
         service = new SellerService(sellers, mock(ListingRepository.class), auditService,
                 new Msisdns("ZW"), eventPublisher,
                 // No registry in a plain unit test: names resolve locally only.
-                ids -> java.util.Map.of());
+                ids -> java.util.Map.of(),
+                SellerCollectionTest.policy(false, true),
+                new com.innbucks.marketplaceservice.metrics.MarketplaceMetrics(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         when(sellers.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
 

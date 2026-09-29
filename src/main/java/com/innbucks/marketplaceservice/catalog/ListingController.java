@@ -115,7 +115,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2599
+                "maxPriceCents": 2599,
+                "collectionEnabled": true
               }
             }""";
 
@@ -173,7 +174,8 @@ public class ListingController {
                     "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                     "stockQty": 6 }
                 ],
-                "maxPriceCents": 2299
+                "maxPriceCents": 2299,
+                "collectionEnabled": true
               }
             }""";
 
@@ -232,7 +234,8 @@ public class ListingController {
                     "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                     "stockQty": 6 }
                 ],
-                "maxPriceCents": 2299
+                "maxPriceCents": 2299,
+                "collectionEnabled": true
               }
             }""";
 
@@ -290,7 +293,8 @@ public class ListingController {
                     "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                     "stockQty": 6 }
                 ],
-                "maxPriceCents": 2299
+                "maxPriceCents": 2299,
+                "collectionEnabled": true
               }
             }""";
 
@@ -350,7 +354,8 @@ public class ListingController {
                     "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                     "stockQty": 6 }
                 ],
-                "maxPriceCents": 2299
+                "maxPriceCents": 2299,
+                "collectionEnabled": true
               }
             }""";
 
@@ -395,7 +400,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -444,7 +450,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -494,7 +501,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -543,7 +551,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -588,7 +597,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -635,7 +645,8 @@ public class ListingController {
                 "hasVariants": false,
                 "options": [],
                 "variants": [],
-                "maxPriceCents": 2399
+                "maxPriceCents": 2399,
+                "collectionEnabled": true
               }
             }""";
 
@@ -696,7 +707,8 @@ public class ListingController {
                         "label": "XL - Black", "priceCents": 2299, "priceOverrideCents": 2299,
                         "stockQty": 6 }
                     ],
-                    "maxPriceCents": 2299
+                    "maxPriceCents": 2299,
+                    "collectionEnabled": true
                   },
                   {
                     "id": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
@@ -737,7 +749,8 @@ public class ListingController {
                     "hasVariants": false,
                     "options": [],
                     "variants": [],
-                    "maxPriceCents": 2399
+                    "maxPriceCents": 2399,
+                    "collectionEnabled": true
                   }
                 ],
                 "page": 0,
@@ -864,6 +877,18 @@ public class ListingController {
             {
               "code": "primary_image_required",
               "message": "A primary image is required before a listing can be published"
+            }""";
+
+    private static final String EXAMPLE_DELIVERY_TOWNS_REQUIRED_PUBLISH_422 = """
+            {
+              "code": "delivery_towns_required",
+              "message": "This seller only delivers - add at least one delivery town before putting this item on sale"
+            }""";
+
+    private static final String EXAMPLE_DELIVERY_TOWNS_REQUIRED_CLEAR_422 = """
+            {
+              "code": "delivery_towns_required",
+              "message": "This seller only delivers - an item on sale needs at least one delivery town"
             }""";
 
     private static final String EXAMPLE_INVALID_MERCHANT_FILTER_400 = """
@@ -1351,10 +1376,14 @@ public class ListingController {
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404))),
             @ApiResponse(responseCode = "422", description = "Options sent for a listing without "
-                    + "them while this cell has options switched off",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "variants-disabled",
-                                    value = EXAMPLE_VARIANTS_DISABLED_422)))
+                    + "them while this cell has options switched off, or (V20) `deliveryTowns: []` "
+                    + "on an item ON SALE from a delivery-only seller - it would be on sale with "
+                    + "no way to reach a buyer",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "variants-disabled",
+                                    value = EXAMPLE_VARIANTS_DISABLED_422),
+                            @ExampleObject(name = "delivery-towns-required",
+                                    value = EXAMPLE_DELIVERY_TOWNS_REQUIRED_CLEAR_422)}))
     })
     @PutMapping("/{id}")
     public ApiResult<ListingResponse> update(
@@ -1370,7 +1399,10 @@ public class ListingController {
                     + "listings appear in the public catalog and can have stock reserved. "
                     + "PUBLISH GATE: a transition TO ACTIVE requires the gallery to have a primary "
                     + "image — 422 primary_image_required otherwise (drafts may stay imageless; "
-                    + "listings already ACTIVE are unaffected). Caller must own the listing.")
+                    + "listings already ACTIVE are unaffected). V20: for a DELIVERY-ONLY seller "
+                    + "(collection turned off) the same transition also needs at least one "
+                    + "delivery town — 422 delivery_towns_required otherwise. Caller must own the "
+                    + "listing.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Status changed",
                     content = @Content(mediaType = "application/json",
@@ -1391,10 +1423,13 @@ public class ListingController {
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404))),
             @ApiResponse(responseCode = "422", description = "Publish gate: transition to ACTIVE with "
-                    + "no primary image in the gallery",
-                    content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(name = "primary-image-required",
-                                    value = EXAMPLE_PRIMARY_IMAGE_REQUIRED_422)))
+                    + "no primary image in the gallery, or (V20) with no delivery town for a "
+                    + "delivery-only seller",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "primary-image-required",
+                                    value = EXAMPLE_PRIMARY_IMAGE_REQUIRED_422),
+                            @ExampleObject(name = "delivery-towns-required",
+                                    value = EXAMPLE_DELIVERY_TOWNS_REQUIRED_PUBLISH_422)}))
     })
     @PatchMapping("/{id}/status")
     public ApiResult<ListingResponse> changeStatus(

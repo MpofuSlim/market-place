@@ -88,7 +88,10 @@ class MerchantNameResolutionTest {
                 NAMED_LOCALLY, "Registry Name Nobody Should See"));
         service = new SellerService(sellers, mock(ListingRepository.class),
                 mock(AuditService.class), new Msisdns("ZW"),
-                mock(ApplicationEventPublisher.class), registry);
+                mock(ApplicationEventPublisher.class), registry,
+                SellerCollectionTest.policy(false, true),
+                new com.innbucks.marketplaceservice.metrics.MarketplaceMetrics(
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 
     private static MarketplaceSeller seller(UUID merchantId, String displayName) {

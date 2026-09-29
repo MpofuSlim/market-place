@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.catalog;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -171,6 +172,34 @@ public interface ListingRepository extends JpaRepository<Listing, UUID>,
             """)
     int deactivateActiveListingsOf(@Param("merchantId") UUID merchantId,
                                    @Param("now") java.time.Instant now);
+
+    /** A listing's id and title — all a refusal needs to name it. */
+    interface ListingTitle {
+        UUID getId();
+
+        String getTitle();
+    }
+
+    /**
+     * One seller's ACTIVE listings that deliver NOWHERE (V20) — the items that
+     * could only ever be collected, and so stop the seller turning collection
+     * off: a delivery-only seller's townless item on sale would be unbuyable.
+     * Oldest first, capped by {@code limit} so a seller with thousands never
+     * turns a refusal into a bulk read.
+     *
+     * <p>A {@code NOT EXISTS} over the coverage rows, never a join: a join
+     * would need a DISTINCT to undo the row per town, and an anti-join is what
+     * the question actually is.
+     */
+    @Query("""
+            select l.id as id, l.title as title from Listing l
+             where l.merchantId = :merchantId
+               and l.status = com.innbucks.marketplaceservice.catalog.ListingStatus.ACTIVE
+               and not exists (select 1 from ListingDeliveryTown t where t.listingId = l.id)
+             order by l.createdAt asc, l.id asc
+            """)
+    java.util.List<ListingTitle> findActiveWithoutDeliveryTowns(@Param("merchantId") UUID merchantId,
+                                                                Limit limit);
 
     /*
      * Public catalog browse runs through JpaSpecificationExecutor.findAll
