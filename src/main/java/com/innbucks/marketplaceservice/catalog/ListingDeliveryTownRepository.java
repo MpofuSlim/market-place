@@ -18,6 +18,10 @@ public interface ListingDeliveryTownRepository
      *  batching discipline as the image gallery. */
     List<ListingDeliveryTown> findByListingIdIn(Collection<UUID> listingIds);
 
+    /** Whether the listing delivers anywhere — the V20 publish gate's question
+     *  for a delivery-only seller, without loading the rows. */
+    boolean existsByListingId(UUID listingId);
+
     /** Replacing a listing's coverage is delete-then-insert in one
      *  transaction; this is the delete half. */
     @Modifying(flushAutomatically = true, clearAutomatically = true)

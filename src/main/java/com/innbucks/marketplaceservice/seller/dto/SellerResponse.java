@@ -42,7 +42,11 @@ public record SellerResponse(
         Instant createdAt,
 
         @Schema(nullable = true, example = "2026-09-09T10:15:00Z")
-        Instant decidedAt
+        Instant decidedAt,
+
+        @Schema(description = "V20: whether buyers may collect from this seller. False for a "
+                + "delivery-only seller.", example = "true")
+        boolean collectionEnabled
 ) {
     public static SellerResponse from(MarketplaceSeller s) {
         return from(s, null);
@@ -67,6 +71,7 @@ public record SellerResponse(
                 s.getDecidedBy(),
                 s.getDecisionNote(),
                 s.getCreatedAt(),
-                s.getDecidedAt());
+                s.getDecidedAt(),
+                s.isCollectionEnabled());
     }
 }

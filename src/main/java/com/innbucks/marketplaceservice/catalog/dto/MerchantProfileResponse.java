@@ -77,7 +77,14 @@ public record MerchantProfileResponse(
         @Schema(description = "Where this seller's goods can be collected (V18), default first, "
                 + "with opening hours and whether each is open now in this market. Empty - never "
                 + "absent - for a seller who has set none up (collection is then arranged with "
-                + "them directly) and for an unknown merchant.")
-        List<CollectionPointResponse> collectionPoints
+                + "them directly), for a delivery-only seller (`collectionEnabled: false`) and "
+                + "for an unknown merchant.")
+        List<CollectionPointResponse> collectionPoints,
+
+        @Schema(description = "V20: whether buyers may collect from this seller. False for a "
+                + "DELIVERY-ONLY seller - offer no collection, and `collectionPoints` is empty. "
+                + "True for an unknown merchant, like every seller who has never changed it. "
+                + "Always present.", example = "true")
+        boolean collectionEnabled
 ) {
 }

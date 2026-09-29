@@ -1395,6 +1395,146 @@ class ListingServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // Delivery-only sellers (V20): an item on sale must deliver somewhere
+    // ------------------------------------------------------------------
+
+    private Listing ownedIn(UUID listingId, ListingStatus status) {
+        Listing listing = owned(listingId);
+        listing.setStatus(status);
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(listing));
+        return listing;
+    }
+
+    @Test
+    @DisplayName("A delivery-only seller cannot put an item with no delivery town on sale - "
+            + "422 delivery_towns_required, and nothing changes")
+    void deliveryOnly_publishingWithoutATownIs422() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = ownedIn(listingId, ListingStatus.DRAFT);
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(listingId)).thenReturn(true);
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(true);
+        when(deliveryTownRepository.existsByListingId(listingId)).thenReturn(false);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.changeStatus(MERCHANT,
+                listingId, new ListingStatusRequest(ListingStatus.ACTIVE)));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("delivery_towns_required", ex.code());
+        assertEquals("This seller only delivers - add at least one delivery town before putting "
+                + "this item on sale", ex.getMessage());
+        assertEquals(ListingStatus.DRAFT, listing.getStatus());
+        verify(listingRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("A delivery-only seller's item with a delivery town goes on sale")
+    void deliveryOnly_publishingWithATownIsAllowed() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = ownedIn(listingId, ListingStatus.INACTIVE);
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(listingId)).thenReturn(true);
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(true);
+        when(deliveryTownRepository.existsByListingId(listingId)).thenReturn(true);
+
+        service.changeStatus(MERCHANT, listingId, new ListingStatusRequest(ListingStatus.ACTIVE));
+
+        assertEquals(ListingStatus.ACTIVE, listing.getStatus());
+    }
+
+    @Test
+    @DisplayName("A seller who collects publishes an item with no town exactly as before, and "
+            + "its towns are not even read")
+    void aCollectingSellerPublishesWithoutTowns() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = ownedIn(listingId, ListingStatus.DRAFT);
+        when(listingImageRepository.existsByListingIdAndPrimaryImageTrue(listingId)).thenReturn(true);
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(false);
+
+        service.changeStatus(MERCHANT, listingId, new ListingStatusRequest(ListingStatus.ACTIVE));
+
+        assertEquals(ListingStatus.ACTIVE, listing.getStatus());
+        verify(deliveryTownRepository, never()).existsByListingId(any());
+    }
+
+    @Test
+    @DisplayName("Taking a delivery-only seller's townless item OFF sale, or moving it between "
+            + "DRAFT and INACTIVE, is never gated")
+    void deliveryOnly_onlyTheMoveToActiveIsGated() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = ownedIn(listingId, ListingStatus.ACTIVE);
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(true);
+        when(deliveryTownRepository.existsByListingId(listingId)).thenReturn(false);
+
+        service.changeStatus(MERCHANT, listingId, new ListingStatusRequest(ListingStatus.INACTIVE));
+        service.changeStatus(MERCHANT, listingId, new ListingStatusRequest(ListingStatus.DRAFT));
+
+        assertEquals(ListingStatus.DRAFT, listing.getStatus());
+        verify(deliveryTownRepository, never()).existsByListingId(any());
+    }
+
+    @Test
+    @DisplayName("Clearing every delivery town of a delivery-only seller's item ON SALE is 422 "
+            + "delivery_towns_required, refused before anything is written")
+    void deliveryOnly_clearingTheTownsOfAnItemOnSaleIs422() {
+        UUID listingId = UUID.randomUUID();
+        Listing listing = ownedIn(listingId, ListingStatus.ACTIVE);
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(true);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.update(MERCHANT, listingId,
+                new ListingUpdateRequest("Lamp", null, null, null, null, null, 2399L, 5, List.of())));
+
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+        assertEquals("delivery_towns_required", ex.code());
+        assertEquals("This seller only delivers - an item on sale needs at least one delivery town",
+                ex.getMessage());
+        assertEquals("Old title", listing.getTitle());
+        verify(listingRepository, never()).save(any());
+        verify(listingRepository, never()).setPlainStock(any(), anyInt());
+        verify(deliveryTownRepository, never()).deleteByListingId(any());
+    }
+
+    @Test
+    @DisplayName("A delivery-only seller may clear the towns of a DRAFT or INACTIVE item, keep "
+            + "an item on sale's towns by omitting them, or replace them")
+    void deliveryOnly_clearingIsOnlyRefusedOnSale() {
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(true);
+        UUID draft = UUID.randomUUID();
+        ownedIn(draft, ListingStatus.DRAFT);
+        UUID inactive = UUID.randomUUID();
+        ownedIn(inactive, ListingStatus.INACTIVE);
+        UUID onSale = UUID.randomUUID();
+        ownedIn(onSale, ListingStatus.ACTIVE);
+
+        service.update(MERCHANT, draft,
+                new ListingUpdateRequest("Lamp", null, null, null, null, null, 2399L, 5, List.of()));
+        service.update(MERCHANT, inactive,
+                new ListingUpdateRequest("Lamp", null, null, null, null, null, 2399L, 5, List.of()));
+        // null keeps the towns; a non-empty list replaces them.
+        service.update(MERCHANT, onSale, updateReq("Lamp", null, null, 2399L, 5));
+        service.update(MERCHANT, onSale, new ListingUpdateRequest("Lamp", null, null, null, null,
+                null, 2399L, 5, List.of(new DeliveryTownFee("mutare", 800L))));
+
+        verify(deliveryTownRepository).deleteByListingId(draft);
+        verify(deliveryTownRepository).deleteByListingId(inactive);
+        verify(deliveryTownRepository).deleteByListingId(onSale);
+        verify(deliveryTownRepository).saveAll(
+                List.of(new ListingDeliveryTown(onSale, "mutare", 800)));
+    }
+
+    @Test
+    @DisplayName("A seller who collects may still clear an item on sale's towns - it becomes "
+            + "collection-only, as before V20")
+    void aCollectingSellerMayClearTheTownsOfAnItemOnSale() {
+        UUID listingId = UUID.randomUUID();
+        ownedIn(listingId, ListingStatus.ACTIVE);
+        when(sellerService.isDeliveryOnly(MERCHANT_ID)).thenReturn(false);
+
+        service.update(MERCHANT, listingId,
+                new ListingUpdateRequest("Lamp", null, null, null, null, null, 2399L, 5, List.of()));
+
+        verify(deliveryTownRepository).deleteByListingId(listingId);
+    }
+
+    // ------------------------------------------------------------------
     // Product variants (V19): the editor's options, their stock and price
     // ------------------------------------------------------------------
 

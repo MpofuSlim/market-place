@@ -595,6 +595,56 @@ class SecuritySurfaceIT extends PostgresTestContainer {
     }
 
     @Test
+    void anonymousCollectionSettingIsUnauthorized() throws Exception {
+        // V20: whether a seller collects — both the seller's own surface and
+        // the operator's.
+        mockMvc.perform(get("/marketplace/sellers/me/collection"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(put("/marketplace/sellers/me/collection")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"collectionEnabled\":false}"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/marketplace/admin/sellers/{id}/collection", UUID.randomUUID()))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(put("/marketplace/admin/sellers/{id}/collection", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"collectionEnabled\":false}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void onlyASellerSetsTheirOwnCollection_andOnlyAnOperatorNamesAnother() throws Exception {
+        // A buyer has no collection setting; a seller must never reach the
+        // override that names a merchant, or they could switch a competitor's
+        // collection off; and the MERCHANT_ADMIN role alone, with no selling
+        // organization, is nobody's seller.
+        String customer = TestJwts.customer(UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(put("/marketplace/sellers/me/collection")
+                        .header("Authorization", "Bearer " + customer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"collectionEnabled\":false}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        String merchantToken = TestJwts.merchantAdmin(
+                UUID.randomUUID(), UUID.randomUUID(), jwtSecret);
+        mockMvc.perform(get("/marketplace/admin/sellers/{id}/collection", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(put("/marketplace/admin/sellers/{id}/collection", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"collectionEnabled\":false}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(get("/marketplace/sellers/me/collection")
+                        .header("Authorization", "Bearer " + TestJwts.merchantAdminWithoutMerchant(
+                                UUID.randomUUID(), jwtSecret)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
     void aMerchantCannotDisputeAnOrder() throws Exception {
         // Disputing rides the buyer's order surface (CUSTOMER-only) — a
         // seller freezing (or steering) their own settlement is nonsense.

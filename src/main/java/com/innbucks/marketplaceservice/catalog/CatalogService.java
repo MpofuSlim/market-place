@@ -16,6 +16,7 @@ import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
 import lombok.RequiredArgsConstructor;
@@ -96,14 +97,16 @@ public class CatalogService {
      *       shopper.</li>
      *   <li>{@code collectsIn} — a town code: only listings whose seller has a
      *       collection point there (V18; an EXISTS on the seller's points,
-     *       correlated on the listing's merchant). Refused like
-     *       {@code deliversTo}, for the same reason.</li>
+     *       correlated on the listing's merchant) and still collects (V20; a
+     *       NOT EXISTS on a seller record that has turned collection off).
+     *       Refused like {@code deliversTo}, for the same reason.</li>
      *   <li>{@code availableIn} — a town code: listings the shopper can get in
      *       that town EITHER way, delivered there or collected there. One
-     *       {@code OR} of the two EXISTS, so a listing that does both appears
-     *       once. This is the filter a "near me" toggle wants: a seller who
-     *       only offers collection in the shopper's town is not "unavailable"
-     *       to them.</li>
+     *       {@code OR} of the delivery EXISTS and the collection test above,
+     *       so a listing that does both appears once, and a delivery-only
+     *       seller counts only by where they deliver. This is the filter a
+     *       "near me" toggle wants: a seller who only offers collection in the
+     *       shopper's town is not "unavailable" to them.</li>
      * </ul>
      *
      * <p>Ordered by {@link ListingSort} (default newest-first), always with a
@@ -169,13 +172,13 @@ public class CatalogService {
         }
         if (blankToNull(request.collectsIn()) != null) {
             String town = deliveryTowns.require(request.collectsIn(), "collectsIn").getCode();
-            spec = spec.and((root, query, cb) -> cb.exists(collectsIn(root, query, cb, town)));
+            spec = spec.and((root, query, cb) -> collectableIn(root, query, cb, town));
         }
         if (blankToNull(request.availableIn()) != null) {
             String town = deliveryTowns.require(request.availableIn(), "availableIn").getCode();
             spec = spec.and((root, query, cb) -> cb.or(
                     cb.exists(deliversTo(root, query, cb, town)),
-                    cb.exists(collectsIn(root, query, cb, town))));
+                    collectableIn(root, query, cb, town)));
         }
         Page<Listing> result = listingRepository.findAll(spec, pageable);
         return ListingPageResponse.from(assembler.toResponsePage(result));
@@ -192,6 +195,33 @@ public class CatalogService {
                 cb.equal(row.get("listingId"), root.get("id")),
                 cb.equal(row.get("townCode"), town));
         return covers;
+    }
+
+    /**
+     * "A buyer can collect this listing in {@code town}": its seller has a
+     * point there AND has not turned collection off (V20). The second half is
+     * a correlated NOT EXISTS over the seller's record, never a join, and it
+     * matches only a record that says "no" — a seller with no record collects,
+     * as every seller did before delivery-only existed. A delivery-only
+     * seller's points are kept, so without it they would still be found here.
+     */
+    private static Predicate collectableIn(Root<Listing> root, CriteriaQuery<?> query,
+                                           CriteriaBuilder cb, String town) {
+        return cb.and(
+                cb.exists(collectsIn(root, query, cb, town)),
+                cb.not(cb.exists(deliveryOnlySeller(root, query, cb))));
+    }
+
+    /** "This listing's seller has turned collection off": correlated on the
+     *  listing's merchant. */
+    private static Subquery<Integer> deliveryOnlySeller(Root<Listing> root, CriteriaQuery<?> query,
+                                                        CriteriaBuilder cb) {
+        Subquery<Integer> optedOut = query.subquery(Integer.class);
+        Root<MarketplaceSeller> seller = optedOut.from(MarketplaceSeller.class);
+        optedOut.select(cb.literal(1)).where(
+                cb.equal(seller.get("merchantId"), root.get("merchantId")),
+                cb.isFalse(seller.get("collectionEnabled")));
+        return optedOut;
     }
 
     /** "This listing's SELLER has a collection point in {@code town}":
@@ -288,6 +318,8 @@ public class CatalogService {
         // UUID. Unreachable registry = no name, which is the prior behaviour.
         String name = sellerService.displayNames(List.of(merchantId), sellers).get(merchantId);
         MerchantRatingResponse rating = reviewService.merchantRating(merchantId);
+        // V20, from the row already loaded: no record collects.
+        boolean collects = MarketplaceSeller.collects(seller);
         return new MerchantProfileResponse(
                 merchantId,
                 name,
@@ -300,8 +332,11 @@ public class CatalogService {
                 // merchant simply has no history, so the block is absent.
                 statsService.publicStats(merchantId),
                 // And no points: an empty list, identical for "has none" and
-                // "does not exist".
-                collectionPoints.forMerchant(merchantId));
+                // "does not exist". A delivery-only seller's points are kept
+                // but hidden, and not even read: a buyer shown where to collect
+                // would be told at checkout that they cannot.
+                collects ? collectionPoints.forMerchant(merchantId) : List.of(),
+                collects);
     }
 
     @NameResolvingRead

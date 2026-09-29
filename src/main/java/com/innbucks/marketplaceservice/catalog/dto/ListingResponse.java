@@ -115,7 +115,8 @@ public record ListingResponse(
 
         @Schema(description = "Towns where the seller has a collection point, in the town list's "
                 + "display order (V18). Empty when the seller has set none up - collection is "
-                + "then arranged with the seller directly.")
+                + "then arranged with the seller directly - and always empty for a delivery-only "
+                + "seller (`collectionEnabled: false`, V20).")
         List<CollectionTown> collectionTowns,
 
         @Schema(description = "V19: true when the buyer must choose an option (a size, a colour) - "
@@ -134,7 +135,13 @@ public record ListingResponse(
         @Schema(description = "V19: the highest option price (equals `priceCents` for a listing "
                 + "without options) - with `priceCents`, the range to print (\"USD 19.99 - "
                 + "22.99\").", example = "2599")
-        long maxPriceCents
+        long maxPriceCents,
+
+        @Schema(description = "V20: whether buyers may collect this item from the seller. False "
+                + "for a DELIVERY-ONLY seller: only delivery is offered, so show no \"collect\" "
+                + "option, and `collectionTowns` is empty. The quote says per seller which "
+                + "methods are available for a given basket.", example = "true")
+        boolean collectionEnabled
 ) {
 
     /**
@@ -193,6 +200,11 @@ public record ListingResponse(
                 .mapToLong(v -> v.effectivePriceCents(listingPrice))
                 .max().orElse(listingPrice);
         boolean hasPrimary = images.stream().anyMatch(ImageMeta::isPrimaryImage);
+        // V20: from the seller row the caller already loaded for the badge — no
+        // query of its own. A delivery-only seller's points are kept but
+        // hidden: advertising a town to collect in would be a promise the
+        // checkout then refuses.
+        boolean collects = MarketplaceSeller.collects(seller);
         List<String> urls = images.stream()
                 .map(meta -> "/marketplace/catalog/" + listing.getId() + "/images/" + meta.getId())
                 .toList();
@@ -223,11 +235,12 @@ public record ListingResponse(
                         : SellerBadge.from(seller, resolvedName),
                 !deliveryTowns.isEmpty(),
                 List.copyOf(deliveryTowns),
-                collectionTowns == null ? List.of() : List.copyOf(collectionTowns),
+                collectionTowns == null || !collects ? List.of() : List.copyOf(collectionTowns),
                 listing.isHasVariants(),
                 axes(listing, options),
                 options.stream().map(v -> ListingVariantResponse.from(v, listingPrice)).toList(),
-                Math.max(maxPrice, listingPrice));
+                Math.max(maxPrice, listingPrice),
+                collects);
     }
 
     /** Each axis with its distinct values in the options' order — what a picker
