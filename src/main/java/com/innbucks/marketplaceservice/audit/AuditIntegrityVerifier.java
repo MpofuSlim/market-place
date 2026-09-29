@@ -46,6 +46,9 @@ import java.util.Map;
 @Slf4j
 public class AuditIntegrityVerifier {
 
+    /** ShedLock name and the scheduler heartbeat's {@code job} tag. */
+    static final String JOB = "auditIntegrityVerifier";
+
     private final AuditEventRepository repository;
     private final AuditService auditService;
     private final MarketplaceMetrics metrics;
@@ -68,14 +71,26 @@ public class AuditIntegrityVerifier {
     /**
      * Outcome of a verification pass. {@code tampered > 0} (content altered) or
      * {@code chainBroken > 0} (row deleted/reordered) is a security incident.
+     * {@code completed == false} means the pass could not run at all (the
+     * counts are then zeros that prove nothing) — the scheduled run records it
+     * as a heartbeat FAILURE, because a verifier that silently stopped checking
+     * reads exactly like one that found the chain intact.
      */
     public record Result(int checked, int ok, int tampered, int legacy,
-                         int chainOk, int chainBroken) {}
+                         int chainOk, int chainBroken, boolean completed) {}
 
     @Scheduled(cron = "${marketplace.scheduler.audit-verify-cron}")
-    @SchedulerLock(name = "auditIntegrityVerifier")
+    @SchedulerLock(name = JOB)
     public void scheduledVerify() {
+        metrics.runScheduledJobReporting(JOB, this::scheduledVerifyOnce);
+    }
+
+    /** @return whether the pass ran (a found tamper is a SUCCESSFUL run). */
+    private boolean scheduledVerifyOnce() {
         Result r = verifyRecent();
+        if (!r.completed()) {
+            return false;       // verifyRecent already logged why, at ERROR
+        }
         if (r.tampered() > 0) {
             log.error("AUDIT_INTEGRITY_BROKEN checked={} ok={} TAMPERED={} legacy={} "
                     + "chainOk={} chainBroken={} — an audit_events row failed HMAC "
@@ -99,6 +114,7 @@ public class AuditIntegrityVerifier {
                     Map.of("checked", r.checked(), "tampered", r.tampered(),
                            "chainBroken", r.chainBroken(), "legacy", r.legacy()));
         }
+        return true;
     }
 
     /**
@@ -110,6 +126,7 @@ public class AuditIntegrityVerifier {
      */
     public Result verifyRecent() {
         int checked = 0, ok = 0, tampered = 0, legacy = 0, chainOk = 0, chainBroken = 0;
+        boolean completed = false;
         try {
             List<AuditEvent> rows = repository.findAll(
                     PageRequest.of(0, verifyLimit, Sort.by(Sort.Direction.DESC, "id"))).getContent();
@@ -131,12 +148,13 @@ public class AuditIntegrityVerifier {
             int[] chain = verifyChain(rows);
             chainOk = chain[0];
             chainBroken = chain[1];
+            completed = true;
         } catch (RuntimeException ex) {
             log.error("Audit integrity verification pass failed to run: {}", ex.getMessage(), ex);
         }
         metrics.auditIntegrityBroken(tampered);
         metrics.auditChainBroken(chainBroken);
-        return new Result(checked, ok, tampered, legacy, chainOk, chainBroken);
+        return new Result(checked, ok, tampered, legacy, chainOk, chainBroken, completed);
     }
 
     /**

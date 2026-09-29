@@ -1,7 +1,9 @@
 package com.innbucks.marketplaceservice.security;
 
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +30,11 @@ import java.util.HexFormat;
  * profiles exclude it). With no template — or on any Redis error — the check
  * <b>fails open</b> ({@code false}, "not revoked"): a Redis blip must not 401
  * every authenticated request, and the short access-token TTL is the backstop.
+ * A fail-open is a security-relevant degradation (logout is not enforced while
+ * it lasts), so each one is COUNTED —
+ * {@code marketplace.auth.revocation_check_failed{store=denylist}} — and the
+ * WARN is throttled to one per minute (class + message, no stack trace, with
+ * the number held back), since this runs on every authenticated request.
  */
 @Component
 @Slf4j
@@ -36,10 +43,25 @@ public class RevokedTokenDenylist {
     /** Must match user-service's {@code TokenRevocationService.SHARED_DENYLIST_PREFIX}. */
     private static final String SHARED_DENYLIST_PREFIX = "auth:revoked:";
 
-    private final ObjectProvider<StringRedisTemplate> redisProvider;
+    /** The {@code store} tag on {@code marketplace.auth.revocation_check_failed}. */
+    static final String STORE = MarketplaceMetrics.REVOCATION_STORE_DENYLIST;
 
-    public RevokedTokenDenylist(ObjectProvider<StringRedisTemplate> redisProvider) {
+    private final ObjectProvider<StringRedisTemplate> redisProvider;
+    private final MarketplaceMetrics metrics;
+    private final ThrottledWarning warnings;
+
+    @Autowired
+    public RevokedTokenDenylist(ObjectProvider<StringRedisTemplate> redisProvider,
+                                MarketplaceMetrics metrics) {
+        this(redisProvider, metrics, new ThrottledWarning());
+    }
+
+    RevokedTokenDenylist(ObjectProvider<StringRedisTemplate> redisProvider,
+                         MarketplaceMetrics metrics,
+                         ThrottledWarning warnings) {
         this.redisProvider = redisProvider;
+        this.metrics = metrics;
+        this.warnings = warnings;
     }
 
     /**
@@ -56,8 +78,15 @@ public class RevokedTokenDenylist {
         try {
             return Boolean.TRUE.equals(redis.hasKey(SHARED_DENYLIST_PREFIX + sha256HexLower(token)));
         } catch (RuntimeException ex) {
-            // Fail open — the access-token TTL is the backstop.
-            log.warn("Shared revoked-token denylist unreachable; allowing token through", ex);
+            // Fail open — the access-token TTL is the backstop. Counted every
+            // time; logged at most once a minute.
+            metrics.revocationCheckFailed(STORE);
+            long heldBack = warnings.tryAcquire();
+            if (heldBack >= 0) {
+                log.warn("Shared revoked-token denylist unreachable; allowing token through "
+                                + "({}: {}; {} further failure(s) not logged since the last warning)",
+                        ex.getClass().getName(), ex.getMessage(), heldBack);
+            }
             return false;
         }
     }

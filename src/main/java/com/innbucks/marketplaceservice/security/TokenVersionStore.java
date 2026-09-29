@@ -1,7 +1,9 @@
 package com.innbucks.marketplaceservice.security;
 
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -24,6 +26,10 @@ import org.springframework.stereotype.Component;
  * absent key, an unreadable value, or any Redis error — the lookup <b>fails
  * open</b> ({@code null}, "no version to enforce"): a Redis blip must not 401
  * every authenticated request, and the short access-token TTL is the backstop.
+ * A Redis error or unreadable value is COUNTED —
+ * {@code marketplace.auth.revocation_check_failed{store=token_version}} — and
+ * its WARN throttled exactly as {@link RevokedTokenDenylist}'s is. An absent
+ * key is the normal case and counts nothing.
  */
 @Component
 @Slf4j
@@ -32,10 +38,25 @@ public class TokenVersionStore {
     /** Must match user-service's shared token-version key prefix. */
     private static final String SHARED_TOKEN_VERSION_PREFIX = "auth:tokenver:";
 
-    private final ObjectProvider<StringRedisTemplate> redisProvider;
+    /** The {@code store} tag on {@code marketplace.auth.revocation_check_failed}. */
+    static final String STORE = MarketplaceMetrics.REVOCATION_STORE_TOKEN_VERSION;
 
-    public TokenVersionStore(ObjectProvider<StringRedisTemplate> redisProvider) {
+    private final ObjectProvider<StringRedisTemplate> redisProvider;
+    private final MarketplaceMetrics metrics;
+    private final ThrottledWarning warnings;
+
+    @Autowired
+    public TokenVersionStore(ObjectProvider<StringRedisTemplate> redisProvider,
+                             MarketplaceMetrics metrics) {
+        this(redisProvider, metrics, new ThrottledWarning());
+    }
+
+    TokenVersionStore(ObjectProvider<StringRedisTemplate> redisProvider,
+                      MarketplaceMetrics metrics,
+                      ThrottledWarning warnings) {
         this.redisProvider = redisProvider;
+        this.metrics = metrics;
+        this.warnings = warnings;
     }
 
     /**
@@ -57,8 +78,15 @@ public class TokenVersionStore {
             String raw = redis.opsForValue().get(SHARED_TOKEN_VERSION_PREFIX + userUuid);
             return (raw == null || raw.isBlank()) ? null : Long.valueOf(raw.trim());
         } catch (RuntimeException ex) {
-            // Fail open — the access-token TTL is the backstop.
-            log.warn("Shared token-version store lookup failed; allowing token through", ex);
+            // Fail open — the access-token TTL is the backstop. Counted every
+            // time; logged at most once a minute.
+            metrics.revocationCheckFailed(STORE);
+            long heldBack = warnings.tryAcquire();
+            if (heldBack >= 0) {
+                log.warn("Shared token-version store lookup failed; allowing token through "
+                                + "({}: {}; {} further failure(s) not logged since the last warning)",
+                        ex.getClass().getName(), ex.getMessage(), heldBack);
+            }
             return null;
         }
     }

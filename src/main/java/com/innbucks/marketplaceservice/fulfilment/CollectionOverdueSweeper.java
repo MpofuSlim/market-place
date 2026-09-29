@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.fulfilment;
 
+import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.notify.SellerAlertService;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -39,22 +40,32 @@ public class CollectionOverdueSweeper {
     /** Bounded per run; anything past it is picked up tomorrow. */
     static final int BATCH_LIMIT = 200;
 
+    /** ShedLock name and the scheduler heartbeat's {@code job} tag. */
+    static final String JOB = "collectionOverdueSweeper";
+
     private final OrderFulfilmentRepository fulfilmentRepository;
     private final SellerAlertService sellerAlerts;
+    private final MarketplaceMetrics metrics;
     private final int overdueDays;
 
     public CollectionOverdueSweeper(OrderFulfilmentRepository fulfilmentRepository,
                                     SellerAlertService sellerAlerts,
+                                    MarketplaceMetrics metrics,
                                     @Value("${marketplace.fulfilment.collection-overdue-days:7}")
                                     int overdueDays) {
         this.fulfilmentRepository = fulfilmentRepository;
         this.sellerAlerts = sellerAlerts;
+        this.metrics = metrics;
         this.overdueDays = overdueDays;
     }
 
     @Scheduled(cron = "${marketplace.scheduler.collection-overdue-cron}")
-    @SchedulerLock(name = "collectionOverdueSweeper")
+    @SchedulerLock(name = JOB)
     public void sweep() {
+        metrics.runScheduledJob(JOB, this::sweepOnce);
+    }
+
+    private void sweepOnce() {
         Instant now = Instant.now();
         List<OrderFulfilmentRepository.OverdueCollection> overdue = fulfilmentRepository
                 .findOverdueCollections(now.minus(Duration.ofDays(overdueDays)), BATCH_LIMIT);

@@ -123,6 +123,48 @@ never change either casually.
   REQUIRES_NEW tx. Nightly `AuditIntegrityVerifier`: content tamper →
   `marketplace.audit.integrity.broken` (page), chain break →
   `marketplace.audit.chain.broken` (ticket).
+* **Operational signals: a swallowed failure is COUNTED, and a quiet job is
+  told apart from a dead one.** Three things used to be log-only, and each
+  looked exactly like health: `AuditService.record` swallowing a write
+  (deliberate — an audit gap beats an outage) now increments
+  `marketplace.audit.write_failed{type}` (invariant zero); the fail-open Redis
+  revocation lookups count `marketplace.auth.revocation_check_failed{store=
+  denylist|token_version}` and WARN at most once per store per minute (class +
+  message, no stack trace, with the number held back — they run on every
+  authenticated request and used to log two stack traces each); and every
+  `@Scheduled` job runs its pass through `MarketplaceMetrics.runScheduledJob`,
+  which stamps `marketplace.scheduler.last_success{job}` (epoch seconds, 0 from
+  boot) or counts `marketplace.scheduler.failures{job}`; the invariant-zero
+  counters are pre-registered per event type / store at construction, because a
+  series that first appears already at 1 is no `increase()` and would hide the
+  FIRST failure. The call sits INSIDE
+  the `@SchedulerLock` method, so a run ShedLock skips for another replica is
+  neither, and a proxy that refuses the body (the V19 `int`-return bug) simply
+  never stamps — which is what the staleness alert catches. The audit
+  verifier's swallowed pass (`Result.completed == false`) is a failure. A new
+  job must add its lock name to `MarketplaceMetrics.SCHEDULED_JOBS`;
+  `SchedulerHeartbeatTest` scans for `@Scheduled` and fails otherwise, and
+  `SchedulerHeartbeatWiringTest` fails until the job has a case proving its
+  body stamps under its own lock name. **`last_success` is PER REPLICA and
+  resets to 0 on restart**, and under ShedLock only the lock winner stamps — so
+  never alert on the raw series (it pages after every deploy until a daily
+  job's next run, and forever for a replica that keeps losing the lock).
+  Aggregate across replicas and carry the stamp over restarts. Alerts these
+  enable (the RULES live in the fleet repo — a follow-up):
+  `time() - max by (job) (max_over_time(marketplace_scheduler_last_success{job="orderExpirySweeper"}[10m])) > 300`
+  (every minute), the same with `[26h]` and `> 26*3600` for the daily jobs
+  (staleEscrow, collectionOverdue, variantStockDrift, auditIntegrityVerifier)
+  and about `[1h]` / `> 3600` for the 15-minute settlementReleaseSweeper —
+  confirm each against its cron when writing the rule;
+  `increase(marketplace_scheduler_failures_total[1h]) > 0`,
+  `increase(marketplace_audit_write_failed_total[5m]) > 0`,
+  `rate(marketplace_auth_revocation_check_failed_total[5m]) > 0`. Pinned by
+  `SchedulerHeartbeatTest`, `SchedulerHeartbeatWiringTest`,
+  `RevocationFailOpenSignalTest`,
+  `ThrottledWarningTest`, the write-failure cases in `AuditServiceTest`, the
+  heartbeat cases in `AuditIntegrityVerifierTest` / `StaleEscrowSweeperTest`,
+  and through the real ShedLock proxy (run stamps, locked-out run counts
+  nothing) by `VariantStockDriftSweeperIT`.
 * **Idempotency claim-row** on order creation: key claimed with
   `INSERT … ON CONFLICT DO NOTHING` (status 0 sentinel) BEFORE work runs;
   replays return the ORIGINAL stored status/body; same key + different body

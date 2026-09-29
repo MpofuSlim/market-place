@@ -39,12 +39,19 @@ public class StaleEscrowSweeper {
      *  and an unbounded scan is exactly what a backlog would make expensive. */
     static final int SCAN_LIMIT = 500;
 
+    /** ShedLock name and the scheduler heartbeat's {@code job} tag. */
+    static final String JOB = "staleEscrowSweeper";
+
     private final SettlementService settlementService;
     private final MarketplaceMetrics metrics;
 
     @Scheduled(cron = "${marketplace.scheduler.stale-escrow-cron}")
-    @SchedulerLock(name = "staleEscrowSweeper")
+    @SchedulerLock(name = JOB)
     public void sweep() {
+        metrics.runScheduledJob(JOB, this::sweepOnce);
+    }
+
+    private void sweepOnce() {
         List<MerchantSettlement> stale = settlementService.staleHeld(SCAN_LIMIT);
         metrics.staleSettlements(stale.size());
         if (stale.isEmpty()) {
