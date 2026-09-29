@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!-- Standalone project joining the InnBucks fleet (same pattern as
-         MpofuSlim/InnRewards): registers on the cell's Eureka registry as
+         MpofuSlim/InnRewards): runs as the cell's k8s Service
          `marketplace-service` and is routed by the fleet api-gateway at
          /marketplace/**. This POM replicates the fleet's dependencyManagement
          + properties + shared dependencies so the build resolves identically.
@@ -227,7 +227,8 @@
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
-        <!-- eureka-client pulls spring-boot-grpc-test onto the test classpath;
+        <!-- spring-boot-starter-test-classic (via spring-boot-test-classic-modules)
+             pulls spring-boot-grpc-test onto the test classpath;
              its listener's generic signature references GrpcServerStartedEvent
              which is NOT pulled transitively, so @SpringBootTest context init
              dies with TypeNotPresentException. Test-scoped spring-grpc-core
@@ -309,9 +310,27 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- Service discovery: siblings resolve by name via Spring Cloud
+             LoadBalancer, through the static fleet discovery map in
+             application.yaml (Kubernetes Service DNS). Eureka is retired; the
+             LoadBalancer starter used to arrive transitively through
+             eureka-client, so it is declared explicitly now. -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+
+        <!-- Apache HttpClient 5 backs every RestClient that does not set an
+             explicit request factory: Spring Boot picks it when it is on the
+             classpath and otherwise falls back to the JDK HttpClient, which
+             negotiates HTTP/2 and behaves differently against partner edges.
+             It used to arrive only transitively through eureka-client, so it is
+             declared explicitly now that Eureka is gone (ticketing-system's
+             notification contract tests failed with RST_STREAM without it).
+             Version managed by the Boot BOM; httpcore5 is pinned above. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
         </dependency>
 
         <dependency>

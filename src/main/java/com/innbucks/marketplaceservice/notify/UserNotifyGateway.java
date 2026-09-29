@@ -23,7 +23,7 @@ import java.util.UUID;
  * details AND the per-user channel selection/fallback, so the marketplace
  * delegates instead of duplicating a contact store.
  *
- * <p>Resolved by service NAME through Eureka ({@code http://user-service} on
+ * <p>Resolved by service NAME via the discovery map ({@code http://user-service} on
  * the {@code @LoadBalanced} builder) — never a hardcoded host:port.
  *
  * <p>Strictly best-effort: user-service returns 202 immediately (delivery is

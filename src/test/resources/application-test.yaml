@@ -4,8 +4,8 @@
 # secrets below are legal here (and ONLY here).
 spring:
   cloud:
-    # No Eureka registry in a test run — a registering context would hang on
-    # connect retries and pollute logs.
+    # No discovery in a test run: the ITs never make a real sibling call, so
+    # resolving names would only add a moving part.
     discovery:
       enabled: false
   datasource:
@@ -38,12 +38,6 @@ spring:
       host: localhost
       port: 6379
       password: ""
-
-eureka:
-  client:
-    enabled: false
-    register-with-eureka: false
-    fetch-registry: false
 
 marketplace:
   scheduler:

@@ -1,8 +1,8 @@
 # marketplace-service
 
 InnBucks Marketplace — merchant product listings, a public catalog, and
-buyer orders. A standalone service in the InnBucks fleet: it registers on the
-cell's Eureka registry as `marketplace-service` and is routed by the fleet
+buyer orders. A standalone service in the InnBucks fleet: it runs as the
+cell's k8s Service `marketplace-service` and is routed by the fleet
 api-gateway at `/marketplace/**` (same extraction/join pattern as
 `MpofuSlim/InnRewards`).
 

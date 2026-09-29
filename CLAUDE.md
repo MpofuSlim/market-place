@@ -7,16 +7,18 @@ Project context for Claude / Claude Code. Read this first on any new session.
 **marketplace-service** — the InnBucks Marketplace: merchant product listings,
 a public catalog, and buyer orders. A standalone repo joining the InnBucks
 fleet exactly the way `MpofuSlim/InnRewards` (loyalty-service) does: it
-registers on the cell's Eureka registry as **`marketplace-service`** and the
+runs as the cell's k8s Service **`marketplace-service`** (port 8087) and the
 fleet api-gateway (in `MpofuSlim/ticketing-system`) routes `/marketplace/**`
-to it by service name. The service name + the image name
+to it by service name, through the fleet's static discovery map (Eureka is
+retired — see "Service discovery" below). The service name + the image name
 (`ghcr.io/mpofuslim/marketplace-service`) are the stable extraction contract —
 never change either casually.
 
 * Stack: Spring Boot 4.x (import-BOM pattern, NOT starter-parent — the CVE
   overrides rely on first-wins resolution), Java 21, JPA + Postgres 16,
   Flyway (`ddl-auto: validate`), shared fleet Redis (denylist read side),
-  Eureka client, Micrometer + optional OTel, Springdoc.
+  service discovery by k8s Service DNS (static map, Spring Cloud
+  LoadBalancer), Micrometer + optional OTel, Springdoc.
 * App port `8087`. Database `marketplace_service` on the cell Postgres.
 * Money is ALWAYS minor units (cents, `BIGINT`/`long`). Timestamps are ALWAYS
   UTC `Instant` → `TIMESTAMPTZ`. Containers pin `-Duser.timezone=UTC`.

@@ -9,7 +9,8 @@ import org.springframework.web.client.RestClient;
 
 /**
  * A {@link RestClient.Builder} that resolves {@code http://<service-name>} URLs
- * through the Eureka registry via Spring Cloud LoadBalancer (fleet copy —
+ * via Spring Cloud LoadBalancer, through the static discovery map in
+ * application.yaml (the sibling's k8s Service) (fleet copy —
  * InnRewards). {@code UserNotifyGateway} clones this builder so its
  * {@code http://user-service} calls are discovery-routed instead of hitting a
  * hardcoded host:port.
@@ -19,12 +20,13 @@ public class LoadBalancedRestClientConfig {
 
     /**
      * The plain (non-load-balanced) builder, kept @Primary so anything that
-     * autowires a RestClient.Builder by type gets this one — crucially the
-     * Eureka client's own RestClient transport, which talks to the registry at
-     * a fixed URL. If Eureka picked up the @LoadBalanced builder it would try to
-     * resolve the registry host ("localhost") as a service id, which fails with
-     * BeanCurrentlyInCreationException + "No instances available for localhost".
-     * Prototype-scoped to mirror Spring Boot's auto-configured builder.
+     * autowires a RestClient.Builder by type gets this one: a client that
+     * calls a fixed external URL (the notification gateways) must never pick
+     * up the load-balancer interceptor, which would try to resolve that host
+     * as a service id and fail with "No instances available for <host>".
+     * (Originally added for the Eureka client's own registry transport, which
+     * hit exactly that; Eureka is retired, the hazard for external clients is
+     * not.) Prototype-scoped to mirror Spring Boot's auto-configured builder.
      */
     @Bean
     @Primary

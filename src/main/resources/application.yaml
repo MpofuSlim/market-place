@@ -386,8 +386,8 @@ innbucks:
   # must agree").
   internal-api-token: ${INTERNAL_API_TOKEN:change-me-internal-token-change-me-internal-token}
 
-# user-service, resolved by NAME through Eureka (lb via the @LoadBalanced
-# builder) — never a hardcoded host:port. Consumed by UserNotifyGateway for
+# user-service, resolved by NAME through the discovery map at the end of
+# this file (lb via the @LoadBalanced builder) — never a hardcoded host:port. Consumed by UserNotifyGateway for
 # the S2S notify endpoint (restock alerts, merchant order alerts). The seller-name
 # lookup has its own, tighter timeouts under marketplace.merchant-names.
 user-service:
@@ -396,7 +396,7 @@ user-service:
   read-timeout-ms: ${USER_SERVICE_READ_TIMEOUT_MS:5000}
 
 # External WhatsApp notification gateway — the FALLBACK channel for buyer
-# order-paid alerts (third-party service, not in Eureka: explicit base-url).
+# order-paid alerts (third-party service, not in the discovery map: explicit base-url).
 # Same WHATSAPP_* env vars the rest of the fleet reads; blank api-key =
 # channel disabled (boot-time WARN, graceful degradation — never a crash).
 whatsapp:
@@ -441,14 +441,6 @@ server:
     include-stacktrace: never
     include-message: never
     include-binding-errors: never
-
-eureka:
-  client:
-    service-url:
-      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
-  instance:
-    prefer-ip-address: true
-    instance-id: ${spring.application.name}:${random.uuid}
 
 # Static token the fleet Prometheus presents on X-Metrics-Token to read
 # /actuator/prometheus (MetricsScrapeAuthFilter). Blank fail-closes: scraping
@@ -551,3 +543,51 @@ app:
     # Must be an SES-verified identity for the region or SES rejects the send.
     from: ${MAIL_FROM:banking@innbucks.co.zw}
     sender-name: ${MAIL_SENDER_NAME:InnBucks Marketplace}
+
+---
+# Service discovery: Kubernetes Service DNS. Eureka is retired.
+#
+# Every sibling resolves to its k8s ClusterIP Service (ticketing-system
+# deploy/k8s), which routes only to READY pods and balances across replicas,
+# so the @LoadBalanced RestClients' http://user-service keeps its name and
+# needs no code change. Under the planned Linkerd mesh the same Service names
+# get per-request balancing and mTLS with no change here either.
+#
+# This map is the FLEET map, identical in every service of every fleet repo
+# (ticketing-system pins its copies with FleetServiceMapTest; this repo's
+# FleetServiceMapTest pins this one to the same entries). Ports must equal the
+# k8s Service ports. Add a service = one line in every copy + its k8s Service.
+spring:
+  cloud:
+    discovery:
+      client:
+        simple:
+          instances:
+            user-service:        [{ uri: "http://user-service:8081" }]
+            event-service:       [{ uri: "http://event-service:8082" }]
+            seat-service:        [{ uri: "http://seat-service:8083" }]
+            booking-service:     [{ uri: "http://booking-service:8084" }]
+            payment-service:     [{ uri: "http://payment-service:8085" }]
+            loyalty-service:     [{ uri: "http://loyalty-service:8086" }]
+            marketplace-service: [{ uri: "http://marketplace-service:8087" }]
+
+---
+# Running the jar directly on one machine (no compose, no k8s): same names,
+# localhost. Activate with SPRING_PROFILES_ACTIVE=local (which
+# ProductionSecretsGuard already treats as a non-deployment profile).
+spring:
+  config:
+    activate:
+      on-profile: local
+  cloud:
+    discovery:
+      client:
+        simple:
+          instances:
+            user-service:        [{ uri: "http://localhost:8081" }]
+            event-service:       [{ uri: "http://localhost:8082" }]
+            seat-service:        [{ uri: "http://localhost:8083" }]
+            booking-service:     [{ uri: "http://localhost:8084" }]
+            payment-service:     [{ uri: "http://localhost:8085" }]
+            loyalty-service:     [{ uri: "http://localhost:8086" }]
+            marketplace-service: [{ uri: "http://localhost:8087" }]

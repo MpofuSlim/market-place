@@ -35,7 +35,7 @@ import java.util.UUID;
  * metered. A merchant notification that cannot be addressed must cost a
  * message, never the payment confirm it accompanies.
  *
- * <p>Resolved by service NAME through Eureka on the {@code @LoadBalanced}
+ * <p>Resolved by service NAME (the k8s Service, via the discovery map) on the {@code @LoadBalanced}
  * builder, like every other in-fleet caller here — never a hardcoded host:port.
  */
 @Slf4j

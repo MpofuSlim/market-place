@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * merchant's name, back when the seller id was a loyalty merchant id copied off
  * a claim user-service no longer mints.
  *
- * <p>Resolved by service NAME through Eureka on the {@code @LoadBalanced}
+ * <p>Resolved by service NAME (the k8s Service, via the discovery map) on the {@code @LoadBalanced}
  * builder, like every other in-fleet caller here — never a hardcoded
  * host:port. Shape and failure posture are
  * {@code UserServiceMerchantAdminResolver}'s, deliberately: one question, one

@@ -54,9 +54,10 @@ Copy the loyalty-service Deployment+Service block (lines ~229-280) and adapt:
 - port: `8087`
 - `DB_URL`: `jdbc:postgresql://postgres:5432/marketplace_service`
 - same `envFrom` (cell ConfigMap + Secret), same security context
-  (runAsUser 10001, readOnlyRootFilesystem, caps dropped, no SA token),
-  `EUREKA_INSTANCE_HOSTNAME=marketplace-service`,
-  `EUREKA_PREFER_IP_ADDRESS=false`.
+  (runAsUser 10001, readOnlyRootFilesystem, caps dropped, no SA token).
+  No `EUREKA_*` env: discovery is by Service name (the k8s `Service` named
+  `marketplace-service`, port 8087, is what every fleet service's discovery
+  map points at).
 
 Add `marketplace_service` to the pg-init databases ConfigMap
 (`docker/postgres/init-databases.sql`) so the database is created on a fresh
