@@ -39,7 +39,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>Its own class because the switch is a property: the default context runs
  * with it OFF, which {@link CollectionToggleDefaultOffIT} pins.
  */
-@TestPropertySource(properties = "marketplace.delivery.delivery-only-sellers-enabled=true")
+// The SAME property set as MixedBasketFlowIT, in the same order, so the two
+// share one cached context: every extra context holds its own connection pool
+// against the one test Postgres, and one too many is "too many clients". Both
+// switches on is also the configuration a cell with delivery-only sellers
+// should run (see DeliveryOnlyPolicy's boot WARN).
+@TestPropertySource(properties = {
+        "marketplace.delivery.delivery-only-sellers-enabled=true",
+        "marketplace.delivery.per-seller-methods-enabled=true"
+})
 class CollectionToggleFlowIT extends PostgresTestContainer {
 
     private static final byte[] PNG_BYTES =

@@ -17,6 +17,7 @@ import com.innbucks.marketplaceservice.checkout.CheckoutService;
 import com.innbucks.marketplaceservice.checkout.DeliveryPlan;
 import com.innbucks.marketplaceservice.checkout.LineKey;
 import com.innbucks.marketplaceservice.checkout.LoadedBasket;
+import com.innbucks.marketplaceservice.checkout.PlannedCheckout;
 import com.innbucks.marketplaceservice.checkout.PricedBasket;
 import com.innbucks.marketplaceservice.checkout.SellerPricing;
 import com.innbucks.marketplaceservice.delivery.DeliveryAddress;
@@ -256,7 +257,27 @@ public class OrderService {
         auditService.record(AuditEventType.ORDER_CREATED, buyer.uuid(),
                 response.id().toString(), createdMetadata(response));
         metrics.orderOutcome("created");
+        // AFTER the commit, like the outcome above: a rolled-back order is no
+        // plan at all.
+        metrics.orderSellerPlan(sellerPlanShape(response));
         return response;
+    }
+
+    /**
+     * {@code mixed} when the created order's sellers do not all share one
+     * method (one delivers, another collects), else {@code uniform}. Read off
+     * the response's {@code sellers} - the rows the order was written with - so
+     * a body another holder of the claim stored first counts the same; one
+     * stored before {@code sellers} existed was uniform by construction.
+     */
+    static String sellerPlanShape(OrderResponse response) {
+        if (response.sellers() == null) {
+            return MarketplaceMetrics.SELLER_PLAN_UNIFORM;
+        }
+        long methods = response.sellers().stream()
+                .map(OrderResponse.Seller::deliveryMethod).distinct().count();
+        return methods > 1 ? MarketplaceMetrics.SELLER_PLAN_MIXED
+                : MarketplaceMetrics.SELLER_PLAN_UNIFORM;
     }
 
     /**
@@ -355,17 +376,21 @@ public class OrderService {
         validateBasket(basket);
 
         String buyerMsisdn = msisdns.normalize(resolveBuyerMsisdn(buyer, request), "buyerMsisdn");
-        DeliveryMethod requestedMethod = checkoutService.resolveMethod(request.deliveryMethod());
-        // Load, then plan, then price (V20) - the quote's order of operations,
-        // so a quote and the order made from it resolve the same basket the
-        // same way.
-        LoadedBasket loaded = pricer.load(basket);
-        DeliveryPlan plan = checkoutService.resolvePlan(requestedMethod);
+        // Load, then plan, then price (V20) - through the quote's own resolver,
+        // so a quote and the order made from it plan the same basket the same
+        // way: the basket's method, then each seller's (sellerDeliveryMethods,
+        // refused here - before anything is loaded or held - when the cell has
+        // not switched it on, names a seller twice or names a method the cell
+        // does not offer).
+        PlannedCheckout planned = checkoutService.plan(basket, request.deliveryMethod(),
+                request.sellerDeliveryMethods());
+        LoadedBasket loaded = planned.loaded();
+        DeliveryPlan plan = planned.plan();
         // Resolved BEFORE any stock is touched: a buyer with no saved address
         // must be refused having reserved nothing. Only when some seller
         // delivers - a collection needs no destination.
         DeliveryAddress destination =
-                checkoutService.resolveAddress(buyer, plan.summary(), request.deliveryAddressId());
+                checkoutService.resolveAddress(buyer, plan, request.deliveryAddressId());
 
         // Availability, pricing and the subtotal all come from the SAME
         // resolver the cart and the quote use, so the three screens a shopper
@@ -446,19 +471,22 @@ public class OrderService {
         // per-seller record that exists before there are parcels. Keyed on the
         // items' own merchant snapshot, so every parcel the payment opens has
         // its row.
-        orderSellerRepository.saveAll(items.stream()
+        List<MarketOrderSeller> sellerRows = items.stream()
                 .map(MarketOrderItem::getMerchantId)
                 .distinct()
                 .map(merchantId -> new MarketOrderSeller(order.getId(), merchantId,
                         plan.methodFor(merchantId)))
-                .toList());
+                .toList();
+        orderSellerRepository.saveAll(sellerRows);
         // Each DELIVERING seller's fee, fixed now: the buyer pays what they were
         // quoted even if the seller reprices a town before the order is paid.
-        // A collecting seller has no row.
-        if (!priced.deliveryFeesByMerchant().isEmpty()) {
-            deliveryFeeRepository.saveAll(priced.deliveryFeesByMerchant().entrySet().stream()
-                    .map(e -> new MarketOrderDeliveryFee(order.getId(), e.getKey(), e.getValue()))
-                    .toList());
+        // A collecting seller has no row - on a mixed order, only the sellers
+        // who deliver are charged for a trip.
+        List<MarketOrderDeliveryFee> feeRows = priced.deliveryFeesByMerchant().entrySet().stream()
+                .map(e -> new MarketOrderDeliveryFee(order.getId(), e.getKey(), e.getValue()))
+                .toList();
+        if (!feeRows.isEmpty()) {
+            deliveryFeeRepository.saveAll(feeRows);
         }
         // Each collecting seller's collection point, COPIED now: a seller who
         // later moves or removes the point must not move goods the buyer was
@@ -466,10 +494,12 @@ public class OrderService {
         checkoutService.recordCollectionPoints(order.getId(), collectionPoints);
         transitions.journalCreation(order);
         log.info("order created id={} ref={} lines={} subtotalCents={} deliveryFeeCents={} "
-                        + "totalCents={} delivery={}",
+                        + "totalCents={} delivery={} sellerPlan={}",
                 order.getId(), order.getOrderRef(), items.size(), priced.subtotalCents(),
-                deliveryFee, totalCents, plan.summary());
-        return views.toResponse(order, items);
+                deliveryFee, totalCents, plan.summary(), plan.isMixed() ? "mixed" : "uniform");
+        // Rendered from the rows just written - the same rows a read renders
+        // from - so the created order says what reading it back says.
+        return views.toResponse(order, items, sellerRows, feeRows);
     }
 
     /**

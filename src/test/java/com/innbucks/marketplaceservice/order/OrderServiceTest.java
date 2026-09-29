@@ -161,7 +161,8 @@ class OrderServiceTest {
                 mock(SellerService.class), checkoutService,
                 mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class),
                 mock(com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.class),
-                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7));
+                new com.innbucks.marketplaceservice.fulfilment.BuyerParcelRules(7),
+                orderSellerRepository, deliveryFeeRepository);
         eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
         // The REAL stock mover over the mocked repositories, so these tests
         // still pin the exact statements an order issues.
@@ -734,7 +735,7 @@ class OrderServiceTest {
                 Instant.now().plusSeconds(1800), Instant.now(), null,
                 List.of(new OrderResponse.Line(new UUID(0, 1), "Solar Lantern 20W",
                         1550, 2, 3100)),
-                null, null, List.of(), null, null, null);
+                null, null, List.of(), null, null, null, null);
         when(idempotencyService.claim(anyString(), anyString())).thenReturn(
                 new ClaimResult.Replay(201, objectMapper.writeValueAsString(stored)));
 
@@ -1725,6 +1726,267 @@ class OrderServiceTest {
             verify(orderRepository).save(captor.capture());
             return captor.getValue().getId();
         }
+
+        private MarketOrder createdOrder() {
+            ArgumentCaptor<MarketOrder> captor = ArgumentCaptor.forClass(MarketOrder.class);
+            verify(orderRepository).save(captor.capture());
+            return captor.getValue();
+        }
+
+        // --------------------------------------------------------------
+        // A method per seller (sellerDeliveryMethods)
+        // --------------------------------------------------------------
+
+        private CreateOrderRequest perSeller(DeliveryMethod basketDefault,
+                                             List<com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice> choices,
+                                             CreateOrderRequest.Item... items) {
+            return new CreateOrderRequest("0771234567", null, List.of(items), basketDefault, null,
+                    null, null, choices);
+        }
+
+        private com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice choice(
+                UUID merchantId, DeliveryMethod method) {
+            return new com.innbucks.marketplaceservice.checkout.dto.SellerDeliveryChoice(merchantId, method);
+        }
+
+        private double sellerPlans(String shape) {
+            return registry.get("marketplace.orders.seller_plan").tag("shape", shape).counter().count();
+        }
+
+        @Test
+        @DisplayName("A mixed order: DELIVERY summary with the destination, each seller's own row, a fee row for the deliverer only, a point for the collector only")
+        void aMixedOrderWritesEachSellersMethod() {
+            checkoutProperties.getDelivery().setPerSellerMethodsEnabled(true);
+            twoSellersOnSale();
+            DeliveryAddress home = harare();
+            when(addressService.requireForCheckout(any(), any())).thenReturn(home);
+
+            OrderResponse response = service.createOrder(BUYER, perSeller(DeliveryMethod.COLLECTION,
+                    List.of(choice(deliversOnly, DeliveryMethod.DELIVERY)),
+                    item(lantern, 1), item(earbuds, 1)), RAW_KEY);
+
+            MarketOrder order = createdOrder();
+            UUID orderId = order.getId();
+            // The summary is DELIVERY - someone delivers - and so the order
+            // carries the one destination, for that seller.
+            assertEquals(DeliveryMethod.DELIVERY, order.getDeliverySummary());
+            assertEquals(DeliveryMethod.DELIVERY, response.deliveryMethod());
+            assertEquals(home.getId(), order.getDeliveryAddressId());
+            assertEquals("harare", order.getDeliveryTownCode());
+            // Money: both sellers' goods, ONE seller's trip.
+            assertEquals(1550 + 2599, order.getSubtotalCents());
+            assertEquals(500, order.getDeliveryFeeCents());
+            assertEquals(1550 + 2599 + 500, order.getTotalCents());
+            // Each seller's own method, in basket order.
+            assertEquals(List.of(new MarketOrderSeller(orderId, collects, DeliveryMethod.COLLECTION),
+                    new MarketOrderSeller(orderId, deliversOnly, DeliveryMethod.DELIVERY)),
+                    savedSellerRows());
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<MarketOrderDeliveryFee>> fees = ArgumentCaptor.forClass(List.class);
+            verify(deliveryFeeRepository).saveAll(fees.capture());
+            assertEquals(List.of(new MarketOrderDeliveryFee(orderId, deliversOnly, 500L)),
+                    fees.getValue());
+            // Only the collecting seller is asked where.
+            verify(collectionPointResolver).resolve(List.of(collects), null);
+            verify(collectionPointResolver).record(eq(orderId), any());
+            // The response says it per seller, and lists the collector alone.
+            assertEquals(List.of(new OrderResponse.Seller(collects, DeliveryMethod.COLLECTION, null),
+                    new OrderResponse.Seller(deliversOnly, DeliveryMethod.DELIVERY, 500L)),
+                    response.sellers());
+            assertEquals(List.of(collects), response.collectionPoints().stream()
+                    .map(com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint::merchantId)
+                    .toList());
+            assertNotNull(response.deliveryAddress());
+            assertEquals(1.0, sellerPlans("mixed"));
+            assertEquals(0.0, sellerPlans("uniform"));
+        }
+
+        @Test
+        @DisplayName("Per-seller choices while the switch is off are 422 before anything is loaded, reserved or written")
+        void perSellerChoicesRefusedWhileTheSwitchIsOff() {
+            twoSellersOnSale();
+
+            ApiException ex = createFails(perSeller(DeliveryMethod.COLLECTION,
+                    List.of(choice(deliversOnly, DeliveryMethod.DELIVERY)),
+                    item(lantern, 1), item(earbuds, 1)));
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, ex.status());
+            assertEquals("seller_delivery_methods_disabled", ex.code());
+            assertEquals("Choosing delivery or collection per seller is not available yet - choose "
+                    + "one method for the whole order", ex.getMessage());
+            verify(listingRepository, never()).findAllById(any());
+            nothingMoved();
+            assertEquals(0.0, sellerPlans("mixed"));
+            assertEquals(0.0, sellerPlans("uniform"));
+        }
+
+        @Test
+        @DisplayName("A seller named twice (400) and a method the cell does not offer (422, naming the seller) refuse the order reserving nothing")
+        void badChoicesRefuseTheOrderReservingNothing() {
+            checkoutProperties.getDelivery().setPerSellerMethodsEnabled(true);
+            twoSellersOnSale();
+
+            ApiException twice = createFails(perSeller(DeliveryMethod.COLLECTION,
+                    List.of(choice(deliversOnly, DeliveryMethod.DELIVERY),
+                            choice(deliversOnly, DeliveryMethod.COLLECTION)),
+                    item(earbuds, 1)));
+            assertEquals(HttpStatus.BAD_REQUEST, twice.status());
+            assertEquals("duplicate_delivery_method_choice", twice.code());
+
+            checkoutProperties.getDelivery().setMethods(EnumSet.of(DeliveryMethod.COLLECTION));
+            ApiException unoffered = createFails(perSeller(DeliveryMethod.COLLECTION,
+                    List.of(choice(deliversOnly, DeliveryMethod.DELIVERY)), item(earbuds, 1)));
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, unoffered.status());
+            assertEquals("delivery_method_unavailable", unoffered.code());
+            assertEquals("DELIVERY is not available in this market", unoffered.getMessage());
+            assertEquals(Map.of("merchantId", deliversOnly.toString()), unoffered.details());
+
+            verify(listingRepository, never()).findAllById(any());
+            verify(listingRepository, never()).reserveStock(any(UUID.class), anyInt());
+            verify(orderRepository, never()).save(any());
+            verifyNoInteractions(orderSellerRepository, deliveryFeeRepository);
+        }
+
+        @Test
+        @DisplayName("A mixed order with no address to send the delivering seller's goods to is refused, reserving nothing")
+        void aMixedOrderWithNoAddressReservesNothing() {
+            checkoutProperties.getDelivery().setPerSellerMethodsEnabled(true);
+            twoSellersOnSale();
+            when(addressService.requireForCheckout(any(), any()))
+                    .thenThrow(ApiException.badRequest("delivery_address_required",
+                            "Choose a delivery address, or add one first"));
+
+            ApiException ex = createFails(perSeller(DeliveryMethod.COLLECTION,
+                    List.of(choice(deliversOnly, DeliveryMethod.DELIVERY)),
+                    item(lantern, 1), item(earbuds, 1)));
+
+            assertEquals("delivery_address_required", ex.code());
+            nothingMoved();
+        }
+
+        @Test
+        @DisplayName("A DELIVERY default whose every seller is chosen for COLLECTION is a COLLECTION order: no address asked, none snapshot, no fee")
+        void everySellerCollectingNeedsNoDestination() {
+            checkoutProperties.getDelivery().setPerSellerMethodsEnabled(true);
+            twoSellersOnSale();
+            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of());
+
+            OrderResponse response = service.createOrder(BUYER, perSeller(DeliveryMethod.DELIVERY,
+                    List.of(choice(collects, DeliveryMethod.COLLECTION),
+                            choice(deliversOnly, DeliveryMethod.COLLECTION)),
+                    item(lantern, 1), item(earbuds, 1)), RAW_KEY);
+
+            MarketOrder order = createdOrder();
+            assertEquals(DeliveryMethod.COLLECTION, order.getDeliverySummary());
+            assertNull(order.getDeliveryAddressId());
+            assertNull(order.getDeliveryTownCode());
+            assertEquals(0, order.getDeliveryFeeCents());
+            verify(addressService, never()).requireForCheckout(any(), any());
+            verify(deliveryFeeRepository, never()).saveAll(any());
+            assertNull(response.deliveryAddress());
+            // Uniform in effect: every seller collects.
+            assertEquals(1.0, sellerPlans("uniform"));
+            assertEquals(0.0, sellerPlans("mixed"));
+        }
+
+        @Test
+        @DisplayName("An order without per-seller choices counts as uniform and names every seller with the one method")
+        void aUniformOrderNamesEverySeller() {
+            twoSellersOnSale();
+            when(sellerRepository.findCollectionDisabledAmong(any())).thenReturn(Set.of());
+            when(addressService.requireForCheckout(any(), any())).thenReturn(harare());
+
+            OrderResponse response = service.createOrder(BUYER, order(DeliveryMethod.DELIVERY,
+                    item(lantern, 1), item(earbuds, 1)), RAW_KEY);
+
+            assertEquals(List.of(new OrderResponse.Seller(collects, DeliveryMethod.DELIVERY, 200L),
+                    new OrderResponse.Seller(deliversOnly, DeliveryMethod.DELIVERY, 500L)),
+                    response.sellers());
+            assertNull(response.collectionPoints());
+            assertEquals(1.0, sellerPlans("uniform"));
+            assertEquals(0.0, sellerPlans("mixed"));
+        }
+
+        @Test
+        @DisplayName("Reading a mixed order back renders the same sellers and collection points the creation did")
+        void readingAMixedOrderBackRendersTheSameSellers() {
+            MarketOrder stored = OrderServiceTest.order(OrderStatus.PENDING_PAYMENT);
+            stored.setDeliverySummary(DeliveryMethod.DELIVERY);
+            when(orderRepository.findByIdAndBuyerUuid(stored.getId(), BUYER_UUID))
+                    .thenReturn(Optional.of(stored));
+            when(itemRepository.findByOrderId(stored.getId())).thenReturn(List.of(
+                    itemOf(stored.getId(), lantern, collects), itemOf(stored.getId(), earbuds, deliversOnly)));
+            when(orderSellerRepository.findByOrderId(stored.getId())).thenReturn(List.of(
+                    new MarketOrderSeller(stored.getId(), deliversOnly, DeliveryMethod.DELIVERY),
+                    new MarketOrderSeller(stored.getId(), collects, DeliveryMethod.COLLECTION)));
+            when(deliveryFeeRepository.findByOrderId(stored.getId())).thenReturn(List.of(
+                    new MarketOrderDeliveryFee(stored.getId(), deliversOnly, 500L)));
+
+            OrderResponse read = service.getOrder(BUYER, stored.getId());
+
+            // Basket (line) order, whatever order the rows came back in.
+            assertEquals(List.of(new OrderResponse.Seller(collects, DeliveryMethod.COLLECTION, null),
+                    new OrderResponse.Seller(deliversOnly, DeliveryMethod.DELIVERY, 500L)),
+                    read.sellers());
+            assertEquals(DeliveryMethod.DELIVERY, read.deliveryMethod());
+            assertEquals(List.of(collects), read.collectionPoints().stream()
+                    .map(com.innbucks.marketplaceservice.pickup.dto.SellerCollectionPoint::merchantId)
+                    .toList());
+        }
+
+        @Test
+        @DisplayName("A page of orders reads seller rows and fee rows in ONE query each; an order before fees were per seller has no fee key")
+        void aPageReadsSellerAndFeeRowsOnceEach() {
+            MarketOrder first = OrderServiceTest.order(OrderStatus.PAID);
+            first.setDeliverySummary(DeliveryMethod.DELIVERY);
+            MarketOrder second = OrderServiceTest.order(OrderStatus.PENDING_PAYMENT);
+            second.setDeliverySummary(DeliveryMethod.COLLECTION);
+            when(orderRepository.findByBuyerUuid(any(), any())).thenReturn(
+                    new org.springframework.data.domain.PageImpl<>(List.of(first, second)));
+            when(itemRepository.findByOrderIdIn(any())).thenReturn(List.of(
+                    itemOf(first.getId(), earbuds, deliversOnly),
+                    itemOf(second.getId(), lantern, collects)));
+            when(orderSellerRepository.findByOrderIdIn(any())).thenReturn(List.of(
+                    new MarketOrderSeller(first.getId(), deliversOnly, DeliveryMethod.DELIVERY),
+                    new MarketOrderSeller(second.getId(), collects, DeliveryMethod.COLLECTION)));
+            // The first order was placed before fees were per seller: no fee row.
+            when(deliveryFeeRepository.findByOrderIdIn(any())).thenReturn(List.of());
+
+            List<OrderResponse> page = service.getMine(BUYER,
+                    org.springframework.data.domain.PageRequest.of(0, 20)).getContent();
+
+            assertEquals(List.of(new OrderResponse.Seller(deliversOnly, DeliveryMethod.DELIVERY, null)),
+                    page.get(0).sellers());
+            assertNull(page.get(0).collectionPoints());
+            assertEquals(List.of(new OrderResponse.Seller(collects, DeliveryMethod.COLLECTION, null)),
+                    page.get(1).sellers());
+            assertEquals(1, page.get(1).collectionPoints().size());
+            verify(orderSellerRepository, times(1)).findByOrderIdIn(any());
+            verify(deliveryFeeRepository, times(1)).findByOrderIdIn(any());
+            verify(orderSellerRepository, never()).findByOrderId(any());
+            verify(deliveryFeeRepository, never()).findByOrderId(any());
+        }
+
+        @Test
+        @DisplayName("sellerPlanShape: mixed only when the sellers' methods differ; a stored body without sellers is uniform")
+        void sellerPlanShapeReadsTheResponse() {
+            OrderResponse none = new OrderResponse(UUID.randomUUID(), ORDER_REF,
+                    OrderStatus.PENDING_PAYMENT, 0, 0, 0, "USD", DeliveryMethod.COLLECTION, null,
+                    null, null, null, List.of(), null, null, List.of(), null, null, null, null);
+            assertEquals("uniform", OrderService.sellerPlanShape(none));
+            OrderResponse mixed = new OrderResponse(UUID.randomUUID(), ORDER_REF,
+                    OrderStatus.PENDING_PAYMENT, 0, 0, 0, "USD", DeliveryMethod.DELIVERY, null,
+                    null, null, null, List.of(), null, null, List.of(), null, null, null,
+                    List.of(new OrderResponse.Seller(collects, DeliveryMethod.COLLECTION, null),
+                            new OrderResponse.Seller(deliversOnly, DeliveryMethod.DELIVERY, 0L)));
+            assertEquals("mixed", OrderService.sellerPlanShape(mixed));
+        }
+
+        private MarketOrderItem itemOf(UUID orderId, UUID listingId, UUID merchantId) {
+            MarketOrderItem item = orderItem(orderId, listingId, 1);
+            item.setMerchantId(merchantId);
+            return item;
+        }
     }
 
     // ==================================================================
@@ -2469,7 +2731,7 @@ class OrderServiceTest {
                     DeliveryMethod.COLLECTION, null,
                     Instant.parse("2026-09-29T10:30:00Z"), Instant.parse("2026-09-29T10:00:00Z"), null,
                     List.of(new OrderResponse.Line(listingId, "Solar Lantern 20W", 1550, 2, 3100)),
-                    null, null, List.of(), null, null, null);
+                    null, null, List.of(), null, null, null, null);
         }
 
         @Test

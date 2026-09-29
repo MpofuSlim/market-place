@@ -48,11 +48,14 @@ public record OrderResponse(
         @Schema(description = "ISO-4217 currency (the deployment cell's currency)", example = "USD")
         String currency,
 
-        @Schema(description = "How the buyer receives the goods", example = "DELIVERY")
+        @Schema(description = "How the buyer receives the goods - a SUMMARY: DELIVERY when any "
+                + "seller delivers, else COLLECTION. There is no mixed value: when one seller "
+                + "delivers and another is collected, read each seller's method from `sellers` "
+                + "(and each parcel's from its own `deliveryMethod`).", example = "DELIVERY")
         DeliveryMethod deliveryMethod,
 
-        @Schema(description = "Where it is being sent, as captured at order time. Absent for a "
-                + "COLLECTION order.", nullable = true)
+        @Schema(description = "Where it is being sent, as captured at order time - for the "
+                + "sellers who deliver. Absent when nobody delivers.", nullable = true)
         FulfilmentDestination deliveryAddress,
 
         @Schema(description = "When the PENDING_PAYMENT stock hold lapses (UTC)",
@@ -91,12 +94,15 @@ public record OrderResponse(
                 nullable = true)
         Recipient recipient,
 
-        @Schema(description = "COLLECTION only: where each seller's goods are collected, one "
-                + "entry per seller in the order — present from the moment the order is placed, "
-                + "so the buyer sees where they will go before paying. The address is what was "
-                + "copied when the order was placed; `openingHours` are the point's CURRENT "
+        @Schema(description = "Where each COLLECTING seller's goods are collected, one entry per "
+                + "seller whose `sellers[].deliveryMethod` is COLLECTION (every seller on a "
+                + "COLLECTION order; only the collecting ones when the order is delivered from one "
+                + "seller and collected from another) - present from the moment the order is "
+                + "placed, so the buyer sees where they will go before paying. The address is what "
+                + "was copied when the order was placed; `openingHours` are the point's CURRENT "
                 + "hours. A seller with no collection point is listed without one: say "
-                + "\"arrange collection with the seller\". Absent for DELIVERY.", nullable = true)
+                + "\"arrange collection with the seller\". Absent when nobody collects.",
+                nullable = true)
         List<SellerCollectionPoint> collectionPoints,
 
         @Schema(description = "What you may do with the order as a whole right now, decided by "
@@ -104,7 +110,37 @@ public record OrderResponse(
                 + "of POST /orders returns the original response unchanged, so it can be absent "
                 + "there for an order placed before this field existed - re-read the order.",
                 nullable = true)
-        OrderActions actions) {
+        OrderActions actions,
+
+        @Schema(description = "V20: every seller on the order, in basket order - how THAT seller's "
+                + "goods reach the buyer and, when they deliver, the fee fixed for them at order "
+                + "time. Present from the moment the order is placed. The order-level "
+                + "`deliveryMethod` is only a summary (DELIVERY when any seller delivers): read "
+                + "each seller's method here, and trust it rather than the request that asked for "
+                + "it. An idempotent retry of POST /orders returns the original response unchanged, "
+                + "so it can be absent there for an order placed before this field existed - "
+                + "re-read the order.", nullable = true)
+        List<Seller> sellers) {
+
+    /** One seller's share of the order (V20): their method, and their fee when they deliver. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @Schema(description = "How one seller's goods reach the buyer on this order")
+    public record Seller(
+
+            @Schema(example = "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54")
+            UUID merchantId,
+
+            @Schema(description = "This seller's method, fixed when the order was placed. Their "
+                    + "parcel carries the same `deliveryMethod` once the order is paid.",
+                    example = "DELIVERY")
+            DeliveryMethod deliveryMethod,
+
+            @Schema(description = "DELIVERY only: the fee this seller charges to the order's town, "
+                    + "fixed at order time (their dearest item's, never the sum) - these add up to "
+                    + "the order's `deliveryFeeCents`. Absent for a collecting seller, and on an "
+                    + "order placed before fees were per seller.", example = "800", nullable = true)
+            Long deliveryFeeCents) {
+    }
 
     @Schema(description = "The person this order was bought for")
     public record Recipient(

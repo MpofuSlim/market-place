@@ -53,6 +53,16 @@ public class CheckoutProperties {
          */
         private Set<DeliveryMethod> methods = EnumSet.allOf(DeliveryMethod.class);
 
+        /**
+         * V20: whether a basket may choose delivery or collection per SELLER
+         * ({@code sellerDeliveryMethods} on the quote and the order). OFF by
+         * default, like {@code variants-enabled}: it gates only a NON-EMPTY
+         * choice list (422 {@code seller_delivery_methods_disabled}), so a body
+         * without one behaves exactly as before, and switching it off never
+         * touches an order already placed with one.
+         */
+        private boolean perSellerMethodsEnabled = false;
+
         /** Abuse guard on the address book. A real shopper has a handful of
          *  destinations; a thousand is someone using it as free storage. */
         private int maxAddressesPerBuyer = 25;

@@ -25,9 +25,12 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -37,10 +40,10 @@ import java.util.stream.Collectors;
  * into its wire shape, so the single read, the paged list and the replayed
  * idempotent create can never render the same order differently.
  *
- * <p>Batches everything a page needs: lines, parcels and seller names each
- * cost ONE query for the whole page regardless of its size. A per-order
- * assembly here would be an N+1 three times over on the my-orders screen, which
- * is the screen a shopper opens most.
+ * <p>Batches everything a page needs: lines, parcels, seller names and each
+ * seller's method and fee cost ONE query each for the whole page regardless of
+ * its size. A per-order assembly here would be an N+1 several times over on the
+ * my-orders screen, which is the screen a shopper opens most.
  */
 @Component
 @RequiredArgsConstructor
@@ -54,31 +57,58 @@ public class OrderViewAssembler {
     private final CollectionPointViews collectionPoints;
     private final MerchantSettlementRepository settlementRepository;
     private final BuyerParcelRules buyerRules;
+    private final MarketOrderSellerRepository orderSellerRepository;
+    private final MarketOrderDeliveryFeeRepository deliveryFeeRepository;
 
     /** Single-order assembly. */
     public OrderResponse toResponse(MarketOrder order) {
         List<MarketOrderItem> items = itemRepository.findByOrderId(order.getId());
         List<OrderFulfilment> parcels = fulfilmentService.forOrder(order.getId());
+        List<OrderResponse.Seller> sellers = sellersOf(order, items,
+                orderSellerRepository.findByOrderId(order.getId()),
+                deliveryFeeRepository.findByOrderId(order.getId()));
         return build(order, items, parcels, sellerNames(parcels), disputes(parcels),
-                settlements(parcels),
-                collectionPointsOf(List.of(order), parcels).getOrDefault(order.getId(), Map.of()));
+                settlements(parcels), sellers,
+                collectionPointsOf(Map.of(order.getId(), sellers), parcels)
+                        .getOrDefault(order.getId(), Map.of()));
     }
 
     /**
-     * Assembly for an order the caller already holds the lines of — the create
-     * path, which has just written them and must not read them back.
+     * Assembly for an order the caller already holds the lines, seller rows and
+     * fee rows of — the create path, which has just written them and must not
+     * read them back. Rendered through the same {@link #sellersOf} as every
+     * read, so the order a buyer is handed at creation says exactly what
+     * reading it back says.
      */
-    public OrderResponse toResponse(MarketOrder order, List<MarketOrderItem> items) {
-        return build(order, items, List.of(), Map.of(), Map.of(), Map.of(),
-                collectionPointsOf(List.of(order), List.of()).getOrDefault(order.getId(), Map.of()));
+    public OrderResponse toResponse(MarketOrder order, List<MarketOrderItem> items,
+                                    List<MarketOrderSeller> sellerRows,
+                                    List<MarketOrderDeliveryFee> feeRows) {
+        List<OrderResponse.Seller> sellers = sellersOf(order, items, sellerRows, feeRows);
+        return build(order, items, List.of(), Map.of(), Map.of(), Map.of(), sellers,
+                collectionPointsOf(Map.of(order.getId(), sellers), List.of())
+                        .getOrDefault(order.getId(), Map.of()));
     }
 
-    /** Page assembly: three extra queries for the whole page, never per row. */
+    /** Page assembly: a fixed number of extra queries for the whole page, never per row. */
     public Page<OrderResponse> toResponsePage(Page<MarketOrder> page) {
         List<UUID> orderIds = page.getContent().stream().map(MarketOrder::getId).toList();
         Map<UUID, List<MarketOrderItem>> itemsByOrder = orderIds.isEmpty() ? Map.of()
                 : itemRepository.findByOrderIdIn(orderIds).stream()
                         .collect(Collectors.groupingBy(MarketOrderItem::getOrderId));
+        // Each seller's method and fee: one query per table for the page.
+        Map<UUID, List<MarketOrderSeller>> sellerRowsByOrder = orderIds.isEmpty() ? Map.of()
+                : orderSellerRepository.findByOrderIdIn(orderIds).stream()
+                        .collect(Collectors.groupingBy(MarketOrderSeller::getOrderId));
+        Map<UUID, List<MarketOrderDeliveryFee>> feeRowsByOrder = orderIds.isEmpty() ? Map.of()
+                : deliveryFeeRepository.findByOrderIdIn(orderIds).stream()
+                        .collect(Collectors.groupingBy(MarketOrderDeliveryFee::getOrderId));
+        Map<UUID, List<OrderResponse.Seller>> sellersByOrder = new LinkedHashMap<>();
+        for (MarketOrder order : page.getContent()) {
+            sellersByOrder.put(order.getId(), sellersOf(order,
+                    itemsByOrder.getOrDefault(order.getId(), List.of()),
+                    sellerRowsByOrder.getOrDefault(order.getId(), List.of()),
+                    feeRowsByOrder.getOrDefault(order.getId(), List.of())));
+        }
         Map<UUID, List<OrderFulfilment>> parcelsByOrder = fulfilmentService.forOrders(orderIds);
         List<OrderFulfilment> allParcels = parcelsByOrder.values().stream()
                 .flatMap(List::stream).toList();
@@ -86,27 +116,75 @@ public class OrderViewAssembler {
         Map<UUID, DisputeResponse> disputes = disputes(allParcels);
         Map<UUID, MerchantSettlement> settlements = settlements(allParcels);
         Map<UUID, Map<UUID, CollectionPointResponse>> points =
-                collectionPointsOf(page.getContent(), allParcels);
+                collectionPointsOf(sellersByOrder, allParcels);
         return page.map(order -> build(order,
                 itemsByOrder.getOrDefault(order.getId(), List.of()),
                 parcelsByOrder.getOrDefault(order.getId(), List.of()),
-                sellers, disputes, settlements, points.getOrDefault(order.getId(), Map.of())));
+                sellers, disputes, settlements, sellersByOrder.get(order.getId()),
+                points.getOrDefault(order.getId(), Map.of())));
+    }
+
+    /**
+     * Every seller on the order, in basket order (the lines' own order), with
+     * the method recorded for them at order time ({@code market_order_seller})
+     * and, when they deliver, their fee ({@code market_order_delivery_fee},
+     * absent on an order placed before fees were per seller).
+     *
+     * <p>Every order has a seller row per seller - written with the order since
+     * V20 and backfilled by V21 - so the fallback to the order's summary is a
+     * guard, not a path: it is exactly what a pre-V20 order meant, when one
+     * method applied to every seller, and a read must never fail an order over
+     * a row it can render without.
+     */
+    private static List<OrderResponse.Seller> sellersOf(MarketOrder order,
+                                                        List<MarketOrderItem> items,
+                                                        List<MarketOrderSeller> sellerRows,
+                                                        List<MarketOrderDeliveryFee> feeRows) {
+        Map<UUID, DeliveryMethod> methodBySeller = new LinkedHashMap<>();
+        for (MarketOrderSeller row : sellerRows) {
+            methodBySeller.put(row.getMerchantId(), row.getDeliveryMethod());
+        }
+        Map<UUID, Long> feeBySeller = new HashMap<>();
+        for (MarketOrderDeliveryFee row : feeRows) {
+            feeBySeller.put(row.getMerchantId(), row.getFeeCents());
+        }
+        Set<UUID> merchants = new LinkedHashSet<>();
+        items.stream().map(MarketOrderItem::getMerchantId).filter(Objects::nonNull)
+                .forEach(merchants::add);
+        merchants.addAll(methodBySeller.keySet());
+        List<OrderResponse.Seller> out = new ArrayList<>(merchants.size());
+        for (UUID merchantId : merchants) {
+            DeliveryMethod method = methodBySeller.getOrDefault(merchantId,
+                    order.getDeliverySummary());
+            out.add(new OrderResponse.Seller(merchantId, method,
+                    method == DeliveryMethod.DELIVERY ? feeBySeller.get(merchantId) : null));
+        }
+        return out;
+    }
+
+    /** The sellers of {@code sellers} whose goods are collected, in basket order. */
+    private static List<UUID> collectingSellers(List<OrderResponse.Seller> sellers) {
+        return sellers.stream()
+                .filter(seller -> seller.deliveryMethod() == DeliveryMethod.COLLECTION)
+                .map(OrderResponse.Seller::merchantId)
+                .toList();
     }
 
     /**
      * ONE snapshot query (plus one for live hours) for every order on the page
-     * that has something collected: a COLLECTION-summary order (every seller
-     * collects), or an order with a COLLECTION parcel — the PARCEL's method, so
-     * the collected half of a mixed order still finds its point. A page of
-     * delivered-only orders never asks.
+     * that has something collected: an order with a COLLECTING seller - every
+     * seller of a COLLECTION order, the collected half of a mixed one, from the
+     * moment it is placed - or with a COLLECTION parcel (the PARCEL's method).
+     * A page of delivered-only orders never asks.
      */
     private Map<UUID, Map<UUID, CollectionPointResponse>> collectionPointsOf(
-            List<MarketOrder> orders, List<OrderFulfilment> parcels) {
+            Map<UUID, List<OrderResponse.Seller>> sellersByOrder, List<OrderFulfilment> parcels) {
         Set<UUID> collecting = new LinkedHashSet<>();
-        orders.stream()
-                .filter(o -> o.getDeliverySummary() == DeliveryMethod.COLLECTION)
-                .map(MarketOrder::getId)
-                .forEach(collecting::add);
+        sellersByOrder.forEach((orderId, sellers) -> {
+            if (!collectingSellers(sellers).isEmpty()) {
+                collecting.add(orderId);
+            }
+        });
         parcels.stream()
                 .filter(p -> p.getDeliveryMethod() == DeliveryMethod.COLLECTION)
                 .map(OrderFulfilment::getOrderId)
@@ -118,10 +196,13 @@ public class OrderViewAssembler {
                                 List<OrderFulfilment> parcels, Map<UUID, String> sellerNames,
                                 Map<UUID, DisputeResponse> disputes,
                                 Map<UUID, MerchantSettlement> settlements,
+                                List<OrderResponse.Seller> sellers,
                                 Map<UUID, CollectionPointResponse> pointBySeller) {
         List<OrderResponse.Line> lines = items.stream().map(OrderViewAssembler::toLine).toList();
-        // The ORDER-level summary: this block renders the order, not a parcel.
-        boolean collection = order.getDeliverySummary() == DeliveryMethod.COLLECTION;
+        // Where the COLLECTING sellers' goods are collected: every seller on a
+        // COLLECTION order (the pre-V20 list, byte for byte), only the
+        // collecting ones on a mixed order, absent when nobody collects.
+        List<UUID> collecting = collectingSellers(sellers);
         return new OrderResponse(
                 order.getId(),
                 order.getOrderRef(),
@@ -147,12 +228,11 @@ public class OrderViewAssembler {
                 toParcels(order, parcels, items, sellerNames, disputes, settlements,
                         pointBySeller),
                 toRecipient(order),
-                collection
-                        ? CollectionPointViews.perSeller(items.stream()
-                                .map(MarketOrderItem::getMerchantId).toList(), pointBySeller)
-                        : null,
+                collecting.isEmpty() ? null
+                        : CollectionPointViews.perSeller(collecting, pointBySeller),
                 // The same rule the cancel endpoint enforces: the order state machine.
-                new OrderActions(OrderStateMachine.isLegal(order.getStatus(), OrderStatus.CANCELLED)));
+                new OrderActions(OrderStateMachine.isLegal(order.getStatus(), OrderStatus.CANCELLED)),
+                sellers);
     }
 
     /** Present only when the order was bought for someone else — the block's

@@ -41,7 +41,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @TestPropertySource(properties = {
         "marketplace.public-test.enabled=true",
-        "marketplace.public-test.api-key=" + PublicTestOrderRailIT.API_KEY
+        "marketplace.public-test.api-key=" + PublicTestOrderRailIT.API_KEY,
+        // V20: the mixed-basket case below needs a method per seller.
+        "marketplace.delivery.per-seller-methods-enabled=true"
 })
 class PublicTestOrderRailIT extends PostgresTestContainer {
 
@@ -272,6 +274,70 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
                 .andExpect(jsonPath("$.data.fulfilments[0].actions.canRequestCollectCode").value(true))
                 .andExpect(jsonPath("$.data.fulfilments[0].actions.canCancel").value(true))
                 .andExpect(jsonPath("$.data.fulfilments[0].actions.canDispute").value(true));
+    }
+
+    @Test
+    @DisplayName("A token-less buyer orders a basket delivered from one seller and collected from another (V20)")
+    void aPublicBuyerMixesDeliveryAndCollection() throws Exception {
+        // Seller 1 delivers Harare (free, LISTING_BODY); seller 2 delivers only
+        // to Bulawayo, so a Harare buyer collects from them.
+        String lantern = publishListing();
+        UUID collectsFrom = UUID.randomUUID();
+        String secondSeller = TestJwts.merchantAdmin(UUID.randomUUID(), collectsFrom, jwtSecret);
+        String hose = publishListing(secondSeller, """
+                {"title":"Garden Hose","categoryCode":"other","priceCents":900,"stockQty":10,
+                 "deliveryTowns":[{"townCode":"bulawayo","feeCents":300}]}""");
+        String address = JsonPath.read(mockMvc.perform(
+                        keyed(post("/marketplace/public/buyers/{handle}/addresses", "alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"label":"Home","recipientName":"Tariro Moyo",
+                                 "recipientMsisdn":"0771234567","line1":"14 Samora Machel Ave",
+                                 "townCode":"harare"}"""))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "$.data.id");
+
+        mockMvc.perform(keyed(get("/marketplace/public/checkout/options")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.perSellerDeliveryMethods").value(true));
+
+        String body = """
+                {"buyerMsisdn":"0771234567","deliveryAddressId":"%s",
+                 "items":[{"listingId":"%s","quantity":1},{"listingId":"%s","quantity":1}],
+                 "sellerDeliveryMethods":[{"merchantId":"%s","deliveryMethod":"DELIVERY"},
+                                          {"merchantId":"%s","deliveryMethod":"COLLECTION"}]}"""
+                .formatted(address, lantern, hose, merchantId, collectsFrom);
+        mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/checkout/quote", "alice"))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkoutReady").value(true))
+                .andExpect(jsonPath("$.data.deliveryMethod").value("DELIVERY"))
+                .andExpect(jsonPath("$.data.sellers[1].deliveryMethod").value("COLLECTION"));
+
+        String created = mockMvc.perform(keyed(post("/marketplace/public/buyers/{handle}/orders", "alice"))
+                        .header("Idempotency-Key", "public-mixed-1")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.deliveryMethod").value("DELIVERY"))
+                .andExpect(jsonPath("$.data.totalCents").value(2450))
+                .andExpect(jsonPath("$.data.deliveryAddress.line1").value("14 Samora Machel Ave"))
+                .andExpect(jsonPath("$.data.sellers[0].merchantId").value(merchantId.toString()))
+                .andExpect(jsonPath("$.data.sellers[0].deliveryMethod").value("DELIVERY"))
+                .andExpect(jsonPath("$.data.sellers[0].deliveryFeeCents").value(0))
+                .andExpect(jsonPath("$.data.sellers[1].merchantId").value(collectsFrom.toString()))
+                .andExpect(jsonPath("$.data.sellers[1].deliveryMethod").value("COLLECTION"))
+                .andExpect(jsonPath("$.data.collectionPoints.length()").value(1))
+                .andExpect(jsonPath("$.data.collectionPoints[0].merchantId").value(collectsFrom.toString()))
+                .andReturn().getResponse().getContentAsString();
+        String orderId = JsonPath.read(created, "$.data.id");
+
+        mockMvc.perform(keyed(get("/marketplace/public/buyers/{handle}/orders/{o}", "alice", orderId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.sellers[0].deliveryMethod").value("DELIVERY"))
+                .andExpect(jsonPath("$.data.sellers[1].deliveryMethod").value("COLLECTION"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM market_order_seller "
+                + "WHERE order_id = ?::uuid AND delivery_method = 'COLLECTION'", Long.class, orderId))
+                .isEqualTo(1L);
     }
 
     @Test
@@ -546,6 +612,10 @@ class PublicTestOrderRailIT extends PostgresTestContainer {
     }
 
     private String publishListing(String body) throws Exception {
+        return publishListing(merchantToken, body);
+    }
+
+    private String publishListing(String merchantToken, String body) throws Exception {
         String created = mockMvc.perform(post("/marketplace/listings")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType(MediaType.APPLICATION_JSON)

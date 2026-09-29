@@ -73,4 +73,33 @@ class DeliveryPlanTest {
         assertThat(DeliveryPlan.forSellers(DELIVERY, Map.of(), List.of(A, B), BOTH))
                 .isEqualTo(DeliveryPlan.uniform(DELIVERY, BOTH));
     }
+
+    @Test
+    @DisplayName("someoneCollects is summary == COLLECTION on a uniform plan, and 'any seller collects' on a per-seller one")
+    void someoneCollects() {
+        assertThat(DeliveryPlan.uniform(COLLECTION, BOTH).someoneCollects()).isTrue();
+        assertThat(DeliveryPlan.uniform(DELIVERY, BOTH).someoneCollects()).isFalse();
+        assertThat(DeliveryPlan.NONE.someoneCollects()).isFalse();
+
+        DeliveryPlan mixed = DeliveryPlan.forSellers(COLLECTION, Map.of(B, DELIVERY), List.of(A, B), BOTH);
+        assertThat(mixed.someoneCollects()).isTrue();
+        assertThat(mixed.needsDestination()).isTrue();
+        assertThat(mixed.summary()).isEqualTo(DELIVERY);
+
+        DeliveryPlan nobodyCollects = DeliveryPlan.forSellers(COLLECTION,
+                Map.of(A, DELIVERY, B, DELIVERY), List.of(A, B), BOTH);
+        assertThat(nobodyCollects.someoneCollects()).isFalse();
+    }
+
+    @Test
+    @DisplayName("isMixed only when one seller delivers and another collects - agreeing choices are uniform in effect")
+    void isMixed() {
+        assertThat(DeliveryPlan.uniform(DELIVERY, BOTH).isMixed()).isFalse();
+        assertThat(DeliveryPlan.forSellers(COLLECTION, Map.of(B, DELIVERY), List.of(A, B), BOTH)
+                .isMixed()).isTrue();
+        assertThat(DeliveryPlan.forSellers(COLLECTION, Map.of(B, COLLECTION), List.of(A, B), BOTH)
+                .isMixed()).isFalse();
+        assertThat(DeliveryPlan.forSellers(COLLECTION, Map.of(A, DELIVERY), List.of(A), BOTH)
+                .isMixed()).isFalse();
+    }
 }

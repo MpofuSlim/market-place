@@ -65,6 +65,246 @@ import java.util.UUID;
         + "everything arrived.")
 public class OrderController {
 
+    /** The collecting seller's point as it rides the quote and the order -
+     *  the V18 examples' Avondale shop. */
+    private static final String EXAMPLE_AVONDALE_POINT = """
+                        {
+                          "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                          "collectionPoint": {
+                            "id": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e",
+                            "name": "Avondale shop",
+                            "townCode": "harare",
+                            "townName": "Harare",
+                            "line1": "14 Samora Machel Ave",
+                            "line2": "Shop 3, Avondale Shopping Centre",
+                            "area": "Avondale",
+                            "landmark": "Next to the pharmacy",
+                            "phone": "+263242123456",
+                            "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
+                            "openNow": true
+                          }
+                        }""";
+
+    /**
+     * V20: {@code CheckoutController.EXAMPLE_MIXED_REQUEST} placed - the
+     * speaker's seller collected at their counter, the earbuds' seller
+     * delivering to Harare. The same totals, fee and point the mixed quote
+     * example showed; {@code sellers} says each seller's own method.
+     */
+    private static final String EXAMPLE_MIXED_ORDER_201 = """
+            {
+              "code": "CREATED",
+              "message": "Created",
+              "data": {
+                "id": "a1f3c5e7-2b4d-4c6e-8f0a-1b3d5f7a9c2e",
+                "orderRef": "MKT-8B3E5D7F9A1C",
+                "status": "PENDING_PAYMENT",
+                "subtotalCents": 7397,
+                "deliveryFeeCents": 500,
+                "totalCents": 7897,
+                "currency": "USD",
+                "deliveryMethod": "DELIVERY",
+                "deliveryAddress": {
+                  "recipientName": "Tariro Moyo",
+                  "recipientMsisdn": "+263771234567",
+                  "line1": "14 Samora Machel Ave",
+                  "line2": "Flat 3B",
+                  "city": "Harare",
+                  "area": "Avondale",
+                  "landmark": "Opposite the clinic, blue gate",
+                  "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                },
+                "expiresAt": "2026-09-29T11:35:00Z",
+                "createdAt": "2026-09-29T11:05:00Z",
+                "items": [
+                  {
+                    "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    "titleSnapshot": "Wireless Bluetooth Speaker",
+                    "unitPriceCents": 2399,
+                    "quantity": 2,
+                    "lineTotalCents": 4798
+                  },
+                  {
+                    "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                    "titleSnapshot": "Wireless Earbuds",
+                    "unitPriceCents": 2599,
+                    "quantity": 1,
+                    "lineTotalCents": 2599
+                  }
+                ],
+                "payment": {
+                  "endpoint": "POST /payments",
+                  "orderType": "MARKETPLACE",
+                  "orderRef": "MKT-8B3E5D7F9A1C",
+                  "amountCents": 7897,
+                  "currency": "USD",
+                  "payBefore": "2026-09-29T11:35:00Z",
+                  "methods": [
+                    {
+                      "rail": "INNBUCKS_CODE",
+                      "label": "InnBucks app",
+                      "description": "Approve the payment code in your InnBucks app.",
+                      "completion": "APPROVE_IN_APP"
+                    }
+                  ]
+                },
+                "fulfilments": [],
+                "collectionPoints": [
+            """ + EXAMPLE_AVONDALE_POINT + """
+
+                ],
+                "actions": { "canCancel": true },
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "COLLECTION"
+                  },
+                  {
+                    "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d",
+                    "deliveryMethod": "DELIVERY",
+                    "deliveryFeeCents": 500
+                  }
+                ]
+              }
+            }
+            """;
+
+    /**
+     * V20: {@link #EXAMPLE_MIXED_ORDER_201} read back once paid. Each parcel
+     * carries ITS seller's method: the earbuds are on the road (a courier
+     * delivery, their seller's fee), the speaker waits at the Avondale counter
+     * (a collection - a code can be requested, no fee). The order-level
+     * {@code fulfilmentStatus} is the least advanced of the two.
+     */
+    private static final String EXAMPLE_MIXED_ORDER_PAID_200 = """
+            {
+              "code": "OK",
+              "message": "Success",
+              "data": {
+                "id": "a1f3c5e7-2b4d-4c6e-8f0a-1b3d5f7a9c2e",
+                "orderRef": "MKT-8B3E5D7F9A1C",
+                "status": "PAID",
+                "subtotalCents": 7397,
+                "deliveryFeeCents": 500,
+                "totalCents": 7897,
+                "currency": "USD",
+                "deliveryMethod": "DELIVERY",
+                "deliveryAddress": {
+                  "recipientName": "Tariro Moyo",
+                  "recipientMsisdn": "+263771234567",
+                  "line1": "14 Samora Machel Ave",
+                  "line2": "Flat 3B",
+                  "city": "Harare",
+                  "area": "Avondale",
+                  "landmark": "Opposite the clinic, blue gate",
+                  "addressId": "6f1c9d20-4a7e-4b83-9c5d-2e1f8a7b6c45"
+                },
+                "expiresAt": "2026-09-29T11:35:00Z",
+                "createdAt": "2026-09-29T11:05:00Z",
+                "paidAt": "2026-09-29T11:09:41Z",
+                "items": [
+                  {
+                    "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    "titleSnapshot": "Wireless Bluetooth Speaker",
+                    "unitPriceCents": 2399,
+                    "quantity": 2,
+                    "lineTotalCents": 4798
+                  },
+                  {
+                    "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                    "titleSnapshot": "Wireless Earbuds",
+                    "unitPriceCents": 2599,
+                    "quantity": 1,
+                    "lineTotalCents": 2599
+                  }
+                ],
+                "fulfilmentStatus": "PREPARING",
+                "fulfilments": [
+                  {
+                    "id": "6d2b8f14-9a3c-4e57-b1d8-0c4f7a2e9b63",
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "sellerName": "Sunrise Electronics",
+                    "status": "PREPARING",
+                    "items": [
+                      {
+                        "listingId": "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                        "titleSnapshot": "Wireless Bluetooth Speaker",
+                        "unitPriceCents": 2399,
+                        "quantity": 2,
+                        "lineTotalCents": 4798
+                      }
+                    ],
+                    "trackingCode": "TRK-4H8N2P6R9T",
+                    "trackingStatus": "RECEIVED",
+                    "deliveryFeeCents": 0,
+                    "collectionPoint": {
+                      "id": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e",
+                      "name": "Avondale shop",
+                      "townCode": "harare",
+                      "townName": "Harare",
+                      "line1": "14 Samora Machel Ave",
+                      "line2": "Shop 3, Avondale Shopping Centre",
+                      "area": "Avondale",
+                      "landmark": "Next to the pharmacy",
+                      "phone": "+263242123456",
+                      "openingHoursSummary": "Mon-Fri 08:00-17:00, Sat 08:00-13:00",
+                      "openNow": true
+                    },
+                    "actions": {
+                      "canConfirmReceipt": true,
+                      "canRequestCollectCode": true,
+                      "canCancel": true,
+                      "canDispute": true
+                    },
+                    "deliveryMethod": "COLLECTION"
+                  },
+                  {
+                    "id": "2e7a9c05-4b1d-4f83-a6e2-8d3f5b1c7a90",
+                    "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d",
+                    "sellerName": "Soundwave Audio",
+                    "status": "DISPATCHED",
+                    "dispatchedAt": "2026-09-29T13:40:00Z",
+                    "items": [
+                      {
+                        "listingId": "3d8f1a6c-2b7e-4c95-a1d4-6e9f0b2c7a58",
+                        "titleSnapshot": "Wireless Earbuds",
+                        "unitPriceCents": 2599,
+                        "quantity": 1,
+                        "lineTotalCents": 2599
+                      }
+                    ],
+                    "trackingCode": "TRK-9M3Q7V2X5C",
+                    "trackingStatus": "DISPATCHED",
+                    "deliveryFeeCents": 500,
+                    "actions": {
+                      "canConfirmReceipt": true,
+                      "canRequestCollectCode": false,
+                      "canCancel": false,
+                      "canDispute": true
+                    },
+                    "deliveryMethod": "DELIVERY"
+                  }
+                ],
+                "collectionPoints": [
+            """ + EXAMPLE_AVONDALE_POINT + """
+
+                ],
+                "actions": { "canCancel": false },
+                "sellers": [
+                  {
+                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                    "deliveryMethod": "COLLECTION"
+                  },
+                  {
+                    "merchantId": "4b1c8e2d-9f3a-4c56-8b7e-1d2f3a4b5c6d",
+                    "deliveryMethod": "DELIVERY",
+                    "deliveryFeeCents": 500
+                  }
+                ]
+              }
+            }
+            """;
+
     private final OrderService orderService;
     private final com.innbucks.marketplaceservice.settlement.DisputeService disputeService;
     private final com.innbucks.marketplaceservice.fulfilment.FulfilmentService fulfilmentService;
@@ -111,7 +351,20 @@ public class OrderController {
                     + "first, `collection_not_offered` last, and a line reason this version does not "
                     + "know is 422 `order_line_refused` (\"Some items in this order cannot be bought "
                     + "as they are. Change or remove them and try again.\") with the same "
-                    + "`data.rejections`.",
+                    + "`data.rejections`."
+                    + "\n\n**A method per seller (V20).** On a cell whose checkout options say "
+                    + "`perSellerDeliveryMethods: true`, `sellerDeliveryMethods` "
+                    + "(`[{merchantId, deliveryMethod}]`) has one seller deliver and another be "
+                    + "collected, with the quote's rules and refusals - send the body you quoted "
+                    + "with. The order's `deliveryMethod` is then the summary (DELIVERY when any "
+                    + "seller delivers, with the address snapshot once for those sellers), only "
+                    + "the delivering sellers are charged a fee, and only the collecting ones get a "
+                    + "collection point. `sellers` (always present from placement) says each "
+                    + "seller's method and fee - trust it rather than the request; each parcel "
+                    + "carries the same `deliveryMethod` once the order is paid. Refused before "
+                    + "anything is reserved: 422 `seller_delivery_methods_disabled` on a cell "
+                    + "without it, 400 `duplicate_delivery_method_choice`, 422 "
+                    + "`delivery_method_unavailable` with `data.merchantId`.",
             requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = CreateOrderRequest.class),
@@ -152,7 +405,9 @@ public class OrderController {
                                                   "collectionPointId": "5c1d8e2a-3b4f-4a6d-9e7c-2f8a1b3c4d5e" }
                                               ]
                                             }
-                                            """)})))
+                                            """),
+                                    @ExampleObject(name = "One seller delivers, the other is collected",
+                                            value = CheckoutController.EXAMPLE_MIXED_REQUEST)})))
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order created; stock reserved",
                     content = @Content(mediaType = "application/json",
@@ -218,7 +473,14 @@ public class OrderController {
                                                   ]
                                                 },
                                                 "fulfilments": [],
-                                                "actions": { "canCancel": true }
+                                                "actions": { "canCancel": true },
+                                                "sellers": [
+                                                  {
+                                                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                                    "deliveryMethod": "DELIVERY",
+                                                    "deliveryFeeCents": 300
+                                                  }
+                                                ]
                                               }
                                             }
                                             """),
@@ -280,13 +542,23 @@ public class OrderController {
                                                   ]
                                                 },
                                                 "fulfilments": [],
-                                                "actions": { "canCancel": true }
+                                                "actions": { "canCancel": true },
+                                                "sellers": [
+                                                  {
+                                                    "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                                    "deliveryMethod": "DELIVERY",
+                                                    "deliveryFeeCents": 200
+                                                  }
+                                                ]
                                               }
                                             }
-                                            """)})),
+                                            """),
+                                    @ExampleObject(name = "Created order, one seller delivers and the other is collected",
+                                            value = EXAMPLE_MIXED_ORDER_201)})),
             @ApiResponse(responseCode = "400", description = "Missing Idempotency-Key, invalid msisdn, "
                     + "invalid lines, a collection-point choice that is not that seller's (data "
-                    + "names the seller), or one seller named twice in collectionPoints",
+                    + "names the seller), one seller named twice in collectionPoints or in "
+                    + "sellerDeliveryMethods, or no address while some seller delivers",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "Missing Idempotency-Key", value = """
                                     {"code":"idempotency_key_required","message":"Idempotency-Key header is required"}
@@ -309,7 +581,9 @@ public class OrderController {
                             @ExampleObject(name = "Stale collection point",
                                     value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
                             @ExampleObject(name = "Seller named twice",
-                                    value = CheckoutController.EXAMPLE_DUPLICATE_COLLECTION_POINT_400)})),
+                                    value = CheckoutController.EXAMPLE_DUPLICATE_COLLECTION_POINT_400),
+                            @ExampleObject(name = "Seller named twice in sellerDeliveryMethods",
+                                    value = CheckoutController.EXAMPLE_DUPLICATE_METHOD_CHOICE_400)})),
             @ApiResponse(responseCode = "401", description = "Missing/invalid JWT",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(value = """
@@ -376,7 +650,8 @@ public class OrderController {
             @ApiResponse(responseCode = "422", description = "Listing unavailable, a DELIVERY line "
                     + "its seller does not deliver to the address's town, an address with no town, a "
                     + "line with no option chosen on a listing sold in options, a chosen option that is "
-                    + "gone, a COLLECTION line from a seller who only delivers, or the key was reused "
+                    + "gone, a COLLECTION line from a seller who only delivers, a per-seller method on "
+                    + "a cell without them or one the cell does not offer, or the key was reused "
                     + "with a different body. An unavailability refusal carries `data.rejections` — "
                     + "EVERY failing line, whatever the mix of reasons.",
                     content = @Content(mediaType = "application/json", examples = {
@@ -463,6 +738,10 @@ public class OrderController {
                             @ExampleObject(name = "Address has no town", value = """
                                     {"code":"address_town_required","message":"Choose the town for this address before using it for delivery"}
                                     """),
+                            @ExampleObject(name = "Per-seller methods not switched on",
+                                    value = CheckoutController.EXAMPLE_PER_SELLER_DISABLED_422),
+                            @ExampleObject(name = "A seller's method not offered",
+                                    value = CheckoutController.EXAMPLE_METHOD_CHOICE_UNAVAILABLE_422),
                             @ExampleObject(name = "No option chosen", value = """
                                     {
                                       "code": "variant_required",
@@ -553,7 +832,14 @@ public class OrderController {
                                                 "lineTotalCents": 450
                                               }
                                             ],
-                                            "actions": { "canCancel": true }
+                                            "actions": { "canCancel": true },
+                                            "sellers": [
+                                              {
+                                                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                                "deliveryMethod": "DELIVERY",
+                                                "deliveryFeeCents": 200
+                                              }
+                                            ]
                                           }
                                         ],
                                         "page": 0,
@@ -627,7 +913,14 @@ public class OrderController {
                                                 "lineTotalCents": 450
                                               }
                                             ],
-                                            "actions": { "canCancel": true }
+                                            "actions": { "canCancel": true },
+                                            "sellers": [
+                                              {
+                                                "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                                "deliveryMethod": "DELIVERY",
+                                                "deliveryFeeCents": 200
+                                              }
+                                            ]
                                           }
                                         ],
                                         "page": 0,
@@ -674,7 +967,7 @@ public class OrderController {
             @ApiResponse(responseCode = "200", description = "Order returned",
                     content = @Content(mediaType = "application/json",
                             schema = @Schema(implementation = OrderResponse.class),
-                            examples = @ExampleObject(name = "My order, paid and on its way", value = """
+                            examples = {@ExampleObject(name = "My order, paid and on its way", value = """
                                     {
                                       "code": "OK",
                                       "message": "Success",
@@ -753,10 +1046,19 @@ public class OrderController {
                                             "deliveryMethod": "DELIVERY"
                                           }
                                         ],
-                                        "actions": { "canCancel": false }
+                                        "actions": { "canCancel": false },
+                                        "sellers": [
+                                          {
+                                            "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                            "deliveryMethod": "DELIVERY",
+                                            "deliveryFeeCents": 200
+                                          }
+                                        ]
                                       }
                                     }
-                                    """))),
+                                    """),
+                                    @ExampleObject(name = "Paid, one seller delivers and the other is collected",
+                                            value = EXAMPLE_MIXED_ORDER_PAID_200)})),
             @ApiResponse(responseCode = "400", description = "Malformed order id",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(value = """
@@ -827,7 +1129,14 @@ public class OrderController {
                                             "lineTotalCents": 450
                                           }
                                         ],
-                                        "actions": { "canCancel": false }
+                                        "actions": { "canCancel": false },
+                                        "sellers": [
+                                          {
+                                            "merchantId": "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54",
+                                            "deliveryMethod": "DELIVERY",
+                                            "deliveryFeeCents": 200
+                                          }
+                                        ]
                                       }
                                     }
                                     """))),

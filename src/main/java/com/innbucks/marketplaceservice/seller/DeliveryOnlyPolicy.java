@@ -37,17 +37,26 @@ public class DeliveryOnlyPolicy {
             CheckoutProperties checkout) {
         this.enabled = enabled;
         this.checkout = checkout;
-        if (enabled) {
-            // A WARN, not an ERROR: both states are legitimate. Until a basket
-            // can choose delivery or collection per seller, a basket holding a
-            // delivery-only seller's item next to an item that can only be
+        if (mixedBasketsStranded()) {
+            // A WARN, not an ERROR: both states are legitimate. With delivery-
+            // only sellers but no per-seller method, a basket holding a
+            // delivery-only seller's item next to one that can only be
             // collected has no single method that works for both, so the app
             // has to ask the shopper to split it into two orders.
-            log.warn("Delivery-only sellers are ENABLED on this cell, and a basket cannot yet "
-                    + "choose delivery or collection per seller: a basket mixing a delivery-only "
-                    + "seller with an item that can only be collected cannot be checked out as "
-                    + "one order");
+            log.warn("Delivery-only sellers are ENABLED on this cell but per-seller delivery "
+                    + "methods are OFF (marketplace.delivery.per-seller-methods-enabled): a basket "
+                    + "mixing a delivery-only and a collection-only seller cannot be checked out "
+                    + "in one order");
         }
+    }
+
+    /**
+     * True when this cell lets a seller be delivery-only but gives the buyer no
+     * way to choose a method per seller - the configuration in which some
+     * baskets cannot be checked out as one order. What the boot WARN reports.
+     */
+    boolean mixedBasketsStranded() {
+        return enabled && !checkout.getDelivery().isPerSellerMethodsEnabled();
     }
 
     /** Whether a seller may turn collection off on this cell. */

@@ -498,15 +498,36 @@ public class PublicTestController {
                     + "malformed request or a missing address is an error. Same body as "
                     + "`POST /marketplace/checkout/quote`, including `sellers[]` (each seller's "
                     + "`availableMethods`, so Deliver / Collect can be greyed out before the "
-                    + "shopper picks) and `availabilityTownCode` (V20).")
+                    + "shopper picks) and `availabilityTownCode` (V20). `sellerDeliveryMethods` "
+                    + "(`[{merchantId, deliveryMethod}]`) has one seller deliver and another be "
+                    + "collected, on a cell whose options say `perSellerDeliveryMethods: true`; "
+                    + "`sellers[].deliveryMethod` then says each seller's own method.",
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    content = @Content(mediaType = "application/json", examples =
+                            @ExampleObject(name = "One seller delivers, the other is collected",
+                                    value = CheckoutController.EXAMPLE_MIXED_REQUEST))))
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The quote, ready or not"),
-            @ApiResponse(responseCode = "400", description = "Malformed request, DELIVERY with no "
-                    + "address, or a `collectionPoints` choice that is not that seller's "
-                    + "(`unknown_collection_point`, data names the seller) or names a seller twice "
-                    + "(`duplicate_collection_point_choice`)"),
+            @ApiResponse(responseCode = "400", description = "Malformed request, some seller "
+                    + "delivering with no address, a `collectionPoints` choice that is not that "
+                    + "seller's (`unknown_collection_point`, data names the seller) or names a "
+                    + "seller twice (`duplicate_collection_point_choice`), or a seller named twice "
+                    + "in `sellerDeliveryMethods`",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "Stale collection point",
+                                    value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
+                            @ExampleObject(name = "Seller named twice in sellerDeliveryMethods",
+                                    value = CheckoutController.EXAMPLE_DUPLICATE_METHOD_CHOICE_400)})),
             @ApiResponse(responseCode = "404", description = "The surface is off, or the address is not this handle's",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404)))
+                    content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
+            @ApiResponse(responseCode = "422", description = "A method the cell does not offer (for "
+                    + "one seller, `data.merchantId` names whose), or `sellerDeliveryMethods` on a "
+                    + "cell without per-seller methods",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "A seller's method not offered",
+                                    value = CheckoutController.EXAMPLE_METHOD_CHOICE_UNAVAILABLE_422),
+                            @ExampleObject(name = "Per-seller methods not switched on",
+                                    value = CheckoutController.EXAMPLE_PER_SELLER_DISABLED_422)}))
     })
     public ResponseEntity<ApiResult<CheckoutQuoteResponse>> quote(
             @PathVariable String handle, @Valid @RequestBody CheckoutQuoteRequest request) {
@@ -518,7 +539,8 @@ public class PublicTestController {
     @Operation(summary = "[TEST] Delivery methods and payment rails this cell offers",
             description = "Buyer-independent, so it takes no handle. The payment rails listed "
                     + "are what this cell is configured to advertise; paying still happens at "
-                    + "payment-service against a real order, which this surface cannot create.")
+                    + "payment-service against a real order. `perSellerDeliveryMethods` (V20) says "
+                    + "whether a basket may send `sellerDeliveryMethods` on this cell.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The options"),
             @ApiResponse(responseCode = "404", description = "The test surface is not enabled on this cell",
@@ -549,23 +571,37 @@ public class PublicTestController {
                     + "anything else): retry the same body under the same key to replay the "
                     + "original response rather than buying twice.\n\n"
                     + "The response carries the `payment` block naming what to POST to "
-                    + "payment-service next.")
+                    + "payment-service next.\n\n"
+                    + "**A method per seller (V20)**: the quote's `sellerDeliveryMethods`, with the "
+                    + "same rules and refusals, all before anything is reserved; the response's "
+                    + "`sellers[]` says each seller's method and fee.")
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order placed; stock reserved, awaiting payment"),
             @ApiResponse(responseCode = "400", description = "Missing `Idempotency-Key` (checked first), "
-                    + "missing or invalid `buyerMsisdn`, a malformed basket, or a stale or "
-                    + "duplicated `collectionPoints` choice",
+                    + "missing or invalid `buyerMsisdn`, a malformed basket, a stale or "
+                    + "duplicated `collectionPoints` choice, or a seller named twice in "
+                    + "`sellerDeliveryMethods`",
                     content = @Content(examples = {
                             @ExampleObject(name = "No idempotency key", value = """
                                     {"code":"idempotency_key_required","message":"Idempotency-Key header is required","data":null}"""),
                             @ExampleObject(name = "No payer number", value = """
                                     {"code":"invalid_msisdn","message":"buyerMsisdn is required","data":null}"""),
                             @ExampleObject(name = "Stale collection point",
-                                    value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400)})),
+                                    value = CheckoutController.EXAMPLE_UNKNOWN_COLLECTION_POINT_400),
+                            @ExampleObject(name = "Seller named twice in sellerDeliveryMethods",
+                                    value = CheckoutController.EXAMPLE_DUPLICATE_METHOD_CHOICE_400)})),
             @ApiResponse(responseCode = "404", description = "The surface is off, or this cell has no api-key configured",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_DISABLED_404))),
             @ApiResponse(responseCode = "409", description = "A line lost the stock race, or the key is in flight"),
-            @ApiResponse(responseCode = "422", description = "Lines unavailable or short-stocked; `data.rejections` names every one")
+            @ApiResponse(responseCode = "422", description = "Lines unavailable or short-stocked "
+                    + "(`data.rejections` names every one), a method the cell does not offer (for "
+                    + "one seller, `data.merchantId` names whose), or `sellerDeliveryMethods` on a "
+                    + "cell without per-seller methods",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "A seller's method not offered",
+                                    value = CheckoutController.EXAMPLE_METHOD_CHOICE_UNAVAILABLE_422),
+                            @ExampleObject(name = "Per-seller methods not switched on",
+                                    value = CheckoutController.EXAMPLE_PER_SELLER_DISABLED_422)}))
     })
     public ResponseEntity<ApiResult<OrderResponse>> createOrder(
             @PathVariable String handle,

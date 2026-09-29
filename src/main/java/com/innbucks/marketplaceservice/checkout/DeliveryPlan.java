@@ -14,12 +14,13 @@ import java.util.UUID;
  * How each seller's share of a basket reaches the buyer, decided BEFORE the
  * basket is priced (V20: load, then plan, then price).
  *
- * <p>Today every plan is {@link #uniform}: the basket's one method applies to
- * every seller, which is exactly what an order meant before V20. The shape
- * already carries a per-seller map so that choosing a method per seller can be
- * added without touching a single reader: {@link #methodFor} is the only way
- * the pricer asks, and {@link #needsDestination} / {@link #summary} are the
- * only way order creation asks. When {@code bySeller} is non-empty it names
+ * <p>A request with no per-seller choices is {@link #uniform}: the basket's one
+ * method applies to every seller, which is exactly what an order meant before
+ * V20. A request that names a method per seller
+ * ({@code sellerDeliveryMethods}) is {@link #forSellers}: {@link #methodFor} is
+ * the only way the pricer asks, and {@link #needsDestination} /
+ * {@link #summary} / {@link #someoneCollects} are the only way the quote and
+ * order creation ask. When {@code bySeller} is non-empty it names
  * EVERY seller in the basket; when it is empty, {@code basketDefault} applies
  * to all of them. Build a per-seller plan only through {@link #forSellers},
  * which makes that true by construction: with a PARTIAL map, a seller left to
@@ -100,6 +101,27 @@ public record DeliveryPlan(DeliveryMethod basketDefault,
         return bySeller.isEmpty()
                 ? basketDefault == DeliveryMethod.DELIVERY
                 : bySeller.containsValue(DeliveryMethod.DELIVERY);
+    }
+
+    /**
+     * Whether some seller collects, so the checkout says where. On a uniform
+     * plan this is exactly {@code summary() == COLLECTION}, which is what the
+     * quote and the order have always keyed {@code collectionPoints} on.
+     */
+    public boolean someoneCollects() {
+        return bySeller.isEmpty()
+                ? basketDefault == DeliveryMethod.COLLECTION
+                : bySeller.containsValue(DeliveryMethod.COLLECTION);
+    }
+
+    /**
+     * True when the plan's sellers do NOT all share one method - one seller
+     * delivers and another collects. A per-seller plan whose choices all agree
+     * is uniform in effect, and reads false.
+     */
+    public boolean isMixed() {
+        return bySeller.containsValue(DeliveryMethod.DELIVERY)
+                && bySeller.containsValue(DeliveryMethod.COLLECTION);
     }
 
     /**

@@ -216,6 +216,17 @@ marketplace:
     # renders sellers[].availableMethods from the quote, or a delivery-only
     # seller's items read as collectable up to the moment the quote refuses.
     delivery-only-sellers-enabled: ${MARKETPLACE_DELIVERY_ONLY_SELLERS_ENABLED:false}
+    # V20: may one basket be delivered from one seller and collected from
+    # another (sellerDeliveryMethods on the quote and the order)? OFF by
+    # default, like delivery-only-sellers-enabled: it gates only a NON-EMPTY
+    # choice list (422 seller_delivery_methods_disabled); a body without one
+    # behaves exactly as before, and orders already placed with one are never
+    # touched when it is switched off. GET /marketplace/checkout/options says
+    # perSellerDeliveryMethods: true only when this is on AND the cell offers
+    # both methods. Turning delivery-only sellers on with this off logs a WARN
+    # at boot: a basket mixing a delivery-only and a collection-only seller
+    # then cannot be checked out as one order.
+    per-seller-methods-enabled: ${MARKETPLACE_PER_SELLER_DELIVERY_METHODS_ENABLED:false}
     # There is no flat delivery fee any more (V14): each listing names the towns
     # it delivers to and the fee for each, and a DELIVERY order pays each
     # seller's fee to the buyer's town. MARKETPLACE_DELIVERY_FEE_CENTS is gone.
