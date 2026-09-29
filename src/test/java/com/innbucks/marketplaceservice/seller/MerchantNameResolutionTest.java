@@ -2,12 +2,27 @@ package com.innbucks.marketplaceservice.seller;
 
 import com.innbucks.marketplaceservice.api.Msisdns;
 import com.innbucks.marketplaceservice.audit.AuditService;
+import com.innbucks.marketplaceservice.cart.CartService;
+import com.innbucks.marketplaceservice.catalog.CatalogService;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
+import com.innbucks.marketplaceservice.catalog.ListingService;
+import com.innbucks.marketplaceservice.catalog.ListingViewAssembler;
+import com.innbucks.marketplaceservice.checkout.BasketViewAssembler;
+import com.innbucks.marketplaceservice.checkout.CheckoutService;
+import com.innbucks.marketplaceservice.checkout.dto.CheckoutQuoteRequest;
+import com.innbucks.marketplaceservice.favorite.FavoriteService;
+import com.innbucks.marketplaceservice.order.OrderService;
+import com.innbucks.marketplaceservice.order.OrderViewAssembler;
+import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.settlement.SettlementQueryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Pageable;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -175,5 +190,95 @@ class MerchantNameResolutionTest {
     void emptyPageIsNotACall() {
         assertThat(service.displayNames(List.of())).isEmpty();
         assertThat(registry.calls).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Every read that renders registry names runs OUTSIDE a transaction")
+    void nameRenderingReadsAreNotTransactional() throws Exception {
+        // Inside a transaction the resolver serves its cache and never calls
+        // out (a call would hold a pooled connection for user-service's whole
+        // latency). So a read that should show FRESH names must not open one;
+        // re-adding @Transactional here would not fail anything visibly — the
+        // names would just stop refreshing. NameLookupHoldsNoConnectionIT
+        // measures the connection; this pins the list.
+        List<Method> reads = List.of(
+                CatalogService.class.getMethod("browse", CatalogService.BrowseQuery.class),
+                CatalogService.class.getMethod("getById", UUID.class),
+                CatalogService.class.getMethod("merchantProfile", UUID.class),
+                FavoriteService.class.getMethod("listMine", AuthenticatedUser.class, int.class, int.class),
+                ListingService.class.getMethod("listMine", AuthenticatedUser.class, int.class, int.class,
+                        UUID.class),
+                CartService.class.getMethod("getCart", AuthenticatedUser.class),
+                // The cart mutations answer with the whole cart: the write commits
+                // in its own transaction, then the cart is rendered outside it.
+                CartService.class.getMethod("add", AuthenticatedUser.class, UUID.class, int.class),
+                CartService.class.getMethod("add", AuthenticatedUser.class, UUID.class, UUID.class,
+                        int.class),
+                CartService.class.getMethod("setQuantity", AuthenticatedUser.class, UUID.class,
+                        int.class),
+                CartService.class.getMethod("setQuantity", AuthenticatedUser.class, UUID.class,
+                        UUID.class, int.class),
+                CartService.class.getMethod("remove", AuthenticatedUser.class, UUID.class),
+                CartService.class.getMethod("remove", AuthenticatedUser.class, UUID.class,
+                        UUID.class),
+                CheckoutService.class.getMethod("quote", AuthenticatedUser.class,
+                        CheckoutQuoteRequest.class),
+                OrderService.class.getMethod("getMine", AuthenticatedUser.class, Pageable.class),
+                OrderService.class.getMethod("getAll", UUID.class, Pageable.class),
+                OrderService.class.getMethod("getOrder", AuthenticatedUser.class, UUID.class),
+                SettlementQueryService.class.getMethod("payoutReportCsv", AuthenticatedUser.class),
+                SellerService.class.getMethod("list", SellerStatus.class, int.class, int.class),
+                SellerService.class.getMethod("displayNames", List.class));
+
+        for (Method read : reads) {
+            assertThat(read.isAnnotationPresent(NameResolvingRead.class))
+                    .as("%s.%s is marked", read.getDeclaringClass().getSimpleName(), read.getName())
+                    .isTrue();
+        }
+        for (Class<?> owner : reads.stream().map(Method::getDeclaringClass).distinct().toList()) {
+            assertThat(owner.isAnnotationPresent(Transactional.class))
+                    .as("%s must not be @Transactional at class level", owner.getSimpleName())
+                    .isFalse();
+            for (Method method : owner.getDeclaredMethods()) {
+                if (method.isAnnotationPresent(NameResolvingRead.class)) {
+                    assertThat(method.isAnnotationPresent(Transactional.class))
+                            .as("%s.%s renders registry names and must not open a transaction",
+                                    owner.getSimpleName(), method.getName())
+                            .isFalse();
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("The collaborators every name lookup passes through never open a transaction")
+    void nameLookupCollaboratorsAreNotTransactional() throws Exception {
+        // The lookup itself happens BELOW the marked reads — in the view
+        // assemblers and in SellerService.displayNames(List, Map). A
+        // @Transactional added to any of them would wrap the call again, and
+        // orders, cart and quote would silently fall back to cached names with
+        // nothing failing: NameLookupHoldsNoConnectionIT only drives the
+        // catalogue family. So pin every class on the path, whole.
+        List<Class<?>> collaborators = List.of(
+                ListingViewAssembler.class,
+                OrderViewAssembler.class,
+                BasketViewAssembler.class,
+                UserServiceOrganizationNameResolver.class);
+        for (Class<?> owner : collaborators) {
+            assertThat(owner.isAnnotationPresent(Transactional.class))
+                    .as("%s must not be @Transactional at class level", owner.getSimpleName())
+                    .isFalse();
+            for (Method method : owner.getDeclaredMethods()) {
+                assertThat(method.isAnnotationPresent(Transactional.class))
+                        .as("%s.%s sits on the name-lookup path and must not open a transaction",
+                                owner.getSimpleName(), method.getName())
+                        .isFalse();
+            }
+        }
+        Method gapFiller = SellerService.class.getMethod("displayNames", List.class, Map.class);
+        assertThat(gapFiller.isAnnotationPresent(Transactional.class))
+                .as("SellerService.displayNames(List, Map) calls the registry and must not "
+                        + "open a transaction")
+                .isFalse();
     }
 }

@@ -9,6 +9,7 @@ import com.innbucks.marketplaceservice.fulfilment.SellerFulfilmentStatsService;
 import com.innbucks.marketplaceservice.review.ReviewService;
 import com.innbucks.marketplaceservice.review.dto.MerchantRatingResponse;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.pickup.CollectionPoint;
@@ -108,7 +109,7 @@ public class CatalogService {
      * <p>Ordered by {@link ListingSort} (default newest-first), always with a
      * total-order tiebreaker so paging is stable — see that enum.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public ListingPageResponse browse(BrowseQuery request) {
         String titleFilter = blankToNull(request.q());
         if (titleFilter != null) {
@@ -278,7 +279,7 @@ public class CatalogService {
      * place, so this profile and the sibling {@code /rating} endpoint can never
      * disagree about the same merchant.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public MerchantProfileResponse merchantProfile(UUID merchantId) {
         Map<UUID, MarketplaceSeller> sellers = sellerService.findAllByMerchantIds(List.of(merchantId));
         MarketplaceSeller seller = sellers.get(merchantId);
@@ -303,7 +304,7 @@ public class CatalogService {
                 collectionPoints.forMerchant(merchantId));
     }
 
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public ListingResponse getById(UUID id) {
         return listingRepository.findByIdAndStatus(id, ListingStatus.ACTIVE)
                 .map(assembler::toResponse)

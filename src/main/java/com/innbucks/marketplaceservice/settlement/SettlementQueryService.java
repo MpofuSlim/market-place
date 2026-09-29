@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.config.MarketZone;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository.PayoutRow;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementPageResponse;
@@ -202,7 +203,7 @@ public class SettlementQueryService {
      * them, when" must be answerable. The row carries counts and totals only —
      * never a name or an account (V13's stance on the destination audit).
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public Csv payoutReportCsv(AuthenticatedUser operator) {
         List<PayoutRow> rows = settlementRepository.payoutReport();
         List<UUID> merchantIds = rows.stream().map(PayoutRow::getMerchantId).toList();

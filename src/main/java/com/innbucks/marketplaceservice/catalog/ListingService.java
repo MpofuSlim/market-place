@@ -19,6 +19,7 @@ import com.innbucks.marketplaceservice.delivery.DeliveryTown;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
@@ -625,7 +626,7 @@ public class ListingService {
      * only ever see their own). For SUPER_ADMIN: ALL listings, any status,
      * optionally narrowed to one merchant via the filter.
      */
-    @Transactional(readOnly = true)
+    @NameResolvingRead
     public ListingPageResponse listMine(AuthenticatedUser caller, int page, int size,
                                         UUID merchantIdFilter) {
         // Same clamp as the public catalog: oversized sizes shrink, never error.
