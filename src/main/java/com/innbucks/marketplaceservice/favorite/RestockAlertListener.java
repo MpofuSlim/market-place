@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.favorite;
 import com.innbucks.marketplaceservice.catalog.Listing;
 import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingRestocked;
+import com.innbucks.marketplaceservice.config.AsyncConfig;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.notify.MarketplaceNotificationProperties;
 import com.innbucks.marketplaceservice.notify.OrderNotificationComposer;
@@ -37,8 +38,12 @@ import java.util.UUID;
  *       ({@code outcome=overflow}, amount = skipped favoriters) — a viral
  *       listing must not turn one stock update into thousands of S2S
  *       calls.</li>
- *   <li>{@code @Async} on the bounded pool — up to cap-many HTTP calls must
- *       never run on the thread that committed the restock.</li>
+ *   <li>{@code @Async} on the BULK notification pool
+ *       ({@link AsyncConfig#BULK_NOTIFICATION_EXECUTOR}) — up to cap-many HTTP
+ *       calls must never run on the thread that committed the restock, and
+ *       must never sit in front of an order-paid or parcel SMS on the
+ *       per-order pool. A saturated bulk pool DROPS the event (metered), it
+ *       never runs it on the committing thread.</li>
  *   <li><b>Nothing may escape an after-commit callback</b> (it would surface
  *       to the caller of a commit that already succeeded) — the listener
  *       swallows and logs; {@code UserNotifyGateway} itself never throws.</li>
@@ -55,7 +60,7 @@ public class RestockAlertListener {
     private final MarketplaceNotificationProperties properties;
     private final MarketplaceMetrics metrics;
 
-    @Async("notificationExecutor")
+    @Async(AsyncConfig.BULK_NOTIFICATION_EXECUTOR)
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onRestock(ListingRestocked event) {
         try {

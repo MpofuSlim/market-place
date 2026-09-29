@@ -1082,7 +1082,9 @@ never change either casually.
   * **`BUYER_NOT_NOTIFIED` fires from `BuyerNoticeRecorder`** when every
     channel of a seller-triggered buyer SMS FAILED — the seller's action went
     through, the buyer does not know, and only the seller can now tell them.
-    `NOT_SENT` (a deployment choice) alerts nobody.
+    `NOT_SENT` (a deployment choice) alerts nobody. Neither does a notice
+    DROPPED by a saturated `notificationExecutor` — the listener never ran, so
+    nothing is recorded (see Notifications › Triggers).
   * **`CollectionOverdueSweeper` alerts ONCE per parcel**: it CLAIMS
     `order_fulfilment.collection_overdue_alerted_at` with a conditional bulk
     UPDATE before sending (at most once — a crash loses an alert rather than
@@ -1749,10 +1751,41 @@ orders.
   per-user channel selection/fallback. Strictly best-effort: failures logged
   + metered, NEVER thrown.
 
-**Triggers (all `AFTER_COMMIT` + `@Async` on the bounded
-`notificationExecutor`, and NOTHING may escape a listener — an after-commit
-exception would make a dead SMS gateway look like a failed payment confirm;
-copied from the middleware/ticketing discipline):**
+**Triggers (all `AFTER_COMMIT` + `@Async` on a bounded pool, and NOTHING may
+escape a listener — an after-commit exception would make a dead SMS gateway
+look like a failed payment confirm; copied from the middleware/ticketing
+discipline).** Three pools (`config/AsyncConfig`), a bulkhead: per-order notices
+(order paid, parcel updates, refunds, dispute resolved, seller alerts) on
+`notificationExecutor`; the restock fan-out (up to 200 sequential S2S calls per
+event) ALONE on `bulkNotificationExecutor`, so it can never queue in front of
+the "delivered" SMS that tells a buyer their dispute window has started. Both
+are fixed-size and **DISCARD on overflow** (`MeteredRejectionPolicy`:
+`marketplace.notifications.executor_rejected{executor,policy,reason}` on every
+rejection, 0 from boot — alert on `reason=saturated`; the WARN is rate-limited
+to one line per pool per minute carrying the count, so an outage does not
+flood the log). The old `CallerRunsPolicy` ran an overflowing listener on the
+thread that had just COMMITTED — payment-service's confirm-payment request — so
+exactly during an SMS outage the money path inherited 30-50 s of gateway
+timeouts. A saturated pool now loses that notice instead (the fire-and-forget
+bargain every listener already makes); the per-order queue is 500 deep so only
+a sustained outage drops one. **A dropped parcel notice records nothing**:
+`buyer_notice_*` and `BUYER_NOT_NOTIFIED` are written by the listener itself,
+so the seller card keeps showing the previous notice and no seller is alerted
+— the rejection counter is the only trace. The one exception is the V13
+payout-destination warning, the anti-redirect control ("notified on EVERY
+change"): it runs ALONE on `securityNotificationExecutor`, whose overflow runs
+ON THE CALLER (`policy=caller_runs`) — safe only because its sole publishers are
+the seller's or an operator's own payout-destination request, never the money
+path; add nothing there that payment-service can reach. The
+`@Scheduled` sweeps get their own pool too (`spring.task.scheduling.pool.size`,
+`MARKETPLACE_SCHEDULER_POOL_SIZE`, default 4): Boot's default is ONE thread, so
+`CollectionOverdueSweeper`'s up-to-200 synchronous seller alerts held back the
+every-minute order-expiry sweep and lapsed orders kept their stock. Those
+alerts stay synchronous on purpose — each is sent right after its at-most-once
+claim, and a discarding pool would lose an already-claimed alert for good.
+Every `@Async` must name its pool. Pinned by `AsyncConfigTest` (real yaml +
+Boot auto-config, incl. a slow job not starving another), `MeteredRejectionPolicyTest`,
+`NotificationExecutorRoutingTest` and `NotificationExecutorsIT`.
 
 * **Buyer ORDER PAID** — `OrderTransitionService` publishes `OrderPaid` from
   the transition chokepoint (only PAID; a future confirm path cannot forget);
