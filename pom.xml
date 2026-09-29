@@ -54,6 +54,15 @@
              pins every netty-* artifact so one property bump cascades cleanly.
              Same pin ticketing-system already carries. -->
         <netty.version>4.2.18.Final</netty.version>
+        <!-- jackson-databind: CVE-2026-68497 (HIGH, CPU denial of service via
+             unbounded numeric parsing) in BOTH lines the image carries —
+             Jackson 3 (tools.jackson, Boot 4's default) at 3.1.5 and Jackson 2
+             (com.fasterxml, spring-boot-jackson2 + jjwt-jackson) at 2.21.5.
+             Fixed in 3.1.6 and 2.21.6. Both BOMs are imported below, before
+             the Boot BOM, so every jackson-* artifact moves together. Drop on
+             the next Boot upgrade once its BOM carries these or later. -->
+        <jackson-3.version>3.1.6</jackson-3.version>
+        <jackson-2.version>2.21.6</jackson-2.version>
         <!-- spring-kafka pinned only defensively (not a direct dependency):
              CVE-2026-41731 (HIGH) fixed in 4.1.0. -->
         <spring-kafka.version>4.1.1</spring-kafka.version>
@@ -128,6 +137,21 @@
                 <groupId>io.netty</groupId>
                 <artifactId>netty-bom</artifactId>
                 <version>${netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- See the jackson-*.version comment above: CVE-2026-68497. -->
+            <dependency>
+                <groupId>tools.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson-3.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson-2.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
