@@ -123,6 +123,39 @@ public class JwtUtil {
         return getClaims(token).getSubject();
     }
 
+    /** The token's subject — the login a staff account signed in with (its
+     *  e-mail), shown beside every support note, message and activity row. */
+    public String extractSubject(String token) {
+        return getClaims(token).getSubject();
+    }
+
+    /**
+     * The {@code perms} claim (user-service V35): the permission codes minted
+     * for the caller, wildcard already expanded. Only entries SHAPED like a
+     * permission code survive — lowercase, colon-namespaced — so an entry such
+     * as {@code "ROLE_SUPER_ADMIN"} can never become a role authority through
+     * this claim: {@link JwtFilter} grants these as bare authorities, and
+     * {@code hasRole} checks read the {@code ROLE_} namespace. A missing or
+     * malformed claim is an empty set, which fails every support check closed.
+     */
+    public Set<String> extractPermissions(String token) {
+        Object raw = getClaims(token).get("perms");
+        if (!(raw instanceof Collection<?> c)) {
+            return Set.of();
+        }
+        Set<String> permissions = new LinkedHashSet<>();
+        for (Object entry : c) {
+            if (entry instanceof String code && PERMISSION_CODE.matcher(code).matches()) {
+                permissions.add(code);
+            }
+        }
+        return permissions;
+    }
+
+    /** {@code resource:action}, optionally deeper ({@code users:roles:write}). */
+    static final java.util.regex.Pattern PERMISSION_CODE =
+            java.util.regex.Pattern.compile("^[a-z][a-z0-9-]*(:[a-z][a-z0-9-]*)+$");
+
     public Set<String> extractRoles(String token) {
         Object raw = getClaims(token).get("roles");
         if (raw instanceof Collection<?> c) {

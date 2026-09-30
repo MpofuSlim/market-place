@@ -1,5 +1,6 @@
 package com.innbucks.marketplaceservice.order;
 
+import java.util.Collection;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -72,4 +73,63 @@ public interface MarketOrderRepository extends JpaRepository<MarketOrder, UUID> 
     List<UUID> findDeliveredOrderIdsContainingListing(@Param("buyerUuid") UUID buyerUuid,
                                                       @Param("listingId") UUID listingId,
                                                       Pageable pageable);
+
+    // ---- customer support (V22) -------------------------------------------------
+
+    /** Orders a phone number appears on — as the payer, a gift recipient or a
+     *  delivery recipient. Each column has its own V22 index; newest first, id
+     *  last so the order is total. */
+    @Query("""
+            select o from MarketOrder o
+             where o.buyerMsisdn = :phone
+                or o.recipientMsisdn = :phone
+                or o.deliveryRecipientMsisdn = :phone
+             order by o.createdAt desc, o.id""")
+    List<MarketOrder> findTouchingPhone(@Param("phone") String phone, Pageable pageable);
+
+    /** Orders whose gift or delivery recipient name contains {@code pattern}
+     *  (already lower-cased, LIKE-escaped with '!'). */
+    @Query("""
+            select o from MarketOrder o
+             where lower(o.recipientName) like :pattern escape '!'
+                or lower(o.deliveryRecipientName) like :pattern escape '!'
+             order by o.createdAt desc, o.id""")
+    List<MarketOrder> findByRecipientNameLike(@Param("pattern") String pattern, Pageable pageable);
+
+    boolean existsByBuyerUuid(UUID buyerUuid);
+
+    interface BuyerOrderStats {
+        UUID getBuyerUuid();
+        long getOrders();
+        Instant getLastOrderAt();
+    }
+
+    @Query("""
+            select o.buyerUuid as buyerUuid, count(o) as orders, max(o.createdAt) as lastOrderAt
+              from MarketOrder o where o.buyerUuid in :buyerUuids group by o.buyerUuid""")
+    List<BuyerOrderStats> statsForBuyers(@Param("buyerUuids") Collection<UUID> buyerUuids);
+
+    interface BuyerPhone {
+        String getMsisdn();
+        long getOrders();
+        Instant getLastUsedAt();
+    }
+
+    /** Every number a buyer has paid from, most recently used first. */
+    @Query("""
+            select o.buyerMsisdn as msisdn, count(o) as orders, max(o.createdAt) as lastUsedAt
+              from MarketOrder o where o.buyerUuid = :buyerUuid
+             group by o.buyerMsisdn order by max(o.createdAt) desc""")
+    List<BuyerPhone> phonesOf(@Param("buyerUuid") UUID buyerUuid);
+
+    interface StatusTotal {
+        OrderStatus getStatus();
+        long getOrders();
+        long getTotalCents();
+    }
+
+    @Query("""
+            select o.status as status, count(o) as orders, coalesce(sum(o.totalCents), 0) as totalCents
+              from MarketOrder o where o.buyerUuid = :buyerUuid group by o.status""")
+    List<StatusTotal> totalsByStatus(@Param("buyerUuid") UUID buyerUuid);
 }

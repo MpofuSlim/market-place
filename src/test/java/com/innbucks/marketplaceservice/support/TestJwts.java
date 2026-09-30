@@ -75,6 +75,7 @@ public final class TestJwts {
         private String loginIdentifier;
         private Long tokenVersion;
         private boolean mustChangePassword;
+        private List<String> permissions;
         // Default: valid for 1 hour from now.
         private long ttlMillis = 3_600_000L;
 
@@ -141,6 +142,14 @@ public final class TestJwts {
             return this;
         }
 
+        /** The {@code perms} claim (user-service V35): permission codes, as the
+         *  customer-support surface reads them. Any string is minted as given,
+         *  so a test can prove a role-shaped entry is refused. */
+        public Builder permissions(String... permissions) {
+            this.permissions = List.of(permissions);
+            return this;
+        }
+
         /** Issued and already expired — for expired-token tests. */
         public Builder expired() {
             this.ttlMillis = -60_000L;
@@ -180,6 +189,9 @@ public final class TestJwts {
             }
             if (mustChangePassword) {
                 builder.claim("mustChangePassword", true);
+            }
+            if (permissions != null) {
+                builder.claim("perms", permissions);
             }
             long now = System.currentTimeMillis();
             return builder

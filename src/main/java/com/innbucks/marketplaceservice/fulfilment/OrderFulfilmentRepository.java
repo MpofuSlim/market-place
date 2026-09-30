@@ -308,4 +308,14 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
                AND collection_overdue_alerted_at IS NULL
             """, nativeQuery = true)
     int claimOverdueCollectionAlert(@Param("id") UUID id, @Param("now") Instant now);
+
+    /** A buyer's parcels in the given states, oldest first (customer support). */
+    @Query("""
+            select f from OrderFulfilment f
+             where f.orderId in (select o.id from MarketOrder o where o.buyerUuid = :buyerUuid)
+               and f.status in :statuses
+             order by f.createdAt asc, f.id""")
+    List<OrderFulfilment> findForBuyer(@Param("buyerUuid") UUID buyerUuid,
+                                       @Param("statuses") Collection<FulfilmentStatus> statuses,
+                                       Pageable pageable);
 }

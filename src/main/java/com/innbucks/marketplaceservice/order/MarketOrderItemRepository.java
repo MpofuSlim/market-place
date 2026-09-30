@@ -13,4 +13,7 @@ public interface MarketOrderItemRepository extends JpaRepository<MarketOrderItem
     /** Batch load for the paged my-orders view — one query per page, not one
      *  per order. */
     List<MarketOrderItem> findByOrderIdIn(Collection<UUID> orderIds);
+
+    /** Whether a merchant ever sold anything here (the snapshot column). */
+    boolean existsByMerchantId(java.util.UUID merchantId);
 }

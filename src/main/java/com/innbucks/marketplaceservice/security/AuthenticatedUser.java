@@ -29,6 +29,12 @@ import java.util.Set;
  * STAFF included, where {@code merchantId} is OWNER/ADMIN only. It grants the
  * courier surface ({@code /marketplace/deliveries}) and nothing else: every
  * seller endpoint still checks {@code MERCHANT_ADMIN} and {@code merchantId}.
+ *
+ * <p>{@code login} is the token's subject (a staff account's e-mail) and
+ * {@code permissions} its {@code perms} claim (user-service V35), already
+ * filtered to permission-shaped codes by {@link JwtUtil#extractPermissions}.
+ * They exist for the customer-support surface ({@code /marketplace/support/**}),
+ * which is gated on permissions, never on roles — see {@code SupportPermissions}.
  */
 public record AuthenticatedUser(
         String uuid,
@@ -37,10 +43,19 @@ public record AuthenticatedUser(
         String shopId,
         String phone,
         String country,
-        String deliversFor) {
+        String deliversFor,
+        String login,
+        Set<String> permissions) {
 
     public AuthenticatedUser {
         roles = roles == null ? Set.of() : Set.copyOf(roles);
+        permissions = permissions == null ? Set.of() : Set.copyOf(permissions);
+    }
+
+    /** A caller built without the support fields: no login, no permissions. */
+    public AuthenticatedUser(String uuid, Set<String> roles, String merchantId, String shopId,
+                             String phone, String country, String deliversFor) {
+        this(uuid, roles, merchantId, shopId, phone, country, deliversFor, null, Set.of());
     }
 
     /** A caller with no courier scope beyond their seller scope: someone who
@@ -52,6 +67,10 @@ public record AuthenticatedUser(
 
     public boolean hasRole(String role) {
         return roles.contains(role);
+    }
+
+    public boolean hasPermission(String permission) {
+        return permissions.contains(permission);
     }
 
     /** Fleet oversight role: may administer ANY merchant's listings (including

@@ -30,4 +30,6 @@ public interface ListingReviewRepository extends JpaRepository<ListingReview, UU
 
     @Query("select coalesce(sum(r.rating), 0) from ListingReview r where r.merchantId = :merchantId")
     long sumRatingByMerchantId(@Param("merchantId") UUID merchantId);
+
+    long countByBuyerUuid(UUID buyerUuid);
 }

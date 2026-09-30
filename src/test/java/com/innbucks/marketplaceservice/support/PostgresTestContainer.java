@@ -123,7 +123,8 @@ public abstract class PostgresTestContainer {
                                cart_variant_item, listing_variant, listing,
                                seller_collection_point_hours, seller_collection_point,
                                marketplace_seller, delivery_address,
-                               idempotency_record, audit_events
+                               idempotency_record, audit_events,
+                               support_activity, support_note
                 RESTART IDENTITY""");
         // Back to the V1 genesis head so each test's audit chain is
         // self-consistent (AuditService links every row to this head).

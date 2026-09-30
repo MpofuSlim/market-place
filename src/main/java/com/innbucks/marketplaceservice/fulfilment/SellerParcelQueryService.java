@@ -74,7 +74,23 @@ public class SellerParcelQueryService {
 
     @Transactional(readOnly = true)
     public MerchantFulfilmentPageResponse queue(AuthenticatedUser caller, ParcelQuery query) {
-        UUID scope = caller.isSuperAdmin() ? query.merchantId() : requireMerchantId(caller);
+        return page(caller.isSuperAdmin() ? query.merchantId() : requireMerchantId(caller), query);
+    }
+
+    /**
+     * One named merchant's queue, for a caller whose scope was already decided
+     * elsewhere — the customer-support seller view. Never unscoped: a null
+     * merchant would read every seller's parcels.
+     */
+    @Transactional(readOnly = true)
+    public MerchantFulfilmentPageResponse queueFor(UUID merchantId, ParcelQuery query) {
+        if (merchantId == null) {
+            throw new IllegalArgumentException("merchantId is required");
+        }
+        return page(merchantId, query);
+    }
+
+    private MerchantFulfilmentPageResponse page(UUID scope, ParcelQuery query) {
         Specification<OrderFulfilment> spec = specification(scope, query.status(),
                 query.deliveryMethod(), Search.parse(query.q(), msisdns));
         Pageable pageable = PageRequest.of(Math.max(query.page(), 0),
