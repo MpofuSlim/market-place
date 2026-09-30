@@ -280,11 +280,14 @@ class PortalParcelsAndEarningsIT extends PostgresTestContainer {
                 + ",1 x Solar Lantern 20W,REFUND_DUE,CANNOT_SUPPLY,");
         assertThat(lines.get(1)).contains(",Out of stock,");
         assertThat(csv).contains("PAYOUT-2026-09-30-01").contains("+02:00");
-        // An operator has to say whose statement.
-        mockMvc.perform(get("/marketplace/settlements/statement")
+        // An operator naming no merchant exports every seller; the trailing
+        // merchantId column says whose each row is.
+        String all = mockMvc.perform(get("/marketplace/settlements/statement")
                         .header("Authorization", "Bearer " + adminToken))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("merchant_id_required"));
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(all.lines().findFirst().orElseThrow()).endsWith(",merchantId");
+        assertThat(all.lines().count()).isGreaterThanOrEqualTo(lines.size());
     }
 
     // ------------------------------------------------------------------

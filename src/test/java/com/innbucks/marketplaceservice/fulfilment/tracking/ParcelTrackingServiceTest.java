@@ -405,6 +405,20 @@ class ParcelTrackingServiceTest {
                 .satisfies(ex -> assertThat(code(ex)).isEqualTo("fulfilment_not_found"));
     }
 
+    @Test
+    @DisplayName("SUPER_ADMIN tracks any buyer's parcel - but still only under its own order")
+    void superAdminTracksAnyParcel_underItsOwnOrderOnly() {
+        AuthenticatedUser admin = new AuthenticatedUser(
+                UUID.randomUUID().toString(), Set.of("SUPER_ADMIN"), null, null, null, "ZW");
+        order(DeliveryMethod.DELIVERY);
+        OrderFulfilment parcel = parcel(ORG, FulfilmentStatus.DISPATCHED);
+
+        assertThat(service.buyerTracking(admin, ORDER_ID, parcel.getId()).trackingStatus())
+                .isEqualTo(TrackingStatus.DISPATCHED);
+        assertThatThrownBy(() -> service.buyerTracking(admin, UUID.randomUUID(), parcel.getId()))
+                .satisfies(ex -> assertThat(code(ex)).isEqualTo("fulfilment_not_found"));
+    }
+
     // ------------------------------------------------------------------
     // A MIXED order (V21): summary DELIVERY, one seller's parcel collected
     // ------------------------------------------------------------------

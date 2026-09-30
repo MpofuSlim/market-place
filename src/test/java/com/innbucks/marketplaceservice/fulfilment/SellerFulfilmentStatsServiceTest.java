@@ -201,12 +201,19 @@ class SellerFulfilmentStatsServiceTest {
     }
 
     @Test
-    @DisplayName("SUPER_ADMIN must NAME a merchant — an admin token has no scope to default to")
-    void adminMustNameAMerchant() {
-        assertThatThrownBy(() -> service.merchantStats(ADMIN, null))
-                .isInstanceOf(ApiException.class)
-                .extracting(ex -> ((ApiException) ex).code())
-                .isEqualTo("merchant_id_required");
+    @DisplayName("SUPER_ADMIN naming no merchant reads the whole platform, not a 400")
+    void adminWithNoMerchantReadsThePlatform() {
+        OrderFulfilmentRepository.ParcelCounts counts = mock(OrderFulfilmentRepository.ParcelCounts.class);
+        when(counts.getDelivered()).thenReturn(0L);
+        when(counts.getAwaitingDispatch()).thenReturn(4L);
+        when(repository.countParcelsPlatform()).thenReturn(counts);
+        when(repository.countOpenParcelsPlatform(any()))
+                .thenReturn(mock(OrderFulfilmentRepository.OpenParcelCounts.class));
+        when(repository.dispatchTimingPlatform())
+                .thenReturn(mock(OrderFulfilmentRepository.DispatchTiming.class));
+
+        assertThat(service.merchantStats(ADMIN, null).awaitingDispatch()).isEqualTo(4L);
+        verify(repository, never()).countParcels(any());
     }
 
     @Test

@@ -69,7 +69,24 @@ public class SellerFulfilmentStatsService {
     @Transactional(readOnly = true)
     public MerchantFulfilmentStatsResponse merchantStats(AuthenticatedUser caller,
                                                          UUID merchantIdFilter) {
+        // SUPER_ADMIN oversees the platform (owner rule: no read may scope it
+        // out): with no merchant named it reads EVERY seller's parcels.
+        if (caller.isSuperAdmin() && merchantIdFilter == null) {
+            return platformStats();
+        }
         return statsFor(resolveMerchant(caller, merchantIdFilter));
+    }
+
+    /**
+     * The same figures over every seller's parcels — the platform's own
+     * fulfilment health, same sample floors and rounding as a seller's.
+     */
+    @Transactional(readOnly = true)
+    public MerchantFulfilmentStatsResponse platformStats() {
+        ParcelCounts counts = fulfilmentRepository.countParcelsPlatform();
+        OrderFulfilmentRepository.OpenParcelCounts open = fulfilmentRepository.countOpenParcelsPlatform(
+                Instant.now().minus(Duration.ofDays(collectionOverdueDays)));
+        return response(counts, fulfilmentRepository.dispatchTimingPlatform(), open);
     }
 
     /**
@@ -82,8 +99,14 @@ public class SellerFulfilmentStatsService {
         ParcelCounts counts = fulfilmentRepository.countParcels(merchantId);
         OrderFulfilmentRepository.OpenParcelCounts open = fulfilmentRepository.countOpenParcels(
                 merchantId, Instant.now().minus(Duration.ofDays(collectionOverdueDays)));
+        return response(counts, counts.getDelivered() == 0 ? null
+                : fulfilmentRepository.dispatchTiming(merchantId), open);
+    }
+
+    private MerchantFulfilmentStatsResponse response(ParcelCounts counts, DispatchTiming timing,
+                                                     OrderFulfilmentRepository.OpenParcelCounts open) {
         return new MerchantFulfilmentStatsResponse(
-                publicStats(counts, merchantId),
+                publicStats(counts, timing),
                 counts.getAwaitingDispatch(),
                 counts.getInTransit(),
                 counts.getDelivered(),
@@ -94,13 +117,18 @@ public class SellerFulfilmentStatsService {
     }
 
     private SellerFulfilmentStats publicStats(ParcelCounts counts, UUID merchantId) {
+        return publicStats(counts, counts.getDelivered() == 0 ? null
+                : fulfilmentRepository.dispatchTiming(merchantId));
+    }
+
+    private SellerFulfilmentStats publicStats(ParcelCounts counts, DispatchTiming timing) {
         long delivered = counts.getDelivered();
         if (delivered == 0) {
             return null;
         }
         return new SellerFulfilmentStats(
                 delivered,
-                medianDispatchHours(merchantId),
+                medianDispatchHours(timing),
                 buyerConfirmedPercent(counts));
     }
 
@@ -109,9 +137,8 @@ public class SellerFulfilmentStatsService {
      * a same-hour dispatch reads "within 1 hour", never the absurd "0 hours",
      * and the platform understates speed rather than overstating it.
      */
-    private Integer medianDispatchHours(UUID merchantId) {
-        DispatchTiming timing = fulfilmentRepository.dispatchTiming(merchantId);
-        if (timing.getSample() < minSample || timing.getMedianSeconds() == null) {
+    private Integer medianDispatchHours(DispatchTiming timing) {
+        if (timing == null || timing.getSample() < minSample || timing.getMedianSeconds() == null) {
             return null;
         }
         long hours = (long) Math.ceil(timing.getMedianSeconds() / 3600.0);
@@ -126,8 +153,8 @@ public class SellerFulfilmentStatsService {
     }
 
     /**
-     * Whose stats: SUPER_ADMIN may name any merchant (and must name one — an
-     * admin token carries no merchant scope to default to); a MERCHANT_ADMIN
+     * Whose stats: SUPER_ADMIN may name any merchant (with none named it reads
+     * the platform — see {@link #merchantStats}); a MERCHANT_ADMIN
      * is always their own claim, and the filter is IGNORED for them — the same
      * cannot-widen-own-scope stance the queue takes.
      */

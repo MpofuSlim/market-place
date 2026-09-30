@@ -186,8 +186,12 @@ public class ParcelTrackingService {
                 .orElseThrow(ParcelTrackingService::notFound);
         MarketOrder order = orderRepository.findById(parcel.getOrderId())
                 .orElseThrow(ParcelTrackingService::notFound);
+        // The order in the path must be the parcel's own, always. The buyer
+        // match is waived for SUPER_ADMIN, which already reads every order
+        // (GET /marketplace/orders/{id}) and oversees the platform.
         if (!order.getId().equals(orderId)
-                || !order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
+                || (!buyer.isSuperAdmin()
+                    && !order.getBuyerUuid().equals(UUID.fromString(buyer.uuid())))) {
             throw notFound();
         }
         // Every parcel-level fact reads the PARCEL's method (V21): on a mixed
