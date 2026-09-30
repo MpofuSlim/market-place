@@ -29,20 +29,46 @@ class SupportEndpointsArePermissionGatedTest {
             SupportPermissions.CAN_READ, SupportPermissions.CAN_MANAGE,
             SupportPermissions.CAN_SUPERVISE, SupportPermissions.CAN_MESSAGE);
 
+    /** Every controller under {@code /marketplace/support}. A new one must be
+     *  added here — {@link #everySupportControllerIsListed} fails until it is. */
+    private static final List<Class<?>> CONTROLLERS = List.of(
+            SupportController.class, SupportMessageController.class, SupportActionController.class);
+
     @Test
     @DisplayName("each handler carries exactly one support-permission check, and no role")
     void everyHandlerIsPermissionGated() {
-        assertThat(SupportController.class.getAnnotation(PreAuthorize.class))
-                .as("a class-level check would apply to handlers without saying so").isNull();
-        List<Method> handlers = Arrays.stream(SupportController.class.getDeclaredMethods())
-                .filter(SupportEndpointsArePermissionGatedTest::isHandler)
-                .toList();
-        assertThat(handlers).isNotEmpty();
-        for (Method handler : handlers) {
-            PreAuthorize check = handler.getAnnotation(PreAuthorize.class);
-            assertThat(check).as(handler.getName()).isNotNull();
-            assertThat(check.value()).as(handler.getName()).isIn(ALLOWED).doesNotContain("hasRole");
+        for (Class<?> controller : CONTROLLERS) {
+            assertThat(controller.getAnnotation(PreAuthorize.class))
+                    .as("a class-level check on %s would apply to handlers without saying so",
+                            controller.getSimpleName()).isNull();
+            List<Method> handlers = Arrays.stream(controller.getDeclaredMethods())
+                    .filter(SupportEndpointsArePermissionGatedTest::isHandler)
+                    .toList();
+            assertThat(handlers).as(controller.getSimpleName()).isNotEmpty();
+            for (Method handler : handlers) {
+                String name = controller.getSimpleName() + "." + handler.getName();
+                PreAuthorize check = handler.getAnnotation(PreAuthorize.class);
+                assertThat(check).as(name).isNotNull();
+                assertThat(check.value()).as(name).isIn(ALLOWED).doesNotContain("hasRole");
+            }
         }
+    }
+
+    @Test
+    @DisplayName("every controller mapped under /marketplace/support is checked above")
+    void everySupportControllerIsListed() throws Exception {
+        var scanner = new org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new org.springframework.core.type.filter.AnnotationTypeFilter(
+                org.springframework.web.bind.annotation.RestController.class));
+        List<Class<?>> mapped = new java.util.ArrayList<>();
+        for (var candidate : scanner.findCandidateComponents("com.innbucks.marketplaceservice")) {
+            Class<?> type = Class.forName(candidate.getBeanClassName());
+            RequestMapping mapping = type.getAnnotation(RequestMapping.class);
+            if (mapping != null && Arrays.stream(mapping.value()).anyMatch(p -> p.startsWith("/marketplace/support"))) {
+                mapped.add(type);
+            }
+        }
+        assertThat(mapped).containsExactlyInAnyOrderElementsOf(CONTROLLERS);
     }
 
     private static boolean isHandler(Method method) {

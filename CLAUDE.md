@@ -1889,11 +1889,11 @@ never change either casually.
   pushes `ghcr.io/mpofuslim/marketplace-service:{latest,sha-<commit>}` with
   SLSA provenance + SBOM. Deploys pull a pinned `sha-<commit>`.
 
-## Customer support (`/marketplace/support/**`) — the call center's surface (V22)
+## Customer support (`/marketplace/support/**`) — the call center's surface (V22, V23)
 
 Agents find a buyer, an order or a seller, see everything about them, and keep
-case notes. Part 1 is the READ side plus notes. Part 2 adds typed SMS/WhatsApp,
-resends and support actions.
+case notes (V22); message a customer on record and act for a buyer who called
+in (V23). The two halves are described in order below.
 
 * **Permissions, never roles.** The gates are `marketplace-support:read`,
   `:manage` and `:supervise`, plus `customer-messages:send` (shared with
@@ -1960,15 +1960,104 @@ resends and support actions.
   * **Masked:** the seller's payout destination (method, account name, last 4)
     — redirecting a payout is THE attack on that data, and the call center only
     needs to know one exists. Phones are also masked in the activity feed.
+* **Messages go ONLY to a number already on the record (V23, owner,
+  2026-09-30).** No request carries a destination number: on an ORDER the agent
+  picks a ROLE (`BUYER` = the payer, `GIFT_RECIPIENT`, `DELIVERY_RECIPIENT`) and
+  the order supplies the number; on a BUYER it is the number they last paid
+  from, or another of THEIR numbers the agent SELECTS — matched against
+  `phonesOf` and refused otherwise (`recipient_not_on_record`), so it chooses
+  and never supplies. `SupportRecipients` is the one place that decides. A
+  console that could text any number as "InnBucks Marketplace Support" would
+  hand the first stolen agent login a phishing tool.
+  * **Kinds:** `CUSTOM` (typed, `customer-messages:send`), and three platform
+    messages sent again word for word (`marketplace-support:manage`):
+    `ORDER_CONFIRMATION` (PAID only, else 409 `order_not_paid`),
+    `PARCEL_UPDATE` (a DISPATCHED parcel, or one the SELLER closed — anything
+    else 409 `nothing_to_resend`; a delivered resend records the buyer notice
+    on the seller's card, a failed one leaves the original outcome and alerts
+    no seller), and `COLLECT_CODE` (below). Kinds are strings, not a CHECK.
+  * **Typed text** (`SupportMessageComposer`): HTML stripped, the signature
+    (`marketplace.support.messages.signature`) on its own line, then measured
+    on the FINAL text per channel — SMS after the same `SmsTextSanitizer` the
+    gateway client applies (459 = three GSM-7 segments), WhatsApp on the
+    original (1000; above the gateway's own 1600 refuses to BOOT). A link-shaped
+    token (scheme, `www.`, IPv4, or a bare `name.tld`, with `\p{L}` labels so a
+    Cyrillic lookalike is SEEN rather than skipped) must be an allowed host or
+    a subdomain of one, else 400 `link_not_allowed` with `data.host`. The bare
+    domain rule costs a false positive on "Thanks.Your" (the message says to add
+    a space) — accepted, because `evil.example` is linked by every phone. Links
+    survive only on WhatsApp: the SMS gateway rejects `:` and `/`.
+  * **Preview** (`POST /messages/preview`) refuses what the send refuses EXCEPT
+    length, which it REPORTS (`characters`/`maxCharacters`/`smsSegments`,
+    `transliterated`) for a live count; it writes nothing and spends no limit.
+  * **The send is claim → gateway → record** (`SupportMessageSender`,
+    `SupportMessageLedger`). Everything refusable is checked first (recipient,
+    text, `503 channel_unavailable`), so a refusal writes nothing. The claim
+    takes per-agent then per-recipient `pg_advisory_xact_lock`s (always that
+    order), counts the log (60 per agent per rolling hour, 5 per number per
+    rolling 24h, every kind and every attempt — `429
+    support_message_rate_limited`, `data {scope, limit, windowMinutes}`) and
+    writes the PENDING row. The gateway is called with NO transaction open.
+    Completion records the outcome + its `MESSAGE_SENT` activity row in one
+    transaction, then `SUPPORT_MESSAGE_SENT` on the audit chain (kind, subject,
+    recipient ROLE, channel, outcome — never the text, never the number).
+    SMS then WhatsApp (only if the SMS fails, carrying the ORIGINAL text);
+    `201` when a channel took it, `502 message_not_delivered` carrying the
+    FAILED record when none did. Synchronous on purpose: the agent is on the
+    phone about to say "I've just sent it". A row left PENDING means the
+    service stopped mid-send; it still counts against the limits.
+  * **`support_message` is final by trigger** (`support_message_is_final`):
+    no DELETE, a completed row never changes, and who/what/to-whom never
+    changes even while PENDING. `body` is exactly what was sent (the SMS form
+    or the WhatsApp original) and may change only while PENDING, because which
+    channel carried it is known only after the send.
+  * **A fresh collection code never reaches the agent.** For a buyer who lost
+    theirs: the buyer's own rule (`collectCodeRefusal`), the limits claimed
+    BEFORE the code is replaced (a refused send must not have killed the code
+    the collector holds), then `mintCollectCodeForSupport` returns the code
+    only to be texted to the collector (gift recipient with a number, else the
+    payer). Not in the response, not in the stored row (`body` NULL for a
+    secret kind, enforced in the entity) — whoever holds a code can have the
+    goods handed over, the reason no seller surface sees one either. A mint
+    refused between the check and the write closes the claimed row FAILED
+    `not_minted`. A failed send leaves the new code live; the buyer can mint
+    another in the app.
+  * **History:** `GET /messages?subjectKind&subjectId` (read; a BUYER's
+    includes every message about any of their orders), `GET /messages/feed`
+    (supervise), and `messages {total, latest}` on the buyer and order 360s.
+    The number is masked everywhere.
+* **Actions: the buyer's own, on the buyer's own rules** (`SupportActionService`):
+  cancel an unpaid order and open a dispute (`manage`), cancel a paid parcel
+  before it ships (`supervise` — it queues a refund). Each delegates to the
+  buyer endpoint's own service method (`OrderService.cancelBySupport`,
+  `DisputeService.openBySupport`, `FulfilmentService.cancelBySupport`, which
+  share a core with the buyer's path) WITHOUT the owner mask, so the rules are
+  exactly the ones behind the buyer's `actions` flags and the console reads
+  those flags to know what will work. The dispute is the BUYER's (their uuid);
+  a support parcel cancel records `unfulfilled_by = BUYER` (their decision,
+  relayed). Each takes a required reason, written as a support note on the
+  order in the SAME transaction as the action and its activity row
+  (`ORDER_CANCELLED`, `DISPUTE_OPENED`, `PARCEL_CANCELLED`), so a refused
+  action leaves neither. The audit rows name the agent with `bySupport: true`
+  and no free text. Each answers with the order's support view as it now
+  stands (`SupportOrderService.afterAction`, no view row).
 * **Deliberately NOT here:**
   * **Dispute decisions** stay with SUPER_ADMIN/finance (owner, 2026-09-30). A
     REFUND resolution records a transfer reference, so it asserts money left.
+  * **Messaging a seller.** Sellers are reached through the portal bell
+    (`SellerAlertService`); support messages are for customers.
   * **Tickets / assignment / SLA** belong to a later, fleet-wide piece in
     user-service; notes, messages and the activity log cover it for now.
   * **Editing a note.**
 * Pinned by `CustomerSupportFlowIT` (permission gating, every search shape,
   the activity rows and their masking, the 360s, the masked payout, append-only
-  in SQL), `PermissionsClaimTest`, `SupportEndpointsArePermissionGatedTest`.
+  in SQL), `SupportMessagesAndActionsIT` (on-record recipients, preview,
+  refusals writing nothing, the recipient limit, the fallback and 502, the
+  final-row trigger, a code that works at the counter and never reaches the
+  agent, the resends, each action and a refused one leaving nothing),
+  `SupportMessageComposerTest`, `SupportMessageSenderTest`,
+  `PermissionsClaimTest`, `SupportEndpointsArePermissionGatedTest` (every
+  controller under `/marketplace/support`, found by scanning).
 
 ## Fleet integration (cross-repo contracts — keep in lock-step)
 

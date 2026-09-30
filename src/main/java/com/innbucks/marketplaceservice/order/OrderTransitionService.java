@@ -57,12 +57,22 @@ public class OrderTransitionService {
     /** Caller-path transition: refuses an illegal move with 409. */
     @Transactional(propagation = Propagation.MANDATORY)
     public MarketOrder transition(MarketOrder order, OrderStatus to, String detail) {
+        return transition(order, to, detail, Map.of());
+    }
+
+    /**
+     * {@link #transition(MarketOrder, OrderStatus, String)} with extra audit
+     * metadata — ids and flags only (e.g. {@code bySupport}), never free text.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public MarketOrder transition(MarketOrder order, OrderStatus to, String detail,
+                                  Map<String, Object> auditExtras) {
         if (!OrderStateMachine.isLegal(order.getStatus(), to)) {
             refuse(order, to, detail);
             throw ApiException.conflict("illegal_order_state",
                     "Order " + order.getOrderRef() + " cannot move from " + order.getStatus() + " to " + to);
         }
-        return apply(order, to, detail);
+        return apply(order, to, detail, auditExtras);
     }
 
     /** Sweep-path transition: an illegal move is counted and skipped, never
@@ -73,7 +83,7 @@ public class OrderTransitionService {
             refuse(order, to, detail);
             return false;
         }
-        apply(order, to, detail);
+        apply(order, to, detail, Map.of());
         return true;
     }
 
@@ -99,14 +109,15 @@ public class OrderTransitionService {
                 order.getId(), order.getOrderRef(), order.getStatus(), to, detail);
     }
 
-    private MarketOrder apply(MarketOrder order, OrderStatus to, String detail) {
+    private MarketOrder apply(MarketOrder order, OrderStatus to, String detail,
+                              Map<String, Object> auditExtras) {
         OrderStatus from = order.getStatus();
         order.setStatus(to);
         order.setUpdatedAt(Instant.now());
         MarketOrder saved = orderRepository.save(order);
         journal(saved.getId(), from, to, detail);
         metrics.orderOutcome(to.name().toLowerCase(Locale.ROOT));
-        audit(saved, from, to);
+        audit(saved, from, to, auditExtras);
         // Notification seam (fleet convention — the middleware's LedgerService
         // publishes at ITS chokepoint for the same reason): PAID is announced
         // from the one place every PAID transition must pass through, so a
@@ -126,7 +137,7 @@ public class OrderTransitionService {
      * nor block the business write. Actor is the JWT caller when there is one
      * (buyer cancel), else "system" (S2S confirm, expiry sweep).
      */
-    private void audit(MarketOrder order, OrderStatus from, OrderStatus to) {
+    private void audit(MarketOrder order, OrderStatus from, OrderStatus to, Map<String, Object> extras) {
         AuditEventType type = switch (to) {
             case PAID -> AuditEventType.ORDER_PAID;
             case CANCELLED -> AuditEventType.ORDER_CANCELLED;
@@ -145,6 +156,7 @@ public class OrderTransitionService {
         if (order.getPaymentRef() != null) {
             metadata.put("paymentRef", order.getPaymentRef());
         }
+        metadata.putAll(extras);
         String actor = CurrentUser.find().map(AuthenticatedUser::uuid).orElse("system");
         auditService.record(type, actor, order.getId().toString(), metadata);
     }

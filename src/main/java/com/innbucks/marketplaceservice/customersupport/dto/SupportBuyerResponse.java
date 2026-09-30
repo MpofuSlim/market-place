@@ -47,7 +47,10 @@ public record SupportBuyerResponse(
 
         Engagement engagement,
 
-        SupportNotesSummary notes) {
+        SupportNotesSummary notes,
+
+        @Schema(description = "Messages support has sent this buyer, including about any of their orders: the total and the newest few")
+        SupportMessagesSummary messages) {
 
     @Schema(description = "A number the buyer has paid from")
     public record Phone(

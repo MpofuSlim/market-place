@@ -434,12 +434,35 @@ public class FulfilmentService {
         if (!order.getBuyerUuid().equals(UUID.fromString(buyer.uuid()))) {
             throw notFound();
         }
+        return cancelForBuyer(parcel, order, rawReason, buyer, false);
+    }
+
+    /**
+     * Customer support cancels a paid, undispatched parcel for a buyer who
+     * called in. The buyer's own cancel, on the buyer's rule (PREPARING, money
+     * still HELD, not disputed — refused before anything moves), without the
+     * owner mask; the parcel records {@code unfulfilled_by = BUYER} because it
+     * is the buyer's decision relayed, and the audit names the agent with
+     * {@code bySupport}. The parcel must be on the order named.
+     */
+    @Transactional
+    public OrderFulfilment cancelBySupport(AuthenticatedUser agent, UUID orderId, UUID fulfilmentId,
+                                           String rawReason) {
+        OrderFulfilment parcel = fulfilmentRepository.findById(fulfilmentId)
+                .filter(p -> p.getOrderId().equals(orderId))
+                .orElseThrow(FulfilmentService::notFound);
+        return cancelForBuyer(parcel, requireOrder(parcel), rawReason, agent, true);
+    }
+
+    private OrderFulfilment cancelForBuyer(OrderFulfilment parcel, MarketOrder order, String rawReason,
+                                           AuthenticatedUser actor, boolean bySupport) {
         // The rule the buyer's canCancel flag is computed from (BuyerParcelRules).
         MerchantSettlement settlement = settlementService.forParcel(parcel.getId());
         throwIfRefused(buyerRules.cancelRefusal(parcel, settlement));
         String reason = blankToNull(TextSanitizer.sanitize(rawReason));
+        String who = bySupport ? "Cancelled by support for the buyer" : "Cancelled by buyer";
         transition(parcel, FulfilmentStatus.UNFULFILLED,
-                reason == null ? "Cancelled by buyer" : "Cancelled by buyer: " + reason, buyer,
+                reason == null ? who : who + ": " + reason, actor,
                 p -> {
                     p.setUnfulfilledAt(Instant.now());
                     p.setUnfulfilledReason(reason);
@@ -455,7 +478,10 @@ public class FulfilmentService {
         metadata.put("merchantId", parcel.getMerchantId().toString());
         metadata.put("refundDueCents", settlement.getGrossCents());
         metadata.put("cancelledByBuyer", true);
-        auditService.record(AuditEventType.FULFILMENT_UNFULFILLED, buyer.uuid(),
+        if (bySupport) {
+            metadata.put("bySupport", true);
+        }
+        auditService.record(AuditEventType.FULFILMENT_UNFULFILLED, actor.uuid(),
                 parcel.getId().toString(), metadata);
         metrics.fulfilmentOutcome("cancelled_by_buyer", 1);
         eventPublisher.publishEvent(new ParcelCancelledByBuyer(parcel.getMerchantId(),
@@ -535,16 +561,8 @@ public class FulfilmentService {
         // longer coming would text the collector for nothing.
         throwIfRefused(buyerRules.collectCodeRefusal(parcel));
 
-        String code = CollectCodes.mint();
-        Instant now = Instant.now();
-        parcel.setCollectCodeHash(CollectCodes.hash(code));
-        parcel.setCollectCodeIssuedAt(now);
-        // A fresh credential gets a fresh budget. Only the buyer reaches this,
-        // so a seller working through candidates cannot reset their own cap.
-        parcel.setCollectCodeAttempts(0);
-        parcel.setUpdatedAt(now);
-        fulfilmentRepository.save(parcel);
-        metrics.collectCodeOutcome("minted");
+        String code = replaceCollectCode(parcel);
+        Instant now = parcel.getCollectCodeIssuedAt();
 
         // To the person actually collecting when the order named one, else to
         // the buyer. Best-effort: they already hold the code in this response.
@@ -556,6 +574,43 @@ public class FulfilmentService {
                 parcel.getId(), order.getOrderRef(), sentTo != null);
         return new CollectCodeResponse(parcel.getId(), code, grouped, now, sentTo,
                 collectionPoints.snapshotFor(order.getId(), parcel.getMerchantId()));
+    }
+
+    /**
+     * Customer support mints a FRESH collection code for a buyer who lost
+     * theirs, to be texted straight to the collector. The buyer's own rule
+     * (collection parcel, still open), without the owner mask, and the parcel
+     * must be on the order named.
+     *
+     * <p>Returns the code GROUPED for the message and nothing else: the caller
+     * sends it and never shows it — no agent may read a code, for the same
+     * reason no seller may (whoever holds one can have the goods handed over).
+     * Like the buyer's mint, NOT {@code @Transactional}: one row write, and the
+     * send that follows must hold no connection.
+     */
+    public String mintCollectCodeForSupport(UUID orderId, UUID fulfilmentId) {
+        OrderFulfilment parcel = fulfilmentRepository.findById(fulfilmentId)
+                .filter(p -> p.getOrderId().equals(orderId))
+                .orElseThrow(FulfilmentService::notFound);
+        throwIfRefused(buyerRules.collectCodeRefusal(parcel));
+        String code = replaceCollectCode(parcel);
+        log.info("collect code minted by support parcel={} orderId={}", parcel.getId(), orderId);
+        return CollectCodes.grouped(code);
+    }
+
+    /** Mints and stores a new code, replacing the live one and resetting its
+     *  guessing budget. Only the buyer, or support on their behalf, reaches
+     *  this — never the seller spending that budget. */
+    private String replaceCollectCode(OrderFulfilment parcel) {
+        String code = CollectCodes.mint();
+        Instant now = Instant.now();
+        parcel.setCollectCodeHash(CollectCodes.hash(code));
+        parcel.setCollectCodeIssuedAt(now);
+        parcel.setCollectCodeAttempts(0);
+        parcel.setUpdatedAt(now);
+        fulfilmentRepository.save(parcel);
+        metrics.collectCodeOutcome("minted");
+        return code;
     }
 
     /**

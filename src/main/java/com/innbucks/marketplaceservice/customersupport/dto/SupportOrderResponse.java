@@ -30,7 +30,10 @@ public record SupportOrderResponse(
         @Schema(description = "The order's journal, oldest first: payment, parcel and money events")
         List<TimelineEntry> timeline,
 
-        SupportNotesSummary notes) {
+        SupportNotesSummary notes,
+
+        @Schema(description = "Messages support has sent about this order: the total and the newest few")
+        SupportMessagesSummary messages) {
 
     @Schema(description = "Who placed the order")
     public record Buyer(

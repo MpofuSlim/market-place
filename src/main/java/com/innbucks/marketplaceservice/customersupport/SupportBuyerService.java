@@ -24,6 +24,7 @@ import com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository;
 import com.innbucks.marketplaceservice.settlement.SettlementStatus;
 import com.innbucks.marketplaceservice.settlement.SettlementViewAssembler;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
+import com.innbucks.marketplaceservice.customersupport.messaging.SupportMessageHistory;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -54,10 +55,12 @@ public class SupportBuyerService {
     static final int LIST_LIMIT = 20;
     static final int MAX_ORDER_PAGE_SIZE = 50;
     static final int RECENT_NOTES = 3;
+    static final int RECENT_MESSAGES = 3;
 
     private final SupportSubjects subjects;
     private final SupportActivityLog activityLog;
     private final SupportNoteService notes;
+    private final SupportMessageHistory messages;
     private final MarketOrderRepository orderRepository;
     private final OrderViewAssembler orderViews;
     private final OrderService orderService;
@@ -124,7 +127,8 @@ public class SupportBuyerService {
                 addressRepository.findByBuyerUuidOrderByDefaultAddressDescCreatedAtDesc(buyerUuid).stream()
                         .map(AddressResponse::from).toList(),
                 engagement,
-                notes.recent(SubjectKind.BUYER, buyerUuid, RECENT_NOTES));
+                notes.recent(SubjectKind.BUYER, buyerUuid, RECENT_NOTES),
+                messages.recent(SubjectKind.BUYER, buyerUuid, RECENT_MESSAGES));
     }
 
     @NameResolvingRead

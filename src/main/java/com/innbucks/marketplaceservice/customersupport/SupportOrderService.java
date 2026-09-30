@@ -2,6 +2,7 @@ package com.innbucks.marketplaceservice.customersupport;
 
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.customersupport.dto.SupportOrderResponse;
+import com.innbucks.marketplaceservice.customersupport.messaging.SupportMessageHistory;
 import com.innbucks.marketplaceservice.fulfilment.MerchantParcelViewAssembler;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilmentRepository;
@@ -37,10 +38,12 @@ import java.util.UUID;
 public class SupportOrderService {
 
     static final int RECENT_NOTES = 5;
+    static final int RECENT_MESSAGES = 5;
 
     private final SupportSubjects subjects;
     private final SupportActivityLog activityLog;
     private final SupportNoteService notes;
+    private final SupportMessageHistory messages;
     private final MarketOrderRepository orderRepository;
     private final MarketOrderItemRepository orderItemRepository;
     private final MarketOrderEventRepository eventRepository;
@@ -60,6 +63,21 @@ public class SupportOrderService {
         MarketOrder order = resolve(orderKey);
         activityLog.record(agent, SupportActions.VIEW_ORDER, SubjectKind.ORDER, order.getId(),
                 Map.of("orderRef", order.getOrderRef()));
+        return render(order);
+    }
+
+    /**
+     * The same view, WITHOUT a view row: what a support action answers with
+     * once it has committed. The action already logged what the agent did, and
+     * the order is re-read so the buyer's flags and the parcels show its
+     * outcome.
+     */
+    @NameResolvingRead
+    public SupportOrderResponse afterAction(UUID orderId) {
+        return render(subjects.requireOrder(orderId));
+    }
+
+    private SupportOrderResponse render(MarketOrder order) {
 
         List<OrderFulfilment> parcels = fulfilmentRepository.findByOrderIdOrderByCreatedAtAsc(order.getId());
         List<UUID> sellerIds = orderItemRepository.findByOrderId(order.getId()).stream()
@@ -83,7 +101,8 @@ public class SupportOrderService {
                 parcels.isEmpty() ? List.of() : settlementViews.toResponses(settlementRepository
                         .findByFulfilmentIdIn(parcels.stream().map(OrderFulfilment::getId).toList())),
                 timeline,
-                notes.recent(SubjectKind.ORDER, order.getId(), RECENT_NOTES));
+                notes.recent(SubjectKind.ORDER, order.getId(), RECENT_NOTES),
+                messages.recent(SubjectKind.ORDER, order.getId(), RECENT_MESSAGES));
     }
 
     private MarketOrder resolve(String orderKey) {

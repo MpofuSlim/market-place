@@ -24,7 +24,7 @@ public record OrderPaid(UUID orderId,
                         String recipientMsisdn,
                         String giftMessage) {
 
-    static OrderPaid of(MarketOrder order) {
+    public static OrderPaid of(MarketOrder order) {
         return new OrderPaid(order.getId(), order.getOrderRef(), order.getBuyerMsisdn(),
                 order.getTotalCents(), order.getCurrency(),
                 order.getRecipientMsisdn(), order.getGiftMessage());
