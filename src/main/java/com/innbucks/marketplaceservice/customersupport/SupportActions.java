@@ -15,6 +15,10 @@ public final class SupportActions {
     public static final String VIEW_SELLER = "VIEW_SELLER";
     public static final String VIEW_SELLER_PARCELS = "VIEW_SELLER_PARCELS";
     public static final String NOTE_ADDED = "NOTE_ADDED";
+    public static final String MESSAGE_SENT = "MESSAGE_SENT";
+    public static final String ORDER_CANCELLED = "ORDER_CANCELLED";
+    public static final String DISPUTE_OPENED = "DISPUTE_OPENED";
+    public static final String PARCEL_CANCELLED = "PARCEL_CANCELLED";
 
     private SupportActions() {
     }

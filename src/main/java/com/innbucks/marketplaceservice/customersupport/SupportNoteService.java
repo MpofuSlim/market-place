@@ -11,6 +11,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -50,6 +51,18 @@ public class SupportNoteService {
         activityLog.record(agent, SupportActions.NOTE_ADDED, request.subjectKind(), request.subjectId(),
                 Map.of("noteId", note.getId().toString()));
         return toResponse(note);
+    }
+
+    /**
+     * The note a support ACTION leaves with its reason, in the action's own
+     * transaction — so the case log says why support did it, and an action
+     * that is refused leaves no note claiming it happened. The action has
+     * already proven the subject and writes its own activity row.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public SupportNoteResponse addForAction(SupportAgent agent, SubjectKind kind, UUID subjectId, String body) {
+        String text = body.length() > MAX_BODY ? body.substring(0, MAX_BODY) : body;
+        return toResponse(noteRepository.save(new SupportNote(kind, subjectId, text, agent, Instant.now())));
     }
 
     @Transactional(readOnly = true)

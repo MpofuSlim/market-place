@@ -730,6 +730,21 @@ public class OrderService {
     }
 
     /**
+     * Customer support cancels an UNPAID order for its buyer — the buyer's own
+     * cancel, on the buyer's rule (only PENDING_PAYMENT; the state machine 409s
+     * the rest), without the owner mask: the agent is not the buyer. The audit
+     * actor is the agent (the JWT caller) and the row says {@code bySupport}.
+     */
+    @Transactional
+    public void cancelBySupport(UUID orderId) {
+        MarketOrder order = orderRepository.findById(orderId)
+                .orElseThrow(() -> ApiException.notFound("order_not_found", "Order not found"));
+        transitions.transition(order, OrderStatus.CANCELLED, "Cancelled by support for the buyer",
+                Map.of("bySupport", true));
+        releaseStockOnce(order);
+    }
+
+    /**
      * The buyer confirms a parcel arrived — the last step of the journey.
      *
      * <p>Lives on the ORDER rather than the fulfilment resource because that is

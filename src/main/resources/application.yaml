@@ -375,6 +375,24 @@ marketplace:
       # routes change — no client keeps its own type->route map.
       parcel-link: ${MARKETPLACE_SELLER_PARCEL_LINK:/marketplace/parcels?q={orderRef}}
       earnings-link: ${MARKETPLACE_SELLER_EARNINGS_LINK:/marketplace/earnings}
+  support:
+    messages:
+      # Messages the call centre sends customers (V23): typed by an agent, or a
+      # platform message re-sent. Always to a number already on the record;
+      # they ride the same SMS/WhatsApp channels as every other notice, so a
+      # cell without those credentials answers 503 channel_unavailable.
+      # Appended on its own line to every typed message.
+      signature: ${MARKETPLACE_SUPPORT_SIGNATURE:- InnBucks Marketplace Support}
+      # Measured on the final text. 459 = three GSM-7 segments. WhatsApp may
+      # not exceed the gateway's own 1600 (refused at boot).
+      sms-max-characters: ${MARKETPLACE_SUPPORT_SMS_MAX_CHARS:459}
+      whatsapp-max-characters: ${MARKETPLACE_SUPPORT_WHATSAPP_MAX_CHARS:1000}
+      # A link in a typed message may only point at these hosts (or their
+      # subdomains). Comma-separated.
+      allowed-link-hosts: ${MARKETPLACE_SUPPORT_ALLOWED_LINK_HOSTS:innbucks.co.zw}
+      # Counted from the message log, every attempt and every kind.
+      per-agent-per-hour: ${MARKETPLACE_SUPPORT_MESSAGES_PER_AGENT_HOUR:60}
+      per-recipient-per-day: ${MARKETPLACE_SUPPORT_MESSAGES_PER_RECIPIENT_DAY:5}
 
 innbucks:
   country: ${INNBUCKS_COUNTRY:ZW}

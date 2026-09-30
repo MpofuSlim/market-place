@@ -51,10 +51,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * middleware's {@code aCompletedDepositAlertsTheCustomer} idea.
  */
 @Import(NotificationFlowIT.MockNotifyChannels.class)
-class NotificationFlowIT extends PostgresTestContainer {
+public class NotificationFlowIT extends PostgresTestContainer {
 
     @TestConfiguration
-    static class MockNotifyChannels {
+    public static class MockNotifyChannels {
         @Bean
         @Primary
         SmsNotificationClient smsNotificationClientMock() {

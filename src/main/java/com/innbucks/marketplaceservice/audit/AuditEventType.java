@@ -125,6 +125,12 @@ public enum AuditEventType {
      *  and parcel counts, net per currency and how many sellers had no
      *  destination — NEVER a name, number or account (V13's stance). */
     PAYOUT_REPORT_EXPORTED,
+    /** Support contacted a customer (V23): a message an agent typed, or a
+     *  platform message they re-sent. Every attempt, delivered or not —
+     *  metadata carries the kind, the subject, the recipient's ROLE, the
+     *  channel and the outcome, NEVER the text or the number. Actor = the
+     *  agent. */
+    SUPPORT_MESSAGE_SENT,
     /** The 100x guard tripped: payment confirmation carried an amount that did
      *  not equal the order total. The order parked unconfirmed — any occurrence
      *  is a money incident. */

@@ -98,6 +98,27 @@ public class DisputeService {
         MarketOrder order = orderRepository.findByIdAndBuyerUuid(orderId,
                         UUID.fromString(buyer.uuid()))
                 .orElseThrow(() -> ApiException.notFound("order_not_found", "Order not found"));
+        return openFor(order, fulfilmentId, reason, detail, buyer.uuid(), false);
+    }
+
+    /**
+     * Customer support opens the dispute FOR the buyer, who called in rather
+     * than using the app. The buyer's own rule, unchanged — paid order, money
+     * still arguable, inside the window, never disputed before — only without
+     * the owner mask. The dispute is the buyer's (it carries their uuid); the
+     * audit actor is the agent, marked {@code bySupport}. Deciding it stays
+     * with the operator queue.
+     */
+    @Transactional
+    public DisputeResponse openBySupport(String agentUuid, UUID orderId, UUID fulfilmentId,
+                                         DisputeReason reason, String detail) {
+        MarketOrder order = orderRepository.findById(orderId)
+                .orElseThrow(() -> ApiException.notFound("order_not_found", "Order not found"));
+        return openFor(order, fulfilmentId, reason, detail, agentUuid, true);
+    }
+
+    private DisputeResponse openFor(MarketOrder order, UUID fulfilmentId, DisputeReason reason,
+                                    String detail, String actorUuid, boolean bySupport) {
         OrderFulfilment parcel = fulfilmentRepository.findById(fulfilmentId)
                 .filter(p -> p.getOrderId().equals(order.getId()))
                 .orElseThrow(() -> ApiException.notFound("fulfilment_not_found",
@@ -137,7 +158,10 @@ public class DisputeService {
         // tamper-evident trail (V7 report stance).
         metadata.put("reason", reason.name());
         metadata.put("netCents", settlement.getNetCents());
-        auditService.record(AuditEventType.SETTLEMENT_DISPUTED, buyer.uuid(),
+        if (bySupport) {
+            metadata.put("bySupport", true);
+        }
+        auditService.record(AuditEventType.SETTLEMENT_DISPUTED, actorUuid,
                 dispute.getId().toString(), metadata);
         // The seller hears about it after commit: their money just froze.
         eventPublisher.publishEvent(new DisputeOpened(parcel.getMerchantId(),
