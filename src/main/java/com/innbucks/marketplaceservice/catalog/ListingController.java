@@ -1715,6 +1715,38 @@ public class ListingController {
                 parseListingId(id), parseImageId(imageId)));
     }
 
+    @Operation(summary = "Get one of my listings",
+            description = "One listing in ANY status (DRAFT, ACTIVE, INACTIVE, ARCHIVED) — the edit "
+                    + "screen's read. The public `GET /marketplace/catalog/{id}` serves ACTIVE "
+                    + "listings only. A MERCHANT_ADMIN reads their own merchant's listings; "
+                    + "SUPER_ADMIN reads any merchant's.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The listing",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "listing", value = EXAMPLE_UPDATED_200))),
+            @ApiResponse(responseCode = "400", description = "Malformed listing id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400))),
+            @ApiResponse(responseCode = "401", description = "Missing/invalid token",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "unauthorized", value = EXAMPLE_401))),
+            @ApiResponse(responseCode = "403", description = "Wrong role, no merchant scope, or not the owner",
+                    content = @Content(mediaType = "application/json", examples = {
+                            @ExampleObject(name = "insufficient-role", value = EXAMPLE_ROLE_403),
+                            @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403),
+                            @ExampleObject(name = "not-owned", value = EXAMPLE_NOT_OWNED_403)})),
+            @ApiResponse(responseCode = "404", description = "No listing with that id",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404)))
+    })
+    @GetMapping("/{id}")
+    public ApiResult<ListingResponse> get(
+            @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
+                    schema = @Schema(type = "string", format = "uuid"))
+            @PathVariable("id") String id) {
+        return ApiResult.ok(listingService.get(CurrentUser.get(), parseListingId(id)));
+    }
+
     @Operation(summary = "List my listings",
             description = "All of the caller's merchant's listings (every status), newest first. "
                     + "Page size is clamped to 50. SUPER_ADMIN gets ALL merchants' listings (any "

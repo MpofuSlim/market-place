@@ -111,6 +111,46 @@ public interface OrderFulfilmentRepository extends JpaRepository<OrderFulfilment
     OpenParcelCounts countOpenParcels(@Param("merchantId") UUID merchantId,
                                       @Param("overdueBefore") Instant overdueBefore);
 
+    // --- Platform-wide twins (SUPER_ADMIN oversight) ---------------------------
+    // Separate statements rather than a nullable :merchantId bind: Postgres
+    // cannot type an untyped null parameter, and the repo rule is appended
+    // predicates / distinct queries, never a null bind.
+
+    /** {@link #countParcels} over every seller. */
+    @Query(value = """
+            SELECT COUNT(*) FILTER (WHERE status = 'DELIVERED')                            AS delivered,
+                   COUNT(*) FILTER (WHERE status = 'DELIVERED'
+                                      AND delivered_by IN ('BUYER', 'RECIPIENT'))          AS buyerConfirmed,
+                   COUNT(*) FILTER (WHERE status = 'PREPARING')                            AS awaitingDispatch,
+                   COUNT(*) FILTER (WHERE status = 'DISPATCHED')                           AS inTransit
+              FROM order_fulfilment
+            """, nativeQuery = true)
+    ParcelCounts countParcelsPlatform();
+
+    /** {@link #dispatchTiming} over every seller. */
+    @Query(value = """
+            SELECT percentile_cont(0.5) WITHIN GROUP (
+                       ORDER BY EXTRACT(EPOCH FROM (f.dispatched_at - o.paid_at))) AS medianSeconds,
+                   COUNT(*)                                                        AS sample
+              FROM order_fulfilment f
+              JOIN market_order o ON o.id = f.order_id
+             WHERE f.dispatched_at IS NOT NULL
+               AND o.paid_at IS NOT NULL
+               AND f.dispatched_at >= o.paid_at
+            """, nativeQuery = true)
+    DispatchTiming dispatchTimingPlatform();
+
+    /** {@link #countOpenParcels} over every seller. */
+    @Query(value = """
+            SELECT COUNT(*) FILTER (WHERE f.delivery_method = 'DELIVERY')                  AS onTheWay,
+                   COUNT(*) FILTER (WHERE f.delivery_method = 'COLLECTION')                AS readyToCollect,
+                   COUNT(*) FILTER (WHERE f.delivery_method = 'COLLECTION'
+                                      AND f.dispatched_at < :overdueBefore)               AS readyToCollectOverdue
+              FROM order_fulfilment f
+             WHERE f.status = 'DISPATCHED'
+            """, nativeQuery = true)
+    OpenParcelCounts countOpenParcelsPlatform(@Param("overdueBefore") Instant overdueBefore);
+
     /** Projection of {@link #countOpenParcels} — aliases must match. */
     interface OpenParcelCounts {
         long getOnTheWay();

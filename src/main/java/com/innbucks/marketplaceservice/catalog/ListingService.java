@@ -651,6 +651,18 @@ public class ListingService {
     }
 
     /**
+     * One listing in ANY status, for its seller and for SUPER_ADMIN — the only
+     * by-id read of a DRAFT / INACTIVE / ARCHIVED listing (the public catalog
+     * serves ACTIVE only). Same ownership rule as every other management call
+     * ({@link #managedListing}): a MERCHANT_ADMIN reads their own merchant's
+     * listings, SUPER_ADMIN reads any.
+     */
+    @NameResolvingRead
+    public ListingResponse get(AuthenticatedUser caller, UUID listingId) {
+        return assembler.toResponse(managedListing(caller, listingId));
+    }
+
+    /**
      * "My listings" — for a MERCHANT_ADMIN, the caller's merchant's listings
      * (every status; the {@code merchantIdFilter} is IGNORED — a merchant can
      * only ever see their own). For SUPER_ADMIN: ALL listings, any status,

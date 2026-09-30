@@ -149,6 +149,42 @@ public interface MerchantSettlementRepository extends JpaRepository<MerchantSett
              order by max(s.paidOutAt) desc""")
     List<PayoutRun> payoutRuns(@Param("merchantId") UUID merchantId, Pageable pageable);
 
+    // --- Platform-wide twins (SUPER_ADMIN oversight) — distinct queries, never
+    // a nullable :merchantId bind.
+
+    /** {@link #summarize} over every seller. */
+    @Query("""
+            select s.status as status, count(s) as parcels, sum(s.netCents) as netCents
+              from MerchantSettlement s
+             group by s.status
+            """)
+    List<StatusTotal> summarizePlatform();
+
+    /** {@link #nextClearing} over every seller. */
+    @Query("""
+            select min(s.releasableAt) from MerchantSettlement s
+             where s.status = com.innbucks.marketplaceservice.settlement.SettlementStatus.HELD
+               and s.releasableAt is not null""")
+    Instant nextClearingPlatform();
+
+    /** {@link #netClearingBy} over every seller. */
+    @Query("""
+            select coalesce(sum(s.netCents), 0) from MerchantSettlement s
+             where s.status = com.innbucks.marketplaceservice.settlement.SettlementStatus.HELD
+               and s.releasableAt is not null
+               and s.releasableAt <= :until""")
+    long netClearingByPlatform(@Param("until") Instant until);
+
+    /** {@link #payoutRuns} over every seller — one row per payout reference. */
+    @Query("""
+            select s.payoutReference as payoutReference, max(s.paidOutAt) as paidOutAt,
+                   count(s) as parcels, sum(s.netCents) as netCents, min(s.currency) as currency
+              from MerchantSettlement s
+             where s.status = com.innbucks.marketplaceservice.settlement.SettlementStatus.PAID_OUT
+             group by s.payoutReference
+             order by max(s.paidOutAt) desc""")
+    List<PayoutRun> payoutRunsPlatform(Pageable pageable);
+
     interface PayoutRun {
         String getPayoutReference();
         Instant getPaidOutAt();

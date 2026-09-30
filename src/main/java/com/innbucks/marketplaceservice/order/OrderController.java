@@ -1347,7 +1347,7 @@ public class OrderController {
     }
 
     @GetMapping("/{id}/fulfilments/{fulfilmentId}/tracking")
-    @PreAuthorize("hasRole('CUSTOMER')")
+    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')")
     @Operation(summary = "Track a parcel",
             description = "The tracking screen for one parcel of your order. `trackingStatus` is "
                     + "one of four stages:\n\n"

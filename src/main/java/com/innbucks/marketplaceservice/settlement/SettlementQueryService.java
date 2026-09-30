@@ -112,20 +112,49 @@ public class SettlementQueryService {
     }
 
     /** One merchant's parcels + net totals grouped by escrow state. SUPER_ADMIN
-     *  must name the merchant (an admin token has no scope to default to). */
+     *  may name any merchant; with none named it reads the whole platform
+     *  (owner rule: no read may scope the platform owner out). */
     @Transactional(readOnly = true)
     public SettlementSummaryResponse summary(AuthenticatedUser caller, UUID merchantIdFilter) {
-        UUID merchantId;
         if (caller.isSuperAdmin()) {
-            if (merchantIdFilter == null) {
-                throw ApiException.badRequest("merchant_id_required",
-                        "merchantId is required when a SUPER_ADMIN reads a merchant's summary");
-            }
-            merchantId = merchantIdFilter;
-        } else {
-            merchantId = requireMerchantId(caller);
+            return merchantIdFilter == null ? platformSummary() : summaryFor(merchantIdFilter);
         }
-        return summaryFor(merchantId);
+        return summaryFor(requireMerchantId(caller));
+    }
+
+    /**
+     * Every seller's money in one read. {@code merchantId} is null, and
+     * {@code payoutDestinationConfigured} answers the platform's version of the
+     * seller's question: can every seller who is OWED money (has RELEASABLE
+     * rows) actually be paid? False names a payout that would stall.
+     */
+    @Transactional(readOnly = true)
+    public SettlementSummaryResponse platformSummary() {
+        List<SettlementSummaryResponse.Line> totals = settlementRepository.summarizePlatform()
+                .stream()
+                .map(row -> new SettlementSummaryResponse.Line(
+                        row.getStatus(), row.getParcels(), row.getNetCents()))
+                .toList();
+        List<UUID> owed = settlementRepository.payoutReport().stream()
+                .map(MerchantSettlementRepository.PayoutRow::getMerchantId)
+                .toList();
+        java.util.Map<UUID, MarketplaceSeller> sellers = owed.isEmpty()
+                ? java.util.Map.of() : sellerService.findAllByMerchantIds(owed);
+        boolean everyOwedSellerPayable = owed.stream().allMatch(id -> {
+            MarketplaceSeller seller = sellers.get(id);
+            return seller != null && seller.hasPayoutDestination();
+        });
+        Instant now = Instant.now();
+        SettlementSummaryResponse.LastPayout lastPayout = settlementRepository
+                .payoutRunsPlatform(PageRequest.of(0, 1)).stream().findFirst()
+                .map(run -> new SettlementSummaryResponse.LastPayout(run.getPaidOutAt(),
+                        run.getNetCents(), run.getCurrency(), run.getParcels(),
+                        run.getPayoutReference()))
+                .orElse(null);
+        return new SettlementSummaryResponse(null, everyOwedSellerPayable, totals,
+                settlementRepository.nextClearingPlatform(),
+                settlementRepository.netClearingByPlatform(now.plus(Duration.ofDays(7))),
+                lastPayout);
     }
 
     /**
@@ -303,16 +332,9 @@ public class SettlementQueryService {
     @Transactional(readOnly = true)
     public Csv statementCsv(AuthenticatedUser caller, SettlementStatus status, LocalDate from,
                             LocalDate to, UUID merchantIdFilter) {
-        UUID merchantId;
-        if (caller.isSuperAdmin()) {
-            if (merchantIdFilter == null) {
-                throw ApiException.badRequest("merchant_id_required",
-                        "merchantId is required when a SUPER_ADMIN exports a merchant's statement");
-            }
-            merchantId = merchantIdFilter;
-        } else {
-            merchantId = requireMerchantId(caller);
-        }
+        // SUPER_ADMIN may name a merchant; with none named it exports every
+        // seller's rows (the merchantId column says whose each one is).
+        UUID merchantId = caller.isSuperAdmin() ? merchantIdFilter : requireMerchantId(caller);
         Page<MerchantSettlement> page = settlementRepository.findAll(
                 earnings(merchantId, status, from, to),
                 PageRequest.of(0, MAX_STATEMENT_ROWS + 1,
@@ -324,7 +346,7 @@ public class SettlementQueryService {
         StringBuilder csv = new StringBuilder("date,orderRef,items,status,closedBy,closedAt,"
                 + "grossCents,deliveryFeeCents,commissionCents,netCents,currency,clearsAt,"
                 + "releasedAt,paidOutAt,payoutReference,refundedAt,refundReference,refundReason,"
-                + "disputeStatus,disputeReason\n");
+                + "disputeStatus,disputeReason,merchantId\n");
         for (SettlementResponse row : views.toResponses(page.getContent())) {
             csv.append(marketZone.dateOf(row.createdAt())).append(',')
                     .append(csvText(row.orderRef())).append(',')
@@ -346,7 +368,8 @@ public class SettlementQueryService {
                     .append(csvText(row.refundReference())).append(',')
                     .append(csvText(row.refundReason())).append(',')
                     .append(row.dispute() == null ? "" : row.dispute().status().name()).append(',')
-                    .append(row.dispute() == null ? "" : row.dispute().reason().name())
+                    .append(row.dispute() == null ? "" : row.dispute().reason().name()).append(',')
+                    .append(row.merchantId() == null ? "" : row.merchantId().toString())
                     .append('\n');
         }
         String period = (from == null ? "start" : from.toString()) + "_to_"

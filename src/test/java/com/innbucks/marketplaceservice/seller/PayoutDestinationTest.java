@@ -282,4 +282,17 @@ class PayoutDestinationTest {
         assertThat(out.configured()).isFalse();
         assertThat(out.merchantId()).isEqualTo(MERCHANT);
     }
+
+    @Test
+    @DisplayName("The operator's read never registers a seller - a mistyped id is 'none on file'")
+    void operatorReadNeverCreatesASeller() {
+        when(sellers.findById(MERCHANT)).thenReturn(Optional.empty());
+
+        PayoutDestinationResponse out = service.payoutDestinationForOperator(MERCHANT);
+
+        assertThat(out.configured()).isFalse();
+        assertThat(out.merchantId()).isEqualTo(MERCHANT);
+        verify(sellers, never()).insertIfAbsent(any(), any());
+        verify(auditService, never()).record(any(), any(), any(), any());
+    }
 }

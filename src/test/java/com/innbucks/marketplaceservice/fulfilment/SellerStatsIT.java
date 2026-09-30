@@ -171,10 +171,12 @@ class SellerStatsIT extends PostgresTestContainer {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.completedOrders").value(2));
 
+        // Naming no merchant is the platform view, never a 400: SUPER_ADMIN
+        // oversees every seller.
         mockMvc.perform(get("/marketplace/fulfilments/stats")
                         .header("Authorization", "Bearer " + admin))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("merchant_id_required"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.completedOrders").isNumber());
     }
 
     @Test

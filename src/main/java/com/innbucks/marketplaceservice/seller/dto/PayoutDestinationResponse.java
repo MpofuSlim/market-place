@@ -54,6 +54,12 @@ public record PayoutDestinationResponse(
                 nullable = true)
         UUID updatedBy) {
 
+    /** "No destination on file" for a merchant with no seller record yet. */
+    public static PayoutDestinationResponse none(UUID merchantId) {
+        return new PayoutDestinationResponse(merchantId, false,
+                null, null, null, null, null, null, null);
+    }
+
     public static PayoutDestinationResponse from(MarketplaceSeller s) {
         // An absent destination is a normal 200, not a 404: the seller exists,
         // and "you have not set one" is the answer the screen needs in order to

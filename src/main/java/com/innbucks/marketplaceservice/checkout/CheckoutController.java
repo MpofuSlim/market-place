@@ -891,6 +891,8 @@ public class CheckoutController {
     }
 
     @GetMapping("/options")
+    // Cell configuration, not buyer data: platform staff read it too.
+    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')")
     @Operation(summary = "What this cell offers at checkout",
             description = "The per-cell picture the app can cache: delivery methods, the flat "
                     + "delivery fee, and the payment rails this cell is actually provisioned for.\n\n"

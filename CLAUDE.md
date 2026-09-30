@@ -1889,6 +1889,35 @@ never change either casually.
   pushes `ghcr.io/mpofuslim/marketplace-service:{latest,sha-<commit>}` with
   SLSA provenance + SBOM. Deploys pull a pinned `sha-<commit>`.
 
+## SUPER_ADMIN is never scoped out of a read (owner decision, 2026-09-30)
+
+**Every GET answers SUPER_ADMIN for every seller and buyer** — it oversees the
+platform, so a read that refuses it or makes it name a merchant is a bug. A
+SUPER_ADMIN token carries no `orgId`, `merchantId` or buyer uuid, so a read
+scoped on one must give it a way in:
+
+- **Omitting `merchantId` means the whole platform**, never a 400:
+  `GET /fulfilments/stats` (same sample floors, over every parcel),
+  `GET /settlements/summary` (`merchantId: null`; `payoutDestinationConfigured`
+  = every seller OWED money can be paid), `GET /settlements/statement` (the
+  CSV's trailing `merchantId` column says whose each row is). The
+  platform-wide figures are their own queries (`*Platform()`), never a
+  nullable `:merchantId` bind.
+- `GET /orders/{id}/fulfilments/{fid}/tracking` admits SUPER_ADMIN; the
+  parcel must still belong to the order in the path.
+- `GET /listings/{id}` is the by-id read of a listing in ANY status (the
+  public catalog serves ACTIVE only) — `managedListing`, so SUPER_ADMIN reads
+  any and a seller their own.
+- `GET /checkout/options` (cell configuration) admits SUPER_ADMIN.
+- **A read never creates.** `GET /admin/sellers/{id}/payout-destination` used
+  `ensureExists`, so a mistyped id registered a PENDING seller (and a
+  `SELLER_REGISTERED` audit row) that then showed in the directory. The
+  operator read is `payoutDestinationForOperator`; the seller's own `/me` read
+  keeps `ensureExists` (onboarding order is free).
+
+Still deliberately self-scoped: the buyer's own cart, favourites, addresses and
+`/orders/mine`, and the seller's `/sellers/me/**` — each has an admin twin.
+
 ## Customer support (`/marketplace/support/**`) — the call center's surface (V22, V23)
 
 Agents find a buyer, an order or a seller, see everything about them, and keep

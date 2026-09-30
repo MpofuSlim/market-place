@@ -296,6 +296,21 @@ public class SellerService {
     }
 
     /**
+     * The operator's read of any seller's destination. A READ, so it never
+     * creates: {@link #ensureExists} here let a SUPER_ADMIN looking up a
+     * mistyped id register a PENDING seller (and a {@code SELLER_REGISTERED}
+     * audit row) that then appeared in the seller directory. An id with no
+     * seller record answers "none on file", exactly like a seller who has not
+     * set one.
+     */
+    @Transactional(readOnly = true)
+    public PayoutDestinationResponse payoutDestinationForOperator(UUID merchantId) {
+        return sellers.findById(merchantId)
+                .map(PayoutDestinationResponse::from)
+                .orElseGet(() -> PayoutDestinationResponse.none(merchantId));
+    }
+
+    /**
      * Sets or replaces a seller's payout destination.
      *
      * <p><b>Replace, never merge.</b> The request carries a whole destination

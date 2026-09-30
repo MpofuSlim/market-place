@@ -227,25 +227,26 @@ public class SettlementController {
                     + "period is in the FILENAME (never a header row above the columns). Money is "
                     + "in minor units, like every other surface. Refused past 5000 rows — choose "
                     + "a shorter period.\n\n"
-                    + "A MERCHANT_ADMIN always exports their own; SUPER_ADMIN must name a "
-                    + "`merchantId`.")
+                    + "A MERCHANT_ADMIN always exports their own; SUPER_ADMIN may name a "
+                    + "`merchantId`, or leave it out to export every seller (the trailing "
+                    + "`merchantId` column says whose each row is).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "CSV attachment",
                     content = @Content(mediaType = "text/csv", examples = @ExampleObject(value =
                             "date,orderRef,items,status,closedBy,closedAt,grossCents,deliveryFeeCents,"
                                     + "commissionCents,netCents,currency,clearsAt,releasedAt,paidOutAt,"
                                     + "payoutReference,refundedAt,refundReference,refundReason,"
-                                    + "disputeStatus,disputeReason\n"
+                                    + "disputeStatus,disputeReason,merchantId\n"
                                     + "2026-09-14,MKT-4F9A1C22B7D3,2 x Wireless Bluetooth Speaker,PAID_OUT,"
                                     + "BUYER_CONFIRMED,2026-09-16T16:05:00+02:00,5598,800,0,5598,USD,,"
                                     + "2026-09-16T16:05:00+02:00,2026-09-30T12:00:00+02:00,PAYOUT-2026-09-30-01,"
-                                    + ",,,,\n"
+                                    + ",,,,,7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54\n"
                                     + "2026-09-24,MKT-4F2A9C1B77D0,\"1 x Cotton Crew Tee (XL - Black), "
-                                    + "2 x Solar Lantern 20W\",HELD,,,5699,300,0,5699,USD,,,,,,,,,\n"))),
-            @ApiResponse(responseCode = "400", description = "SUPER_ADMIN without a merchantId, or "
-                    + "'to' before 'from'",
+                                    + "2 x Solar Lantern 20W\",HELD,,,5699,300,0,5699,USD,,,,,,,,,,"
+                                    + "7e2a9c41-5b8f-4d36-a1c9-8f3b6d2e7a54\n"))),
+            @ApiResponse(responseCode = "400", description = "'to' before 'from'",
                     content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """
-                            {"code":"merchant_id_required","message":"merchantId is required when a SUPER_ADMIN exports a merchant's statement"}"""))),
+                            {"code":"invalid_date_range","message":"'to' is before 'from'"}"""))),
             @ApiResponse(responseCode = "422", description = "More rows than a statement carries",
                     content = @Content(mediaType = "application/json", examples = @ExampleObject(value = """
                             {"code":"statement_too_large","message":"More than 5000 rows - choose a shorter period"}""")))
@@ -256,7 +257,7 @@ public class SettlementController {
             LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
             LocalDate to,
-            @Parameter(description = "SUPER_ADMIN only (required for them); ignored for a "
+            @Parameter(description = "SUPER_ADMIN only (omit for every seller); ignored for a "
                     + "MERCHANT_ADMIN")
             @RequestParam(required = false) UUID merchantId) {
         SettlementQueryService.Csv csv = queryService.statementCsv(CurrentUser.get(), status,
@@ -278,19 +279,18 @@ public class SettlementController {
                     + "`clearingNext7DaysCents`, and `lastPayout` (date, amount, parcels and the "
                     + "reference to look for on the seller's bank statement). Held money still "
                     + "waiting on delivery has no clearing date yet, so it is in the HELD total "
-                    + "but not in either clearing figure.")
+                    + "but not in either clearing figure.\n\n"
+                    + "SUPER_ADMIN may name a `merchantId`, or leave it out for the whole "
+                    + "platform: `merchantId` is then null, the totals cover every seller, "
+                    + "`lastPayout` is the latest payout run, and `payoutDestinationConfigured` "
+                    + "says whether every seller who is owed money (RELEASABLE) can be paid.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The caller's totals",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SUMMARY_200))),
-            @ApiResponse(responseCode = "400", description = "SUPER_ADMIN without a merchantId",
-                    content = @Content(examples = @ExampleObject(value = """
-                            {
-                              "code": "merchant_id_required",
-                              "message": "merchantId is required when a SUPER_ADMIN reads a merchant's summary"
-                            }""")))
     })
     public ResponseEntity<ApiResult<SettlementSummaryResponse>> summary(
-            @Parameter(description = "SUPER_ADMIN only; ignored for a MERCHANT_ADMIN")
+            @Parameter(description = "SUPER_ADMIN only (omit for the whole platform); ignored for a "
+                    + "MERCHANT_ADMIN")
             @RequestParam(required = false) UUID merchantId) {
         return ResponseEntity.ok(ApiResult.ok(queryService.summary(CurrentUser.get(), merchantId)));
     }

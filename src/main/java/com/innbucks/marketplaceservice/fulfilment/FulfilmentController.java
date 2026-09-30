@@ -277,8 +277,8 @@ public class FulfilmentController {
                     + "keep at zero).\n\n"
                     + "Every figure is COMPUTED from real parcels; small samples stay null rather "
                     + "than pretending two orders make a percentage. A MERCHANT_ADMIN always reads "
-                    + "their own merchant — `merchantId` is ignored for them; SUPER_ADMIN must "
-                    + "name one.")
+                    + "their own merchant — `merchantId` is ignored for them. SUPER_ADMIN may name "
+                    + "one, or leave it out for the same figures over every seller's parcels.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The caller's stats",
                     content = @Content(examples = @ExampleObject(value = """
@@ -296,17 +296,12 @@ public class FulfilmentController {
                                 "completedOrders": 128
                               }
                             }"""))),
-            @ApiResponse(responseCode = "400", description = "SUPER_ADMIN without a merchantId",
-                    content = @Content(examples = @ExampleObject(value = """
-                            {
-                              "code": "merchant_id_required",
-                              "message": "merchantId is required when a SUPER_ADMIN reads a merchant's stats"
-                            }"""))),
             @ApiResponse(responseCode = "403", description = "Merchant token with no merchant scope",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SCOPE_403)))
     })
     public ResponseEntity<ApiResult<MerchantFulfilmentStatsResponse>> stats(
-            @Parameter(description = "SUPER_ADMIN only: whose stats. Ignored for a MERCHANT_ADMIN.")
+            @Parameter(description = "SUPER_ADMIN only: whose stats (omit for the whole platform). "
+                    + "Ignored for a MERCHANT_ADMIN.")
             @RequestParam(required = false) UUID merchantId) {
         return ResponseEntity.ok(ApiResult.ok(
                 statsService.merchantStats(CurrentUser.get(), merchantId)));

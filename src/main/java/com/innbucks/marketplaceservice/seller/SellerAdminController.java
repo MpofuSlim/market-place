@@ -246,7 +246,7 @@ public class SellerAdminController {
             @ApiResponse(responseCode = "403", description = "Caller is not a SUPER_ADMIN")
     })
     public ApiResult<PayoutDestinationResponse> payoutDestination(@PathVariable UUID merchantId) {
-        return ApiResult.ok(sellerService.payoutDestination(merchantId));
+        return ApiResult.ok(sellerService.payoutDestinationForOperator(merchantId));
     }
 
     @PutMapping("/{merchantId}/payout-destination")
