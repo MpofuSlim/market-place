@@ -156,4 +156,16 @@ public interface MerchantSettlementRepository extends JpaRepository<MerchantSett
         long getNetCents();
         String getCurrency();
     }
+
+    /** A buyer's parcels' settlements in the given states, newest first
+     *  (customer support: "where is my refund"). */
+    @Query("""
+            select s from MerchantSettlement s
+             where s.orderId in (select o.id from MarketOrder o
+                                  where o.buyerUuid = :buyerUuid)
+               and s.status in :statuses
+             order by s.createdAt desc, s.id""")
+    List<MerchantSettlement> findForBuyer(@Param("buyerUuid") UUID buyerUuid,
+                                          @Param("statuses") Collection<SettlementStatus> statuses,
+                                          Pageable pageable);
 }

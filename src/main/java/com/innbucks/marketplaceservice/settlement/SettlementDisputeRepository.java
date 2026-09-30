@@ -22,4 +22,12 @@ public interface SettlementDisputeRepository extends JpaRepository<SettlementDis
     Page<SettlementDispute> findByStatusOrderByCreatedAtAsc(DisputeStatus status, Pageable pageable);
 
     Page<SettlementDispute> findAllByOrderByCreatedAtAsc(Pageable pageable);
+
+    List<SettlementDispute> findByBuyerUuidOrderByCreatedAtDesc(UUID buyerUuid,
+                                                                org.springframework.data.domain.Pageable pageable);
+
+    List<SettlementDispute> findByMerchantIdAndStatusOrderByCreatedAtAsc(
+            UUID merchantId, DisputeStatus status, org.springframework.data.domain.Pageable pageable);
+
+    long countByMerchantIdAndStatus(UUID merchantId, DisputeStatus status);
 }

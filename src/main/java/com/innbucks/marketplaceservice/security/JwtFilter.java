@@ -23,7 +23,8 @@ import java.util.UUID;
 /**
  * Verifies the Bearer JWT and, on success, sets the request's
  * {@code Authentication} with principal {@link AuthenticatedUser} and
- * authorities {@code ROLE_<role>}.
+ * authorities {@code ROLE_<role>} plus, bare, every permission code in the
+ * token's {@code perms} claim (the customer-support surface's gate).
  *
  * <p>Deliberately NON-rejecting (unlike InnRewards' filter, which writes the
  * 401 itself): an absent, invalid, revoked or superseded token simply leaves
@@ -104,13 +105,22 @@ public class JwtFilter extends OncePerRequestFilter {
                         null,
                         jwtUtil.extractPhoneNumber(token),
                         jwtUtil.extractCountry(token),
-                        courier);
+                        courier,
+                        jwtUtil.extractSubject(token),
+                        jwtUtil.extractPermissions(token));
 
                 List<SimpleGrantedAuthority> authorities = new ArrayList<>();
                 for (String role : user.roles()) {
                     if (role != null && !role.isBlank()) {
                         authorities.add(new SimpleGrantedAuthority("ROLE_" + role));
                     }
+                }
+                // Permissions are BARE authorities, as user-service grants them:
+                // a different namespace from ROLE_*, so a permission can never
+                // satisfy a hasRole check nor a role a hasAuthority one. Only
+                // the customer-support surface reads them.
+                for (String permission : user.permissions()) {
+                    authorities.add(new SimpleGrantedAuthority(permission));
                 }
 
                 var auth = new UsernamePasswordAuthenticationToken(user, null, authorities);

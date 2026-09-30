@@ -1889,6 +1889,87 @@ never change either casually.
   pushes `ghcr.io/mpofuslim/marketplace-service:{latest,sha-<commit>}` with
   SLSA provenance + SBOM. Deploys pull a pinned `sha-<commit>`.
 
+## Customer support (`/marketplace/support/**`) — the call center's surface (V22)
+
+Agents find a buyer, an order or a seller, see everything about them, and keep
+case notes. Part 1 is the READ side plus notes. Part 2 adds typed SMS/WhatsApp,
+resends and support actions.
+
+* **Permissions, never roles.** The gates are `marketplace-support:read`,
+  `:manage` and `:supervise`, plus `customer-messages:send` (shared with
+  loyalty-service).
+  * **Where they come from:** user-service's `PermissionCatalog`, granted to the
+    V43 call-center roles by user-service V45 (ticketing-system #652).
+    * CALL_CENTER_AGENT: read + manage + messages.
+    * CALL_CENTER_SUPERVISOR: also supervise.
+    * SUPER_ADMIN: all of them through `*`, NOT by name.
+  * **How they arrive:** in the token's `perms` claim. `JwtFilter` grants each
+    one as a BARE authority, beside `ROLE_*`, and `AuthenticatedUser` carries
+    `permissions` + `login` (the token subject).
+  * **The claim cannot mint a role.** `JwtUtil.extractPermissions` keeps only
+    permission-SHAPED codes (`^[a-z][a-z0-9-]*(:[a-z][a-z0-9-]*)+$`), so a
+    `perms` entry `ROLE_SUPER_ADMIN` is dropped rather than becoming a role.
+    Pinned by `PermissionsClaimTest` and `aRoleInThePermsClaimIsNothing`.
+  * **Every handler says `hasAuthority(...)` and none says `hasRole`.**
+    `SupportEndpointsArePermissionGatedTest` fails on a role check or a missing
+    check. A SUPER_ADMIN token WITHOUT the codes is refused (the fleet shape of
+    a pre-V45 token); the agent signs in again after V45 deploys.
+* **Every search and every view is logged BEFORE it is shown**
+  (`support_activity`, `SupportActivityLog`).
+  * **Rows:** `SEARCH`, `VIEW_BUYER`, `VIEW_BUYER_ORDERS`, `VIEW_ORDER`,
+    `VIEW_SELLER`, `VIEW_SELLER_PARCELS`, `NOTE_ADDED`. The vocabulary is
+    strings, not an enum: an older image must still read a newer row.
+  * **What `detail` holds:** ids and enums only. A searched phone is stored
+    MASKED, a searched name not at all, and note text never.
+  * **The order of operations:**
+    1. The subject is proven to exist (a 404 is logged nowhere).
+    2. The row is written in its own short transaction.
+    3. Only then is the view rendered.
+
+    If the row cannot be written, nothing is shown.
+  * **Why rendering is outside the transaction:** the views carry seller names
+    and are `@NameResolvingRead`, i.e. non-transactional. An action's row joins
+    the action's transaction instead.
+  * **The oversight feed:** `GET /support/activity` (supervise), filtered by
+    agent, action, subject and a window.
+* **Append-only by trigger, not just by absence of an endpoint.**
+  `support_activity` and `support_note` refuse UPDATE and DELETE in Postgres
+  (`support_log_is_append_only`). TRUNCATE is a statement, not a row operation,
+  so the test cleanup still works. A correction is a new note.
+* **Search is one box, read by SHAPE** (`SupportSearchService`, POST so a
+  phone never lands in a URL or an access log):
+  * `MKT-…` / `TRK-…`, case and dashes forgiven.
+  * A UUID: buyer, order, parcel, seller or listing.
+  * Dialable: the payer, a gift or delivery recipient (V22 added the three
+    `market_order` phone indexes), and a seller's payout wallet.
+  * Anything else is a recipient name or an operator-set seller name. Registry
+    names are not searchable: this service stores none.
+  * At most 20 per kind, and `matchedAs` says why each row matched.
+* **The views reuse the portal's own computations, never a copy:**
+  * the buyer's `OrderResponse`;
+  * the seller's parcel cards (`MerchantParcelViewAssembler`);
+  * `SettlementViewAssembler`;
+  * `statsFor` / `summaryFor` / `queueFor`, merchant-explicit twins
+    extracted from the caller-scoped reads, so support never pretends to be
+    SUPER_ADMIN to reach a seller.
+
+  "The agent's screen says X, my portal says Y" cannot happen.
+* **What an agent sees in full, and what is masked.**
+  * **In full, on the 360s:** the buyer's phones and the order's payer. An
+    agent verifies the caller by them, and every view is logged.
+  * **Masked:** the seller's payout destination (method, account name, last 4)
+    — redirecting a payout is THE attack on that data, and the call center only
+    needs to know one exists. Phones are also masked in the activity feed.
+* **Deliberately NOT here:**
+  * **Dispute decisions** stay with SUPER_ADMIN/finance (owner, 2026-09-30). A
+    REFUND resolution records a transfer reference, so it asserts money left.
+  * **Tickets / assignment / SLA** belong to a later, fleet-wide piece in
+    user-service; notes, messages and the activity log cover it for now.
+  * **Editing a note.**
+* Pinned by `CustomerSupportFlowIT` (permission gating, every search shape,
+  the activity rows and their masking, the 360s, the masked payout, append-only
+  in SQL), `PermissionsClaimTest`, `SupportEndpointsArePermissionGatedTest`.
+
 ## Fleet integration (cross-repo contracts — keep in lock-step)
 
 All fleet-side wiring lives in `MpofuSlim/ticketing-system` and is documented

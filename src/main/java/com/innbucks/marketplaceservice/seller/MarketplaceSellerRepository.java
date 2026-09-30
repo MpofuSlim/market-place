@@ -94,4 +94,18 @@ public interface MarketplaceSellerRepository extends JpaRepository<MarketplaceSe
     @Query("SELECT s.merchantId FROM MarketplaceSeller s "
             + "WHERE s.merchantId IN :merchantIds AND s.collectionEnabled = false")
     Set<UUID> findCollectionDisabledAmong(@Param("merchantIds") Collection<UUID> merchantIds);
+
+    /** Sellers whose payout wallet is this number — a seller phoning support
+     *  from the phone they are paid on (customer support search). */
+    java.util.List<MarketplaceSeller> findByPayoutMsisdn(String payoutMsisdn);
+
+    /** Sellers whose operator-set display name contains {@code pattern}
+     *  (lower-cased, LIKE-escaped with '!'). Organization-registry names are
+     *  not searchable here: this service stores none. */
+    @Query("""
+            select s from MarketplaceSeller s
+             where lower(s.displayName) like :pattern escape '!'
+             order by s.createdAt desc, s.merchantId""")
+    java.util.List<MarketplaceSeller> findByDisplayNameLike(@Param("pattern") String pattern,
+                                                           org.springframework.data.domain.Pageable pageable);
 }

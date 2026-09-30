@@ -66,4 +66,6 @@ public interface ListingFavoriteRepository extends JpaRepository<ListingFavorite
     @Query("select f.id.buyerUuid from ListingFavorite f "
             + "where f.id.listingId = :listingId order by f.createdAt asc")
     List<UUID> findFavoriterUuids(@Param("listingId") UUID listingId, Pageable pageable);
+
+    long countByIdBuyerUuid(UUID buyerUuid);
 }

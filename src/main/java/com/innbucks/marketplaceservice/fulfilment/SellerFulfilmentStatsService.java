@@ -69,7 +69,16 @@ public class SellerFulfilmentStatsService {
     @Transactional(readOnly = true)
     public MerchantFulfilmentStatsResponse merchantStats(AuthenticatedUser caller,
                                                          UUID merchantIdFilter) {
-        UUID merchantId = resolveMerchant(caller, merchantIdFilter);
+        return statsFor(resolveMerchant(caller, merchantIdFilter));
+    }
+
+    /**
+     * One named merchant's stats, for a caller whose scope was already decided
+     * elsewhere — the customer-support seller view, which is permission-gated
+     * and names the seller it is looking at.
+     */
+    @Transactional(readOnly = true)
+    public MerchantFulfilmentStatsResponse statsFor(UUID merchantId) {
         ParcelCounts counts = fulfilmentRepository.countParcels(merchantId);
         OrderFulfilmentRepository.OpenParcelCounts open = fulfilmentRepository.countOpenParcels(
                 merchantId, Instant.now().minus(Duration.ofDays(collectionOverdueDays)));

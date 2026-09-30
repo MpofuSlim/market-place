@@ -125,6 +125,15 @@ public class SettlementQueryService {
         } else {
             merchantId = requireMerchantId(caller);
         }
+        return summaryFor(merchantId);
+    }
+
+    /**
+     * One named merchant's summary, for a caller whose scope was already
+     * decided elsewhere — the customer-support seller view.
+     */
+    @Transactional(readOnly = true)
+    public SettlementSummaryResponse summaryFor(UUID merchantId) {
         List<SettlementSummaryResponse.Line> totals = settlementRepository.summarize(merchantId)
                 .stream()
                 .map(row -> new SettlementSummaryResponse.Line(
