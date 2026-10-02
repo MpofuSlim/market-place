@@ -13,6 +13,11 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
+      # Bounded, because Redis is on every authenticated request (JwtFilter's
+      # denylist and token-version reads). Both fail open, but only once the
+      # command gives up, and Lettuce's default is 60s. Same values as loyalty.
+      timeout: ${REDIS_COMMAND_TIMEOUT:500ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:1s}
       repositories:
         enabled: false
   datasource:
@@ -68,6 +73,13 @@ spring:
     properties:
       hibernate:
         dialect: ${HIBERNATE_DIALECT:org.hibernate.dialect.PostgreSQLDialect}
+        # Group saveAll / save-in-a-loop writes (order lines, settlement rows)
+        # into JDBC batches. Ids are assigned UUIDs, so INSERTs batch too; the
+        # two IDENTITY entities (AuditEvent, MarketOrderEvent) simply don't.
+        jdbc:
+          batch_size: ${HIBERNATE_JDBC_BATCH_SIZE:50}
+        order_inserts: true
+        order_updates: true
   flyway:
     enabled: ${FLYWAY_ENABLED:true}
     baseline-on-migrate: false
@@ -477,9 +489,21 @@ management:
       probes:
         enabled: true
       show-details: when-authorized
+      # The k8s readiness probe hits /actuator/health/readiness. Only the DB
+      # gates it: Redis reads here fail open, so a Redis blip must not pull the
+      # (single) pod out of its Service, which the aggregate /actuator/health did.
+      group:
+        readiness:
+          include: readinessState,db
   metrics:
     tags:
       application: ${spring.application.name}
+    # Fixed latency buckets so Prometheus can compute p95/p99 for every
+    # endpoint. A short, fixed list rather than percentiles-histogram, which
+    # emits ~70 buckets per uri/method/status.
+    distribution:
+      slo:
+        "[http.server.requests]": 50ms,100ms,250ms,500ms,1s,2s,5s
   tracing:
     enabled: ${TRACING_ENABLED:false}
     sampling:
@@ -541,6 +565,11 @@ spring:
       mail:
         smtp:
           auth: true
+          # JavaMail's defaults are infinite: one hung SMTP host would hold a
+          # notification thread forever.
+          connectiontimeout: ${MAIL_CONNECT_TIMEOUT_MS:5000}
+          timeout: ${MAIL_READ_TIMEOUT_MS:10000}
+          writetimeout: ${MAIL_WRITE_TIMEOUT_MS:10000}
           starttls:
             enable: true
             required: true
