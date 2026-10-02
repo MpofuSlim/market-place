@@ -523,6 +523,8 @@ jwt:
   # service only VERIFIES — it never mints; ideally the cell flips user-service
   # to RS256 so marketplace-service holds no mint-capable secret at all.
   secret: ${JWT_SECRET:change-me-change-me-change-me-change-me}
+  # PEM on ONE line (an env-file value is one line): breaks as literal \n, no
+  # breaks, or the bare Base64 body. A key that still cannot be parsed fails boot.
   public-key: ${JWT_PUBLIC_KEY:}
   expiration: ${JWT_EXPIRATION_MS:86400000}
 
