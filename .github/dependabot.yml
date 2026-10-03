@@ -53,6 +53,15 @@ updates:
     open-pull-requests-limit: 3
     labels: ["dependencies", "docker"]
     commit-message: { prefix: "docker" }
+    # No JDK major bumps from Dependabot: the base images, ci.yml/release.yml's
+    # java-version and the pom's bytecode target move together, by hand, to an
+    # LTS. A bot bump of the images alone is how the ticketing fleet once
+    # shipped a non-LTS JDK whose frozen Alpine base failed the Trivy gate,
+    # and how CI and the images drifted onto different JDKs. Remove this
+    # ignore in the same PR that moves the JDK.
+    ignore:
+      - dependency-name: "eclipse-temurin"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

@@ -39,7 +39,11 @@ jobs:
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
-          java-version: "21"
+          # The SAME JDK the Dockerfile builds and runs on (temurin 25, an LTS),
+          # so the tests run on what production runs. Bytecode still targets 21
+          # through the pom's <release>${java.version}</release>. Move this, the
+          # Dockerfile base images and dependabot.yml's temurin ignore together.
+          java-version: "25"
           cache: maven
 
       - name: Cache Maven wrapper distribution
