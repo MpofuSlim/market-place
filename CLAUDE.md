@@ -2130,6 +2130,22 @@ orders.
   (the gateway 400s on `! : / ? " * ;` and non-ASCII); auto `MKT-SMS-` /
   `MKT-EMAIL-` references, ~46-char reference clamp. Env: `BANK_API_URL/KEY/
   USERNAME/PASSWORD` — the SAME platform creds booking/payment already use.
+  * **The bearer lives in `SingleFlightTokenCache`, never behind
+    `synchronized`.** The old `synchronized currentToken` held the client's
+    monitor across the login, so one slow login (about 19 s measured) queued
+    EVERY sender, including those whose cached token was fine. Now: a token
+    before its refresh point (`exp` −30s) is read with no lock; at most one
+    login runs, as a future started under a short lock that is never held
+    across the network call; a due-but-unexpired token keeps being handed out
+    while one caller refreshes; a caller with no usable token waits at most
+    connect + read timeout + 2s, then gets `NotificationDeliveryException`; a
+    401 re-logs in only if the cached token is still the one rejected (N
+    concurrent 401s = one login), and the rejected token is dropped meanwhile;
+    a failed login caches nothing. **Rule: never hold a lock across a network
+    call** — a new client that caches a login token uses this class. The
+    fleet's other token clients (ticketing, InnRewards, loans) follow the same
+    design. Pinned by
+    `SingleFlightTokenCacheTest` and `EmailNotificationClientTokenRefreshTest`.
 * **WhatsApp gateway** (`WhatsAppNotificationClient`): `POST
   /api/messages/custom-notification`, lowercase `x-api-key`, 1600-char cap
   (REFUSED, not truncated). Fallback channel for the buyer order-paid SMS.

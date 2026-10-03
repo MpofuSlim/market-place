@@ -9,6 +9,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -23,7 +24,9 @@ import java.util.function.Function;
  * client (booking-service, copied here — the marketplace depends on no fleet
  * module): an {@code X-Api-Key} header plus a bearer token obtained from
  * {@code POST /auth/third-party} (cached until its JWT {@code exp}, refreshed
- * once on a 401).
+ * once on a 401). The token lives in a {@link SingleFlightTokenCache}: a slow
+ * login never blocks a sender that already holds a usable token, and at most
+ * one login runs at a time.
  *
  * <p>Wire bodies: email {@code {subject, message, reference, destinationEmail}},
  * SMS {@code {message, reference, destinationMsisdn}}. The endpoint validates
@@ -46,6 +49,12 @@ public class EmailNotificationClient {
     private static final String API_KEY_HEADER = "X-Api-Key";
     /** Longest reference observed to pass the notification API's validation. */
     private static final int MAX_REFERENCE_LENGTH = 46;
+    /** A refresh becomes due this long before the token's {@code exp}. */
+    private static final Duration REFRESH_MARGIN = Duration.ofSeconds(30);
+    /** The token is no longer handed out this long before its {@code exp} (clock skew). */
+    private static final Duration EXPIRY_SKEW = Duration.ofSeconds(5);
+    /** Added to connect + read timeout to bound a caller waiting on someone else's login. */
+    private static final Duration LOGIN_WAIT_MARGIN = Duration.ofSeconds(2);
 
     private final RestClient restClient;
     private final InnbucksNotifyProperties properties;
@@ -56,8 +65,7 @@ public class EmailNotificationClient {
      */
     private final SmtpEmailSender smtpEmailSender;
 
-    private String accessToken;
-    private Instant tokenExpiry = Instant.EPOCH;
+    private final SingleFlightTokenCache tokens;
 
     @org.springframework.beans.factory.annotation.Autowired
     public EmailNotificationClient(@Qualifier("innbucksNotifyRestClient") RestClient restClient,
@@ -68,6 +76,10 @@ public class EmailNotificationClient {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.smtpEmailSender = smtpEmailSender;
+        Duration loginWait = Duration.ofMillis((long) properties.getConnectTimeoutMs() + properties.getReadTimeoutMs())
+                .plus(LOGIN_WAIT_MARGIN);
+        this.tokens = new SingleFlightTokenCache("Notification API", this::login, loginWait,
+                NotificationDeliveryException::new);
     }
 
     /**
@@ -251,14 +263,18 @@ public class EmailNotificationClient {
                 MsisdnMasking.mask(to), ref);
     }
 
-    /** Run an authed call; on 401, force one token refresh and replay once. */
+    /**
+     * Run an authed call; on 401, refresh the token that was rejected (once,
+     * however many callers saw the same 401) and replay once.
+     */
     private <T> T withAuthRetryOn401(Function<String, T> call) {
+        String token = tokens.get();
         try {
-            return call.apply(currentToken(false));
+            return call.apply(token);
         } catch (UnauthorizedException first) {
             log.info("Notification API returned 401 — refreshing token and replaying once");
             try {
-                return call.apply(currentToken(true));
+                return call.apply(tokens.refreshAfterRejection(token));
             } catch (UnauthorizedException second) {
                 throw new NotificationDeliveryException(
                         "Notification API rejected our credentials twice (401) — check BANK_API_USERNAME/PASSWORD/KEY");
@@ -266,10 +282,13 @@ public class EmailNotificationClient {
         }
     }
 
-    private synchronized String currentToken(boolean force) {
-        if (!force && accessToken != null && Instant.now().isBefore(tokenExpiry)) {
-            return accessToken;
-        }
+    /**
+     * One {@code POST /auth/third-party} login. Called only by
+     * {@link SingleFlightTokenCache}, which guarantees at most one runs at a
+     * time and never holds a lock around it. Logs neither the token nor the
+     * credentials.
+     */
+    private SingleFlightTokenCache.Token login() {
         try {
             String raw = restClient.post()
                     .uri(LOGIN_PATH)
@@ -284,10 +303,12 @@ public class EmailNotificationClient {
             if (token == null || token.toString().isBlank()) {
                 throw new NotificationDeliveryException("Notification API login returned no accessToken");
             }
-            accessToken = token.toString();
-            tokenExpiry = deriveExpiry(accessToken).minusSeconds(30);
-            log.info("Notification API login succeeded; token cached until {}", tokenExpiry);
-            return accessToken;
+            String accessToken = token.toString();
+            Instant exp = deriveExpiry(accessToken);
+            SingleFlightTokenCache.Token cached = new SingleFlightTokenCache.Token(
+                    accessToken, exp.minus(REFRESH_MARGIN), exp.minus(EXPIRY_SKEW));
+            log.info("Notification API login succeeded; token refresh due at {}", cached.refreshAt());
+            return cached;
         } catch (RestClientResponseException e) {
             throw new NotificationDeliveryException(
                     "Notification API login failed: HTTP " + e.getStatusCode().value(), e);
