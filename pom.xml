@@ -489,8 +489,11 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.16.0</version>
                 <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
+                    <!-- release (not source/target): compiles against the JDK 21
+                         API as well as emitting 21 bytecode, so building on a newer
+                         JDK (CI and the image build on 25) cannot link a call that
+                         the bytecode target would not have. -->
+                    <release>${java.version}</release>
                     <compilerArgs>
                         <arg>-parameters</arg>
                     </compilerArgs>

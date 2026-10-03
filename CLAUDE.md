@@ -15,10 +15,19 @@ retired — see "Service discovery" below). The service name + the image name
 never change either casually.
 
 * Stack: Spring Boot 4.x (import-BOM pattern, NOT starter-parent — the CVE
-  overrides rely on first-wins resolution), Java 21, JPA + Postgres 16,
-  Flyway (`ddl-auto: validate`), shared fleet Redis (denylist read side),
-  service discovery by k8s Service DNS (static map, Spring Cloud
+  overrides rely on first-wins resolution), Java 25 (bytecode target 21),
+  JPA + Postgres 16, Flyway (`ddl-auto: validate`), shared fleet Redis
+  (denylist read side), service discovery by k8s Service DNS (static map, Spring Cloud
   LoadBalancer), Micrometer + optional OTel, Springdoc.
+* **One JDK everywhere: temurin 25 (an LTS)** — CI (`ci.yml` and
+  `release.yml`'s test gate), the image build and the runtime, so the tests
+  run on what production runs. `<java.version>21</java.version>` is only the
+  bytecode target, applied through `<release>` (which also checks the JDK 21
+  API). Lombok stays an explicit `annotationProcessorPaths` entry: JDK 23+
+  javac no longer runs a processor found only on the classpath, which once
+  broke every ticketing image while its JDK-21 CI stayed green. `dependabot.yml`
+  ignores temurin majors; move CI, the Dockerfile and that ignore together, in
+  one PR, to an LTS.
 * App port `8087`. Database `marketplace_service` on the cell Postgres.
 * Money is ALWAYS minor units (cents, `BIGINT`/`long`). Timestamps are ALWAYS
   UTC `Instant` → `TIMESTAMPTZ`. Containers pin `-Duser.timezone=UTC`.
