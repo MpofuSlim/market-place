@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.notify;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.http.Fault;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.testsupport.TestOutboundHttp;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -60,7 +61,7 @@ class UserNotifyGatewayContractTest {
     }
 
     private UserNotifyGateway gateway(String baseUrl) {
-        return new UserNotifyGateway(RestClient.builder(), baseUrl, 500, 2000, TOKEN,
+        return new UserNotifyGateway(TestOutboundHttp.POOL, RestClient.builder(), baseUrl, 500, 2000, TOKEN,
                 new MarketplaceMetrics(registry));
     }
 

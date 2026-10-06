@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.seller;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.innbucks.marketplaceservice.testsupport.TestOutboundHttp;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterAll;
@@ -62,6 +63,25 @@ class UserServiceOrganizationNameResolverContractTest {
     static void start() {
         wireMock = new WireMockServer(wireMockConfig().dynamicPort());
         wireMock.start();
+        warmUp();
+    }
+
+    /**
+     * One unhurried round trip before any case runs. A cold WireMock (and a cold client) can take over
+     * a second to answer its first requests, longer than the resolver's own 1s read timeout — so the
+     * first cases timed out, and their late requests were journaled into the NEXT case's count
+     * ({@code failuresAreNotCachedButBackOff} failed this way on main). Warming the server and the
+     * pooled transport here keeps every case's budget its own.
+     */
+    private static void warmUp() {
+        wireMock.stubFor(get(urlPathEqualTo(PATH)).willReturn(okJson("""
+                {"code":"200 OK","message":"Organization names","data":[]}""")));
+        RestClient warm = RestClient.builder().baseUrl("http://localhost:" + wireMock.port())
+                .requestFactory(TestOutboundHttp.POOL.requestFactory(5_000, 10_000)).build();
+        for (int i = 0; i < 3; i++) {
+            warm.get().uri(PATH + "?ids=" + UUID.randomUUID()).retrieve().toBodilessEntity();
+        }
+        wireMock.resetAll();
     }
 
     @AfterAll
@@ -120,7 +140,7 @@ class UserServiceOrganizationNameResolverContractTest {
      *  connect timeout and the backoff window. */
     private UserServiceOrganizationNameResolver resolver(String baseUrl, String token, long ttlSeconds,
                                                          int readTimeoutMs) {
-        return new UserServiceOrganizationNameResolver(
+        return new UserServiceOrganizationNameResolver(TestOutboundHttp.POOL,
                 RestClient.builder(), baseUrl, 500, readTimeoutMs, ttlSeconds, BACKOFF_SECONDS,
                 token, meters, clock);
     }

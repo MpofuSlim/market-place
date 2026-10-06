@@ -1,15 +1,14 @@
 package com.innbucks.marketplaceservice.notify;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.innbucks.marketplaceservice.config.OutboundHttp;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatusCode;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -46,17 +45,15 @@ public class UserServiceMerchantAdminResolver implements MerchantAdminResolver {
     private final String internalToken;
 
     public UserServiceMerchantAdminResolver(
+            OutboundHttp outboundHttp,
             @Qualifier("loadBalancedRestClientBuilder") RestClient.Builder builder,
             @Value("${user-service.base-url:http://user-service}") String userServiceBaseUrl,
             @Value("${user-service.connect-timeout-ms:2000}") int connectTimeoutMs,
             @Value("${user-service.read-timeout-ms:5000}") int readTimeoutMs,
             @Value("${innbucks.internal-api-token:}") String internalToken) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
-        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
         this.restClient = builder.clone()
                 .baseUrl(userServiceBaseUrl)
-                .requestFactory(factory)
+                .requestFactory(outboundHttp.requestFactory(connectTimeoutMs, readTimeoutMs))
                 .build();
         this.internalToken = internalToken;
     }

@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.notify;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.innbucks.marketplaceservice.testsupport.TestOutboundHttp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -64,7 +65,7 @@ class UserServiceMerchantAdminResolverContractTest {
     }
 
     private UserServiceMerchantAdminResolver resolver(String baseUrl, String token) {
-        return new UserServiceMerchantAdminResolver(RestClient.builder(), baseUrl, 2000, 5000, token);
+        return new UserServiceMerchantAdminResolver(TestOutboundHttp.POOL, RestClient.builder(), baseUrl, 2000, 5000, token);
     }
 
     @Test

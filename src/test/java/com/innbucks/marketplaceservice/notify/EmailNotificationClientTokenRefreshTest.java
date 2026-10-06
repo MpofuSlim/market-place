@@ -3,12 +3,12 @@ package com.innbucks.marketplaceservice.notify;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
+import com.innbucks.marketplaceservice.testsupport.TestOutboundHttp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.client.RestClient;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -61,7 +61,8 @@ class EmailNotificationClientTokenRefreshTest {
         props.setApiKey("test-api-key");
         props.setUsername("test-user");
         props.setPassword("test-pass");
-        return new EmailNotificationClient(RestClient.builder().baseUrl(wireMock.baseUrl()).build(),
+        return new EmailNotificationClient(
+                new NotificationClientConfig(props, new WhatsAppProperties()).innbucksNotifyRestClient(props, TestOutboundHttp.POOL),
                 props, new ObjectMapper());
     }
 

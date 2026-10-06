@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.catalog;
 import com.innbucks.marketplaceservice.api.ApiException;
 import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
+import com.innbucks.marketplaceservice.catalog.ImageVariantRenderer.RenderedVariant;
 import com.innbucks.marketplaceservice.catalog.ListingImageRepository.ImageMeta;
 import com.innbucks.marketplaceservice.catalog.dto.DeliveryTownFee;
 import com.innbucks.marketplaceservice.catalog.dto.ListingCreateRequest;
@@ -31,6 +32,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -112,6 +114,7 @@ public class ListingService {
     private final ListingStock listingStock;
     private final ListingVariantService variants;
     private final ImagePixelBudget imageBudget;
+    private final ListingImageVariants imageVariants;
     private final String cellCurrency;
     private final int maxPerMerchant;
 
@@ -127,6 +130,7 @@ public class ListingService {
                           ListingStock listingStock,
                           ListingVariantService variants,
                           ImagePixelBudget imageBudget,
+                          ListingImageVariants imageVariants,
                           @Value("${innbucks.currency}") String cellCurrency,
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
@@ -141,6 +145,7 @@ public class ListingService {
         this.listingStock = listingStock;
         this.variants = variants;
         this.imageBudget = imageBudget;
+        this.imageVariants = imageVariants;
         this.cellCurrency = cellCurrency;
         this.maxPerMerchant = maxPerMerchant;
     }
@@ -206,6 +211,9 @@ public class ListingService {
         for (MultipartFile extra : extras) {
             validated.add(validateImage(extra));
         }
+        // Renditions are made once every file has passed, and before anything
+        // is written, so no row lock is held across a decode.
+        validated.replaceAll(this::withVariants);
         Instant now = Instant.now();
         Listing listing = Listing.builder()
                 .id(UUID.randomUUID())
@@ -527,19 +535,22 @@ public class ListingService {
     @Transactional
     public ListingResponse uploadImage(AuthenticatedUser caller, UUID listingId, MultipartFile file) {
         Listing listing = managedListing(caller, listingId);
-        ValidatedImage validated = validateImage(file);
+        ValidatedImage validated = withVariants(validateImage(file));
         Instant now = Instant.now();
-        ListingImage primary = listingImageRepository
-                .findByListingIdAndPrimaryImageTrue(listing.getId())
+        ImageMeta primary = listingImageRepository
+                .findMetaByListingIdAndPrimaryImageTrue(listing.getId())
                 .orElse(null);
         if (primary != null) {
             // In-place replace keeps the imageId (and thus any cached
             // per-image URL semantics identical to the old single-image
-            // column replace).
-            primary.setImageBytes(validated.bytes());
-            primary.setContentType(validated.contentType());
-            primary.setCreatedAt(now);
-            listingImageRepository.save(primary);
+            // column replace). The bulk UPDATE runs first and takes the row
+            // lock; the image's renditions are then rewritten in this same
+            // transaction, so the old ones can never be served for the new
+            // bytes (V25).
+            Instant createdAt = imageTimestamp(now);
+            listingImageRepository.replaceImage(primary.getId(), validated.bytes(),
+                    validated.contentType(), createdAt);
+            imageVariants.store(primary.getId(), createdAt, validated.variants());
         } else {
             requireGalleryCapacity(listing.getId());
             insertImage(listing.getId(), validated, true, now);
@@ -569,6 +580,7 @@ public class ListingService {
             throw ApiException.conflict("image_limit_reached",
                     "A listing can have at most 10 images");
         }
+        validated = withVariants(validated);
         Instant now = Instant.now();
         ListingImage saved = insertImage(listing.getId(), validated, count == 0, now);
         touch(listing, now);
@@ -704,6 +716,7 @@ public class ListingService {
 
     private ListingImage insertImageAt(UUID listingId, ValidatedImage image, boolean primary,
                                        int position, Instant now) {
+        Instant createdAt = imageTimestamp(now);
         ListingImage row = ListingImage.builder()
                 .id(UUID.randomUUID())
                 .listingId(listingId)
@@ -711,10 +724,31 @@ public class ListingService {
                 .contentType(image.contentType())
                 .primaryImage(primary)
                 .position(position)
-                .createdAt(now)
+                .createdAt(createdAt)
                 .build();
         listingImageRepository.save(row);
+        // The renditions reference the image row (FK), and are written over
+        // plain JDBC on this transaction's connection: the row's INSERT has to
+        // reach the database first.
+        listingImageRepository.flush();
+        imageVariants.store(row.getId(), createdAt, image.variants());
         return row;
+    }
+
+    /**
+     * A stored rendition matches its image by {@code created_at} (V25), so the
+     * value written must be exactly the value read back: Postgres keeps
+     * microseconds, and the two write paths (Hibernate, JDBC) must not round a
+     * nanosecond clock differently.
+     */
+    private static Instant imageTimestamp(Instant now) {
+        return now.truncatedTo(ChronoUnit.MICROS);
+    }
+
+    /** Renders every servable rendition of a validated upload (no database). */
+    private ValidatedImage withVariants(ValidatedImage image) {
+        return new ValidatedImage(image.bytes(), image.contentType(),
+                imageVariants.render(image.bytes(), image.contentType()));
     }
 
     /**
@@ -724,6 +758,9 @@ public class ListingService {
      * markPrimary can never collide with the removed row.
      */
     private void removeAndPromote(UUID listingId, UUID imageId, boolean wasPrimary) {
+        // Explicit, in this transaction; ON DELETE CASCADE is the backstop for
+        // a pod on the previous image deleting a row.
+        imageVariants.delete(imageId);
         listingImageRepository.deleteImageRow(imageId);
         if (wasPrimary) {
             listingImageRepository.findFirstByListingIdOrderByPositionAscCreatedAtAsc(listingId)
@@ -915,8 +952,13 @@ public class ListingService {
     // Image validation (event-service applyBanner, error codes ours)
     // ------------------------------------------------------------------
 
-    /** Validated upload: bytes + normalized content type, ready to store. */
-    record ValidatedImage(byte[] bytes, String contentType) {}
+    /** Validated upload: bytes + normalized content type, ready to store;
+     *  {@code variants} are its renditions once rendered (null before). */
+    record ValidatedImage(byte[] bytes, String contentType, List<RenderedVariant> variants) {
+        ValidatedImage(byte[] bytes, String contentType) {
+            this(bytes, contentType, null);
+        }
+    }
 
     private ValidatedImage validateImage(MultipartFile file) {
         if (file == null || file.isEmpty()) {

@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.seller;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.innbucks.marketplaceservice.config.OutboundHttp;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -8,7 +9,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatusCode;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.client.RestClient;
@@ -122,6 +122,7 @@ public class UserServiceOrganizationNameResolver implements MerchantNameResolver
 
     @Autowired
     public UserServiceOrganizationNameResolver(
+            OutboundHttp outboundHttp,
             @Qualifier("loadBalancedRestClientBuilder") RestClient.Builder builder,
             @Value("${user-service.base-url:http://user-service}") String userServiceBaseUrl,
             @Value("${marketplace.merchant-names.connect-timeout-ms:500}") int connectTimeoutMs,
@@ -130,12 +131,13 @@ public class UserServiceOrganizationNameResolver implements MerchantNameResolver
             @Value("${marketplace.merchant-names.failure-backoff-seconds:30}") long failureBackoffSeconds,
             @Value("${innbucks.internal-api-token:}") String internalToken,
             MeterRegistry meterRegistry) {
-        this(builder, userServiceBaseUrl, connectTimeoutMs, readTimeoutMs, ttlSeconds,
+        this(outboundHttp, builder, userServiceBaseUrl, connectTimeoutMs, readTimeoutMs, ttlSeconds,
                 failureBackoffSeconds, internalToken, meterRegistry, Clock.systemUTC());
     }
 
     /** Full constructor; tests pass a controllable clock. */
-    UserServiceOrganizationNameResolver(RestClient.Builder builder,
+    UserServiceOrganizationNameResolver(OutboundHttp outboundHttp,
+                                        RestClient.Builder builder,
                                         String userServiceBaseUrl,
                                         int connectTimeoutMs,
                                         int readTimeoutMs,
@@ -144,12 +146,9 @@ public class UserServiceOrganizationNameResolver implements MerchantNameResolver
                                         String internalToken,
                                         MeterRegistry meterRegistry,
                                         Clock clock) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
-        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
         this.restClient = builder.clone()
                 .baseUrl(userServiceBaseUrl)
-                .requestFactory(factory)
+                .requestFactory(outboundHttp.requestFactory(connectTimeoutMs, readTimeoutMs))
                 .build();
         this.internalToken = internalToken;
         this.ttl = Duration.ofSeconds(Math.max(ttlSeconds, 0));

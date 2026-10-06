@@ -1,14 +1,12 @@
 package com.innbucks.marketplaceservice.notify;
 
 import com.innbucks.marketplaceservice.config.CorrelationIdPropagatingInterceptor;
+import com.innbucks.marketplaceservice.config.OutboundHttp;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
-
-import java.time.Duration;
 
 /**
  * RestClient beans for the two outbound notification gateways: the InnBucks
@@ -17,6 +15,9 @@ import java.time.Duration;
  * WhatsApp gateway. Both are external services reached by an explicit
  * {@code base-url} (not the discovery map), with the same correlation-ID propagation the
  * fleet uses so an order's traceId follows the notification across the wire.
+ * Both draw their connections from the service's one pool ({@link OutboundHttp})
+ * and keep their own connect/read timeouts; the contract tests build them
+ * through these same methods.
  *
  * <p>Graceful degradation (booking-service posture): blank credentials mean
  * that channel is DISABLED — {@link #logChannelStatus()} WARNs once at boot,
@@ -40,28 +41,24 @@ public class NotificationClientConfig {
     }
 
     @Bean("innbucksNotifyRestClient")
-    public RestClient innbucksNotifyRestClient(InnbucksNotifyProperties properties) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofMillis(properties.getConnectTimeoutMs()));
-        factory.setReadTimeout(Duration.ofMillis(properties.getReadTimeoutMs()));
+    public RestClient innbucksNotifyRestClient(InnbucksNotifyProperties properties, OutboundHttp outboundHttp) {
         return RestClient.builder()
                 .baseUrl(properties.getBaseUrl())
-                .requestFactory(factory)
+                .requestFactory(outboundHttp.requestFactory(
+                        properties.getConnectTimeoutMs(), properties.getReadTimeoutMs()))
                 .requestInterceptor(new CorrelationIdPropagatingInterceptor())
                 .build();
     }
 
     @Bean("whatsAppRestClient")
-    public RestClient whatsAppRestClient(WhatsAppProperties properties) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofMillis(properties.getConnectTimeoutMs()));
-        factory.setReadTimeout(Duration.ofMillis(properties.getReadTimeoutMs()));
+    public RestClient whatsAppRestClient(WhatsAppProperties properties, OutboundHttp outboundHttp) {
         return RestClient.builder()
                 // A blank base-url would make RestClient reject every call with a
                 // cryptic "URI is not absolute"; the client never sends when the
                 // channel is unconfigured, but the bean must still construct.
                 .baseUrl(properties.isConfigured() ? properties.getBaseUrl() : "http://whatsapp-disabled.invalid")
-                .requestFactory(factory)
+                .requestFactory(outboundHttp.requestFactory(
+                        properties.getConnectTimeoutMs(), properties.getReadTimeoutMs()))
                 .requestInterceptor(new CorrelationIdPropagatingInterceptor())
                 .build();
     }

@@ -3,12 +3,12 @@ package com.innbucks.marketplaceservice.notify;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
+import com.innbucks.marketplaceservice.testsupport.TestOutboundHttp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.client.RestClient;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
@@ -66,7 +66,7 @@ class MarketplaceNotifyClientContractTest {
         // Notification-API-only constructor (no SMTP sender): the contract
         // under test is the API wire format.
         return new EmailNotificationClient(
-                RestClient.builder().baseUrl("http://localhost:" + port).build(),
+                new NotificationClientConfig(props, new WhatsAppProperties()).innbucksNotifyRestClient(props, TestOutboundHttp.POOL),
                 props, new ObjectMapper());
     }
 
@@ -164,7 +164,8 @@ class MarketplaceNotifyClientContractTest {
         InnbucksNotifyProperties blank = new InnbucksNotifyProperties();
         blank.setBaseUrl("http://localhost:" + wireMock.port());
         EmailNotificationClient client = new EmailNotificationClient(
-                RestClient.builder().baseUrl("http://localhost:" + wireMock.port()).build(),
+                new NotificationClientConfig(blank, new WhatsAppProperties())
+                        .innbucksNotifyRestClient(blank, TestOutboundHttp.POOL),
                 blank, new ObjectMapper());
 
         org.assertj.core.api.Assertions.assertThat(client.isConfigured()).isFalse();
