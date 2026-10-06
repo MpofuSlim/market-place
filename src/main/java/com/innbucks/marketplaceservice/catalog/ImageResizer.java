@@ -25,13 +25,16 @@ import java.util.Set;
  * Downscales a stored catalogue image on read, so a 3MB poster stops being
  * shipped into a 120px grid tile on metered mobile data.
  *
- * <p><b>Resize on READ, not a stored thumbnail.</b> A {@code thumbnail_bytes}
- * column would be faster per request but leaves every image already in the
- * catalogue without one until a backfill runs — this works for the whole
- * existing gallery the moment it deploys, needs no migration, and cannot drift
- * from the original. The cost is CPU per miss, which the endpoint's existing
- * 1-hour public cache absorbs: the query string is part of the cache key, so
- * each (image, width) pair is decoded once per hour at most.
+ * <p><b>Run once per (image, width), and stored (V25).</b> This used to run on
+ * EVERY {@code ?w=} request — a full-original BYTEA read, a decode, a scale and
+ * an encode per hit, absorbed only by downstream caches. Now
+ * {@link ImageVariantRenderer} calls it at upload for every allowed width and
+ * {@link ListingImageVariants} stores the result in
+ * {@code listing_image_variant}; a read is one row by key. Images stored before
+ * V25 (and widths an upload could not get a decode permit for) go through it
+ * on their first request instead, and are stored then. The call and its
+ * arguments are unchanged, so a stored rendition is byte-identical to what the
+ * per-request resize returned.
  *
  * <p><b>Widths are an ALLOW-LIST, deliberately.</b> An arbitrary {@code ?w=}
  * lets one caller mint unlimited distinct cache entries and force a decode for

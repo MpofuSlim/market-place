@@ -164,7 +164,7 @@ class SuperAdminAndImageFlowIT extends PostgresTestContainer {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType("image/png"))
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"))
-                .andExpect(header().string("Cache-Control", "max-age=3600, public"))
+                .andExpect(header().string("Cache-Control", "max-age=3600, must-revalidate, public"))
                 .andExpect(content().bytes(PNG_BYTES));
         mockMvc.perform(get(imageUrl))
                 .andExpect(status().isOk())

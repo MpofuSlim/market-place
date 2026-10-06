@@ -286,9 +286,12 @@ never change either casually.
   `image_dimensions_too_large`, default 50 MP (every phone's full-res mode,
   8160 x 6120) and 8192 px a side (`marketplace.listing.image-max-*`). The
   budget admits camera output; it is NOT the heap guard, so raising it needs no
-  more heap. An unreadable header is let through, as before, because the public
-  `?w=` resize re-reads the header FIRST and never decodes one it cannot read
-  or one over the budget (a pre-guard row): it serves the original. **What
+  more heap. An unreadable header is let through, as before, because the
+  resizer (at upload, or a pre-V25 image's first request) re-reads the header
+  FIRST and never decodes one it cannot read or one over the budget (a
+  pre-guard row): that rendition is stored as a pass-through of the original.
+  A rendition is decided ONCE, so lowering the budget later does not re-decide
+  renditions already stored. **What
   protects the ~450 MiB heap is the resizer**: a decode is subsampled to ~2x the
   target and may not exceed `ImageResizer.DECODE_CEILING_BYTES` (24 MiB, at the
   reader's own bytes per pixel — a 16-bit PNG is 8, not 4); a multi-scan
@@ -296,8 +299,8 @@ never change either casually.
   libjpeg allocates a full-resolution native coefficient buffer that
   subsampling cannot shrink (`ImageDimensions.jpegWholeImageBufferBytes`,
   ~150 MB for a 50 MP photo); and at most `image-resize-concurrency` (2)
-  decodes run at once, never waiting — none free serves the original with
-  `no-store`. Then a progressive bilinear `Graphics2D` scale replaces
+  decodes run at once — a read never waits (none free serves the original with
+  `no-store`), an upload waits up to 500 ms per rendition (V25, below). Then a progressive bilinear `Graphics2D` scale replaces
   `getScaledInstance`. Streams are `MemoryCacheImageInputStream`, never
   `ImageIO.createImageInputStream` (temp-file cache per request). Tests craft
   bombs by hand (`HeaderOnlyImages`), never through `BufferedImage` — and a
@@ -311,11 +314,85 @@ never change either casually.
   `GET /marketplace/catalog/{id}/image` (primary, unchanged contract) and
   `GET /marketplace/catalog/{id}/images/{imageId}` (any image; the
   (listingId, imageId) pair must match), both with the stored Content-Type +
-  `X-Content-Type-Options: nosniff` + 1h public cache — status-independent
-  by design (DRAFT owners need the preview; UUIDs are unguessable).
-  `ListingResponse.imageUrl` (primary, null when none) stays for
-  back-compat; `imageUrls` lists the whole gallery primary-first. The JSON
+  `X-Content-Type-Options: nosniff` + a strong `ETag` + `max-age=3600,
+  must-revalidate, public` — status-independent by design (DRAFT owners need
+  the preview; UUIDs are unguessable). How the bytes are stored and served is
+  the next bullet. `ListingResponse.imageUrl` (primary, null when none) stays
+  for back-compat; `imageUrls` lists the whole gallery primary-first. The JSON
   listing-create contract stays non-multipart (published FE contract).
+* **Images are served from STORED RENDITIONS (V25 `listing_image_variant`),
+  never resized or fully loaded per request.** Before V25 every image GET
+  loaded the whole `listing_image` row (the entity's `@Basic(LAZY)` bytes are
+  eager without bytecode enhancement) and every `?w=` GET decoded, scaled and
+  re-encoded the original. Now:
+  * **One row per (image, rendition)**: `original`, `w120`, `w240`, `w480`,
+    `w960` (`ImageVariant`, tied to `ImageResizer.ALLOWED_WIDTHS` and the V25
+    CHECK by `ImageVariantTest`). Arbitrary widths stay a 400, so the set is
+    closed and known at upload. A row is either the resized bytes
+    (`resized = true`) or a PASS-THROUGH marker (`resized = false`, `bytes`
+    NULL — never a second copy of the original) for every case the resizer
+    answers with the original: WebP, already narrower, over the pixel budget,
+    unreadable header, over the decode ceiling. `etag` = SHA-256 hex of the
+    bytes the request is answered with (the original's for a pass-through).
+  * **Made at upload, by the SAME call the read path made**
+    (`ImageVariantRenderer` → `ImageResizer.resize(bytes, type, w, budget,
+    permits)`), so a stored rendition is byte-identical to what the
+    per-request resize returned on the same JDK (`ImageVariantRendererTest`
+    compares them). Rendering runs after validation and BEFORE the listing
+    transaction writes anything (no row lock across a decode); rows are
+    written in the same transaction as the image row (after a `flush()` —
+    they are JDBC, the image row is JPA, and the FK needs the row first).
+    Uploads share the ONE `ImageDecodePermits` semaphore with reads, through
+    `waitingUpTo(500ms)`; a width that gets no permit is left out and made by
+    its first request.
+  * **Serving** (`ListingImageVariants.serve`): one indexed query —
+    `listing_image JOIN listing_image_variant` by `(image_id, variant)`, which
+    selects the rendition's columns only — answers a resized rendition. A
+    pass-through then reads `image_bytes` by primary key (it IS the answer).
+    A matching `If-None-Match` is a 304 from the stored tag alone, without
+    reading any bytes. Errors keep their old order: 404 `image_not_found`
+    first, then 400 `unsupported_image_width`.
+  * **Freshness is `source_created_at = listing_image.created_at`**, checked
+    in that join. A primary replace overwrites the row in place (same id —
+    URLs unchanged) with a new `created_at` and, in the same transaction,
+    rewrites the renditions (bulk `replaceImage` UPDATE first, so the row lock
+    is taken before the delete+insert). A rendition of older bytes is never
+    served even if nothing deleted it — which is what keeps a replace by a pod
+    on the PREVIOUS image (which knows nothing of this table) correct during a
+    rolling deploy. Image `created_at` is truncated to microseconds so the JPA
+    and JDBC writes cannot round it differently.
+  * **Images stored before V25 are rendered on first request** (same resizer,
+    same permits, never waiting) and stored with an `INSERT … ON CONFLICT
+    (image_id, variant) DO UPDATE … WHERE source_created_at IS DISTINCT FROM
+    EXCLUDED.source_created_at`, behind `SELECT 1 … FOR SHARE SKIP LOCKED` on
+    the image row at the version it rendered: concurrent first requests all
+    succeed and store one row; a rendition of bytes replaced meanwhile is not
+    stored; a row being replaced or deleted is skipped, never waited on. The
+    write is best-effort in its own short transaction
+    (`marketplace.listing.image.variant.lazy_store_failed`); no permit free =
+    the original `no-store` without an ETag, nothing stored, exactly as before.
+    There is no background backfill — the first request per (image, width)
+    pays once. `marketplace.listing.image.resizes{trigger=upload|lazy}` counts
+    every resize; `lazy` flattening out means the backlog has converged.
+  * **Delete** removes the renditions explicitly in the same transaction;
+    `ON DELETE CASCADE` is the backstop (and covers the previous image).
+  * **Caching**: `ETag` + `max-age=3600, must-revalidate, public`. NOT
+    `immutable`: both URLs are OVERWRITABLE (in-place replace keeps the image
+    id; a primary swap or delete re-points `/{id}/image`), so after the hour a
+    cache must revalidate — which the ETag makes a body-less 304.
+  * **Never add a finder that returns the `ListingImage` entity for a read
+    path** — it loads `image_bytes`. `ListingImageRepository` has none on
+    purpose; metadata uses `ImageMeta`, bytes go through
+    `ListingImageVariantRepository`, whose every statement names its columns.
+    `ListingImageVariantsIT` asks Postgres itself (`pg_stat_statements`,
+    preloaded by `PostgresTestContainer`) and fails if any listing read or
+    stored-rendition GET runs a statement mentioning `image_bytes`.
+  * Pinned by `ListingImageVariantsTest` (serving/storing rules over a spied
+    real renderer — "the resizer was not invoked" is verified),
+    `ImageVariantRendererTest`, `ImageEtagsTest`, the variant cases in
+    `ListingServiceTest`, and `ListingImageVariantsIT` (real Postgres: upload
+    rows, no resize on GET, lazy once, 8 concurrent first requests, 304,
+    replace/delete, the `image_bytes` statement check).
 * **Every multipart upload is POST, and ONLY POST** (owner decision,
   2026-09-29). Cloudflare's WAF on the `innbucks.co.zw` zone refuses `PUT`
   with a `multipart/form-data` body before it reaches origin (measured on

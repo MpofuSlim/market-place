@@ -62,8 +62,12 @@ public abstract class PostgresTestContainer {
                     // and red on CI. The test profile also keeps idle pools
                     // small (application-test.yaml); this is the second layer.
                     // fsync=off is the container's own default, restated
-                    // because withCommand replaces it.
-                    .withCommand("postgres", "-c", "fsync=off", "-c", "max_connections=200");
+                    // because withCommand replaces it. pg_stat_statements lets
+                    // an IT ask the SERVER which statements ran (ListingImageVariantsIT:
+                    // no listing read selects image bytes); it records nothing
+                    // until a test creates the extension.
+                    .withCommand("postgres", "-c", "fsync=off", "-c", "max_connections=200",
+                            "-c", "shared_preload_libraries=pg_stat_statements");
 
     @BeforeAll
     static void startContainer() {
@@ -118,6 +122,7 @@ public abstract class PostgresTestContainer {
                                market_order_delivery_fee, market_order_collection_point,
                                market_order_seller,
                                market_order,
+                               listing_image_variant,
                                listing_image, listing_review, listing_favorite,
                                listing_report, listing_delivery_town, cart_item,
                                cart_variant_item, listing_variant, listing,
