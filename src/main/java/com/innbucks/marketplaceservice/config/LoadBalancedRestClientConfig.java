@@ -14,6 +14,11 @@ import org.springframework.web.client.RestClient;
  * InnRewards). {@code UserNotifyGateway} clones this builder so its
  * {@code http://user-service} calls are discovery-routed instead of hitting a
  * hardcoded host:port.
+ *
+ * <p>Both builders start on the service's pooled request factory
+ * ({@link OutboundHttp}) with its default timeouts, so nothing built from them
+ * can fall back to Spring's classpath-detected default factory. A client that
+ * needs its own timeouts sets its own pooled factory on a clone.
  */
 @Configuration
 public class LoadBalancedRestClientConfig {
@@ -31,13 +36,13 @@ public class LoadBalancedRestClientConfig {
     @Bean
     @Primary
     @Scope("prototype")
-    public RestClient.Builder restClientBuilder() {
-        return RestClient.builder();
+    public RestClient.Builder restClientBuilder(OutboundHttp outboundHttp) {
+        return RestClient.builder().requestFactory(outboundHttp.requestFactory());
     }
 
     @Bean
     @LoadBalanced
-    public RestClient.Builder loadBalancedRestClientBuilder() {
-        return RestClient.builder();
+    public RestClient.Builder loadBalancedRestClientBuilder(OutboundHttp outboundHttp) {
+        return RestClient.builder().requestFactory(outboundHttp.requestFactory());
     }
 }
