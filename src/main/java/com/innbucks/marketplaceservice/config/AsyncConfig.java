@@ -171,6 +171,9 @@ public class AsyncConfig implements AsyncConfigurer {
         executor.setMaxPoolSize(threads);
         executor.setQueueCapacity(queueCapacity);
         executor.setThreadNamePrefix(threadNamePrefix);
+        // Each task runs inside the submitter's trace (CLAUDE.md "Tracing"). Only
+        // wraps the task: queueing and the rejection policy are unchanged.
+        executor.setTaskDecorator(TracingConfig.traceContextTaskDecorator());
         executor.setRejectedExecutionHandler(new MeteredRejectionPolicy(name, overflow, registry));
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);

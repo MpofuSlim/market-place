@@ -260,6 +260,22 @@
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
         </dependency>
+        <!-- Distributed tracing (fleet convention, CLAUDE.md "Tracing"). The OTel
+             bridge wires the Micrometer Observation API onto an OpenTelemetry SDK;
+             the OTLP exporter ships spans to OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and
+             exports NOTHING while that is blank. Sampling: TRACING_SAMPLING_PROBABILITY
+             (default 0.1).
+             spring-boot-micrometer-tracing-opentelemetry is the Boot 4 module that
+             holds the tracing AUTO-CONFIGURATION. Boot 4 split it out of the
+             actuator, so with only the two libraries below on the classpath there
+             was no Tracer at all: no ids in the logs, nothing propagated. Not the
+             spring-boot-starter-opentelemetry starter: that also brings
+             micrometer-registry-otlp, which pushes metrics to localhost:4318 by
+             default and logs a failure every step. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-tracing-bridge-otel</artifactId>

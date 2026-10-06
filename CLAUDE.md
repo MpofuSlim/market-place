@@ -2191,6 +2191,70 @@ with exact diffs in **`docs/fleet-wiring.md`**:
   `METRICS_SCRAPE_TOKEN`) are provisioned from the cell's secret — rotation
   is a cross-repo operation.
 
+## Tracing
+
+**Distributed tracing is Micrometer Tracing over OpenTelemetry, with W3C
+`traceparent`, the same convention in every fleet service (ticketing-system,
+InnRewards, innbucks-loans).** Ids are always generated and propagated; **spans
+are exported only when a collector is named.**
+
+* **Dependencies.** `spring-boot-micrometer-tracing-opentelemetry` (Boot 4's
+  tracing AUTO-CONFIGURATION — Boot 4 moved it out of the actuator, so the two
+  libraries alone gave no Tracer at all), `micrometer-tracing-bridge-otel` and
+  `opentelemetry-exporter-otlp`, all BOM-managed. **Not**
+  `spring-boot-starter-opentelemetry`: it also brings `micrometer-registry-otlp`,
+  which pushes metrics to `localhost:4318` and logs a failure every step.
+* **Env.** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (blank = export nothing) and
+  `TRACING_SAMPLING_PROBABILITY` (default `0.1`; parent-based, so an incoming
+  sampled flag wins). Both come from the shared `cell-zw` ConfigMap that
+  ticketing-system owns. Boot maps the endpoint variable itself — falling back
+  to `OTEL_EXPORTER_OTLP_ENDPOINT` — and skips an EMPTY one.
+* **Never put the endpoint in `application.yaml`.** `endpoint:
+  ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:}` defines the property as `""`, which
+  satisfies the exporter's `@ConditionalOnProperty` and builds an exporter with
+  no URL. `TracingExportGateTest` fails if the key appears.
+* **`management.tracing.export.enabled` stays `true`.** In Boot 4 `false` does
+  not just stop export — it swaps in a no-op propagator, so nothing is
+  extracted or injected and every hop starts a new trace. Export is switched
+  off by the missing endpoint, never by this. (Boot 4 also dropped
+  `management.tracing.enabled` and `management.otlp.tracing.*`; the old
+  `TRACING_ENABLED` / `TRACE_SAMPLE` / `OTLP_ENDPOINT` variables bound nothing.)
+  The same trap is why an IT asserting propagation needs `@AutoConfigureTracing`
+  (Boot's test support sets that switch false otherwise).
+* **Logs.** `traceId` / `spanId` are in the MDC for every line written inside a
+  request or an `@Async` task, in both formats (`logback-spring.xml`: the plain
+  pattern and the JSON `includeMdcKeyName`s). `correlationId` is separate and
+  unchanged. Logs themselves are never
+  exported over OTLP (`management.logging.export.otlp.enabled: false`), even if
+  the generic `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+* **Internal calls carry `traceparent`.** `TracingConfig` hands the
+  `ObservationRegistry` to every `@LoadBalanced` `RestClient.Builder` (a
+  post-processor, the way LoadBalancer adds its interceptor), so the
+  user-service calls (`UserNotifyGateway`, `UserServiceOrganizationNameResolver`,
+  `UserServiceMerchantAdminResolver`) are observed. A new internal client should
+  clone that builder.
+* **Partners NEVER get it — enforced by destination, not by builder.** Boot's
+  sender handler is replaced by one over `FleetOnlyPropagator`, which writes
+  trace headers only to a host that is a discovery name (`*-service`, no dot).
+  The InnBucks notification API and WhatsApp are dotted hosts, so even a
+  partner client built from an observed builder sends nothing. Partner WAFs
+  have refused unknown headers before. Both partner contract tests pin
+  `withoutHeader("traceparent")`.
+* **`@Async` keeps the trace.** `AsyncConfig.boundedPool` decorates all three
+  pools with `TracingConfig.traceContextTaskDecorator()` — a
+  `ContextPropagatingTaskDecorator` scoped to the OBSERVATION only. The default
+  one snapshots every registered `ThreadLocalAccessor`, and Spring Security
+  registers one, so it would hand the caller's authentication to the
+  notification threads. `MeteredRejectionPolicy` and the pool sizes are
+  untouched.
+* **No response compression here.** It is done once at the ticketing
+  api-gateway / edge; compressing here too would double-encode.
+* Pinned by `TracingPropagationIT` (real context: incoming `traceparent`
+  continued into the MDC, the user-service call through the discovery map
+  carries it, WhatsApp and an observed client to a non-fleet host do not, all
+  three pools and `@Async` keep it, no exporter with no endpoint),
+  `TracingExportGateTest` and `FleetOnlyPropagatorTest`.
+
 ## Outbound HTTP clients are pooled
 
 Every outbound `RestClient` draws its connections from ONE Apache httpclient5

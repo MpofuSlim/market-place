@@ -102,7 +102,11 @@ class MarketplaceNotifyClientContractTest {
                 .withRequestBody(matchingJsonPath("$.message",
                         equalTo("Your InnBucks Marketplace order MKT-1 (USD 25.99) is confirmed. Ref MKT-1")))
                 .withRequestBody(matchingJsonPath("$.destinationMsisdn", equalTo("+263771234567")))
-                .withRequestBody(matchingJsonPath("$.reference", equalTo("MKT-1"))));
+                .withRequestBody(matchingJsonPath("$.reference", equalTo("MKT-1")))
+                // The InnBucks platform is a partner: it never receives our trace
+                // (CLAUDE.md "Tracing"), on the login or on the send.
+                .withoutHeader("traceparent"));
+        wireMock.verify(postRequestedFor(urlEqualTo(LOGIN)).withoutHeader("traceparent"));
     }
 
     @Test
