@@ -76,7 +76,11 @@ class WhatsAppNotificationClientContractTest {
                 .withHeader("x-api-key", equalTo("test-api-key"))
                 .withRequestBody(matchingJsonPath("$.to", equalTo("+263771234567")))
                 .withRequestBody(matchingJsonPath("$.notification",
-                        equalTo("Your InnBucks Marketplace order MKT-1 (USD 25.99) is confirmed. Ref MKT-1"))));
+                        equalTo("Your InnBucks Marketplace order MKT-1 (USD 25.99) is confirmed. Ref MKT-1")))
+                // A partner never receives our trace (CLAUDE.md "Tracing"): partner
+                // WAFs have refused headers they did not expect.
+                .withoutHeader("traceparent")
+                .withoutHeader("tracestate"));
     }
 
     @Test
