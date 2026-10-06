@@ -1,15 +1,14 @@
 package com.innbucks.marketplaceservice.notify;
 
+import com.innbucks.marketplaceservice.config.OutboundHttp;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -40,18 +39,16 @@ public class UserNotifyGateway {
     private final String internalToken;
     private final MarketplaceMetrics metrics;
 
-    public UserNotifyGateway(@Qualifier("loadBalancedRestClientBuilder") RestClient.Builder builder,
+    public UserNotifyGateway(OutboundHttp outboundHttp,
+                             @Qualifier("loadBalancedRestClientBuilder") RestClient.Builder builder,
                              @Value("${user-service.base-url:http://user-service}") String userServiceBaseUrl,
                              @Value("${user-service.connect-timeout-ms:2000}") int connectTimeoutMs,
                              @Value("${user-service.read-timeout-ms:5000}") int readTimeoutMs,
                              @Value("${innbucks.internal-api-token:}") String internalToken,
                              MarketplaceMetrics metrics) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
-        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
         this.restClient = builder.clone()
                 .baseUrl(userServiceBaseUrl)
-                .requestFactory(factory)
+                .requestFactory(outboundHttp.requestFactory(connectTimeoutMs, readTimeoutMs))
                 .build();
         this.internalToken = internalToken;
         this.metrics = metrics;

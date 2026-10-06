@@ -2114,6 +2114,45 @@ with exact diffs in **`docs/fleet-wiring.md`**:
   `METRICS_SCRAPE_TOKEN`) are provisioned from the cell's secret — rotation
   is a cross-repo operation.
 
+## Outbound HTTP clients are pooled
+
+Every outbound `RestClient` draws its connections from ONE Apache httpclient5
+pool, `config/OutboundHttp` (`PoolingHttpClientConnectionManager`, sized by
+`outbound-http.*`: 50 total / 20 per route by default, plus idle and expired
+eviction, a connection time-to-live and validate-after-inactivity). Before it,
+every client used a `SimpleClientHttpRequestFactory`: a new TCP (and TLS)
+connection per call, and nothing bounding how many.
+
+- **No per-call clients, and no default factory.** Get a factory from
+  `OutboundHttp.requestFactory(connectMs, readMs)` (or `requestFactory()` for the
+  shared defaults) and set it on the builder. Never `new
+  SimpleClientHttpRequestFactory()`, never `RestClient.create()` / a bare
+  `RestClient.builder()` without a factory: Spring then picks one from the
+  classpath, which is how a client once moved onto the JDK `HttpClient`
+  unnoticed. Both `RestClient.Builder` beans already start on the pool.
+- **A client keeps its own timeouts.** The connect timeout rides on each
+  request (Spring 7's factory has no connect-timeout setter; httpclient5 still
+  honours one on the request config); a zero or missing value falls back to the
+  shared default, never to "wait forever". The pool adds a
+  connection-request timeout (2s, capped at the client's own connect timeout):
+  past it a call fails as an I/O error.
+- **No automatic retries** (`disableAutomaticRetries()`). httpclient5's default
+  re-sends an idempotent request after an I/O error and ANY request after a
+  429/503 — a second SMS, a second login, a second payout notice. A retry is the caller's decision.
+- **HTTP/1.1.** The classic httpclient5 transport never negotiates HTTP/2 (the
+  JDK `HttpClient` did, and broke the WireMock contract tests with `RST_STREAM`).
+- Also kept from `HttpURLConnection`: redirects followed for GET only, no cookie
+  store (one client serves every upstream), no added `Accept-Encoding`, system
+  proxy/TLS properties honoured. A factory's `destroy()` never closes the shared
+  client; the context closes it.
+- Pool metrics: `httpcomponents.httpclient.pool.*{httpclient=outbound}`. A
+  sustained `total.pending` above zero means callers queue for a connection.
+- Contract tests build their client through the same config method or
+  constructor, on `testsupport/TestOutboundHttp.POOL`. Fleet copy: the same
+  class lives in InnRewards and innbucks-loans; change them together. Pinned by
+  `OutboundHttpTest` (the wire behaviour) and `OutboundHttpWiringTest` (every
+  client is on the pool with its own timeouts).
+
 ## Notifications (fleet copies — do not invent wire contracts)
 
 The `notify/` package is a FAITHFUL COPY of the ticketing fleet's proven

@@ -3,6 +3,7 @@ package com.innbucks.marketplaceservice.seller;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.innbucks.marketplaceservice.support.PostgresTestContainer;
 import com.innbucks.marketplaceservice.support.TestJwts;
+import com.innbucks.marketplaceservice.testsupport.TestOutboundHttp;
 import com.jayway.jsonpath.JsonPath;
 import com.zaxxer.hikari.HikariDataSource;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -113,7 +114,7 @@ class NameLookupHoldsNoConnectionIT extends PostgresTestContainer {
         @Primary
         GatedResolver gatedResolver() {
             // ttl 0: every request asks, so no case can pass off a cache hit.
-            return new GatedResolver(new UserServiceOrganizationNameResolver(
+            return new GatedResolver(new UserServiceOrganizationNameResolver(TestOutboundHttp.POOL,
                     RestClient.builder(), "http://localhost:" + REGISTRY.port(),
                     2000, 5000, 0, 30, TOKEN, new SimpleMeterRegistry(), Clock.systemUTC()));
         }
