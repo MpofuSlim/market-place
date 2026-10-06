@@ -101,7 +101,7 @@ class ImagePixelBudgetConfigIT extends PostgresTestContainer {
         mockMvc.perform(get("/marketplace/catalog/{id}/image", listingId).param("w", "240"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-Image-Resized", "false"))
-                .andExpect(header().string("Cache-Control", "max-age=3600, public"))
+                .andExpect(header().string("Cache-Control", "max-age=3600, must-revalidate, public"))
                 .andExpect(content().bytes(stored));
     }
 

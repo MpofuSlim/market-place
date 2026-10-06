@@ -85,6 +85,7 @@ class ListingServiceTest {
     private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private com.innbucks.marketplaceservice.seller.SellerService sellerService;
     private ListingImageRepository listingImageRepository;
+    private ListingImageVariants imageVariants;
     private CategoryRepository categoryRepository;
     private ListingDeliveryTownRepository deliveryTownRepository;
     private AuditService auditService;
@@ -95,6 +96,7 @@ class ListingServiceTest {
     void setUp() {
         listingRepository = mock(ListingRepository.class);
         listingImageRepository = mock(ListingImageRepository.class);
+        imageVariants = mock(ListingImageVariants.class);
         categoryRepository = mock(CategoryRepository.class);
         deliveryTownRepository = mock(ListingDeliveryTownRepository.class);
         auditService = mock(AuditService.class);
@@ -134,6 +136,7 @@ class ListingServiceTest {
                 new com.innbucks.marketplaceservice.catalog.variant.ListingVariantService(
                         variantRepository, listingStock, variantsEnabled, 50),
                 ImagePixelBudget.defaults(),
+                imageVariants,
                 "USD", MAX_PER_MERCHANT);
     }
 
@@ -885,7 +888,7 @@ class ListingServiceTest {
     void uploadCreatesThePrimaryWhenTheGalleryIsEmpty() {
         UUID listingId = UUID.randomUUID();
         stubOwned(listingId);
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
                 .thenReturn(Optional.empty());
         when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
 
@@ -908,30 +911,68 @@ class ListingServiceTest {
         UUID listingId = UUID.randomUUID();
         stubOwned(listingId);
         UUID imageId = UUID.randomUUID();
-        ListingImage existing = ListingImage.builder()
-                .id(imageId).listingId(listingId)
-                .imageBytes(new byte[]{9, 9, 9}).contentType("image/jpeg")
-                .primaryImage(true).position(0).createdAt(Instant.now())
-                .isNew(false)
-                .build();
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
-                .thenReturn(Optional.of(existing));
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.of(meta(imageId, listingId, true, 0)));
+        List<ImageVariantRenderer.RenderedVariant> rendered = List.of();
+        when(imageVariants.render(any(), eq("image/png"))).thenReturn(rendered);
 
         service.uploadImage(MERCHANT, listingId,
                 new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
 
         // Same row, new bytes/content type — cached per-image URLs stay valid.
-        assertEquals(imageId, existing.getId());
-        assertArrayEquals(pngBytes(), existing.getImageBytes());
-        assertEquals("image/png", existing.getContentType());
-        verify(listingImageRepository).save(existing);
+        // A bulk UPDATE (the old bytes are never loaded), THEN the image's
+        // renditions are rewritten for the new bytes, same transaction, same
+        // created_at stamp.
+        ArgumentCaptor<Instant> stamp = ArgumentCaptor.forClass(Instant.class);
+        InOrder order = inOrder(listingImageRepository, imageVariants);
+        order.verify(listingImageRepository).replaceImage(eq(imageId), eq(pngBytes()), eq("image/png"),
+                stamp.capture());
+        order.verify(imageVariants).store(imageId, stamp.getValue(), rendered);
+        verify(listingImageRepository, never()).save(any());
+    }
+
+    @Test
+    void anUploadStoresTheRenditionsItRenderedBeforeWriting() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
+        List<ImageVariantRenderer.RenderedVariant> rendered = List.of();
+        when(imageVariants.render(any(), eq("image/png"))).thenReturn(rendered);
+
+        service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes()));
+
+        ArgumentCaptor<ListingImage> saved = ArgumentCaptor.forClass(ListingImage.class);
+        InOrder order = inOrder(imageVariants, listingImageRepository);
+        order.verify(imageVariants).render(pngBytes(), "image/png");
+        order.verify(listingImageRepository).save(saved.capture());
+        // The image row reaches the database before its renditions (FK).
+        order.verify(listingImageRepository).flush();
+        order.verify(imageVariants).store(saved.getValue().getId(), saved.getValue().getCreatedAt(), rendered);
+        assertEquals(0, saved.getValue().getCreatedAt().getNano() % 1000,
+                "created_at is stamped at Postgres' microsecond precision");
+    }
+
+    @Test
+    void aRefusedUploadRendersNothing() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.countByListingId(listingId)).thenReturn(10L);
+
+        assertThrows(ApiException.class, () -> service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes())));
+        assertThrows(ApiException.class, () -> service.uploadImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "anim.gif", "image/gif", gifBytes())));
+
+        verify(imageVariants, never()).render(any(), any());
+        verify(imageVariants, never()).store(any(), any(), any());
     }
 
     @Test
     void uploadDeclaredContentTypeIsNormalisedToLowercase() {
         UUID listingId = UUID.randomUUID();
         stubOwned(listingId);
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
                 .thenReturn(Optional.empty());
         when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
 
@@ -1078,7 +1119,7 @@ class ListingServiceTest {
     void uploadExactlyAtTheTenMegabyteCapPassesTheSizeGate() throws Exception {
         UUID listingId = UUID.randomUUID();
         stubOwned(listingId);
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
                 .thenReturn(Optional.empty());
         when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
         MultipartFile atCap = mock(MultipartFile.class);
@@ -1112,7 +1153,7 @@ class ListingServiceTest {
     void superAdminUploadsAndDeletesAnyMerchantsImage() {
         UUID listingId = UUID.randomUUID();
         stubOwned(listingId);
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId))
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
                 .thenReturn(Optional.empty());
         when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
 
@@ -1226,7 +1267,9 @@ class ListingServiceTest {
         service.deleteGalleryImage(MERCHANT, listingId, primaryId);
 
         // Delete FIRST, then promote — the partial unique index depends on it.
-        InOrder inOrder = inOrder(listingImageRepository);
+        // The image's stored renditions go with it, in the same transaction.
+        InOrder inOrder = inOrder(imageVariants, listingImageRepository);
+        inOrder.verify(imageVariants).delete(primaryId);
         inOrder.verify(listingImageRepository).deleteImageRow(primaryId);
         inOrder.verify(listingImageRepository).markPrimary(survivorId);
     }

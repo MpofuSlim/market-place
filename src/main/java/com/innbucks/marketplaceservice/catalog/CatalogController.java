@@ -18,10 +18,13 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -49,8 +52,7 @@ import java.util.UUID;
 public class CatalogController {
 
     private final CatalogService catalogService;
-    private final ImagePixelBudget imageBudget;
-    private final ImageDecodePermits decodePermits;
+    private final ListingImageVariants imageVariants;
 
     /** Newest first: the Cotton Crew Tee (sold in sizes - priceCents is its
      *  "from" price, maxPriceCents the dearest option) above the speaker. */
@@ -593,10 +595,14 @@ public class CatalogController {
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
-                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h, except "
-                    + "no-store when a ?w= resize was skipped because the server was busy)",
+                    + "image/webp; X-Content-Type-Options: nosniff; a strong ETag; cacheable publicly for "
+                    + "1h then revalidated (max-age=3600, must-revalidate, public), except no-store "
+                    + "when a ?w= resize was skipped because the server was busy)",
                     content = @Content(mediaType = "image/png",
                             schema = @Schema(type = "string", format = "binary"))),
+            @ApiResponse(responseCode = "304", description = "Not modified: If-None-Match names "
+                    + "the current ETag of this image at this width. No body.",
+                    content = @Content),
             @ApiResponse(responseCode = "400", description = "Malformed id",
                     content = @Content(mediaType = "application/json",
                             examples = @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400))),
@@ -615,8 +621,11 @@ public class CatalogController {
                     + "WebP is served unresized (no JDK decoder), as is an image stored before "
                     + "the upload pixel limit that exceeds it, a large progressive JPEG, or any image while "
                     + "the server is busy resizing others — check X-Image-Resized.", example = "240")
-            @RequestParam(value = "w", required = false) Integer w) {
-        return imageResponse(catalogService.getImage(parseListingId(id)), w);
+            @RequestParam(value = "w", required = false) Integer w,
+            @Parameter(description = "Optional ETag(s) from an earlier response; a match is "
+                    + "answered 304 with no body.", example = "\"9f2c…\"")
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
+        return imageResponse(imageVariants.serve(parseListingId(id), null, w, ifNoneMatch));
     }
 
     @Operation(summary = "Get one gallery image",
@@ -627,10 +636,14 @@ public class CatalogController {
     @SecurityRequirements({})
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Image bytes (image/jpeg, image/png or "
-                    + "image/webp; X-Content-Type-Options: nosniff; cacheable publicly for 1h, except "
-                    + "no-store when a ?w= resize was skipped because the server was busy)",
+                    + "image/webp; X-Content-Type-Options: nosniff; a strong ETag; cacheable publicly for "
+                    + "1h then revalidated (max-age=3600, must-revalidate, public), except no-store "
+                    + "when a ?w= resize was skipped because the server was busy)",
                     content = @Content(mediaType = "image/png",
                             schema = @Schema(type = "string", format = "binary"))),
+            @ApiResponse(responseCode = "304", description = "Not modified: If-None-Match names "
+                    + "the current ETag of this image at this width. No body.",
+                    content = @Content),
             @ApiResponse(responseCode = "400", description = "Malformed listing or image id",
                     content = @Content(mediaType = "application/json", examples = {
                             @ExampleObject(name = "invalid-id", value = EXAMPLE_INVALID_ID_400),
@@ -651,31 +664,45 @@ public class CatalogController {
                     schema = @Schema(type = "string", format = "uuid"))
             @PathVariable("imageId") String imageId,
             @Parameter(description = "Optional downscale width — see GET /{id}/image.", example = "240")
-            @RequestParam(value = "w", required = false) Integer w) {
-        return imageResponse(
-                catalogService.getImageById(parseListingId(id), parseImageId(imageId)), w);
+            @RequestParam(value = "w", required = false) Integer w,
+            @Parameter(description = "Optional ETag(s) from an earlier response; a match is "
+                    + "answered 304 with no body.", example = "\"9f2c…\"")
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
+        UUID listingId = parseListingId(id);
+        return imageResponse(imageVariants.serve(listingId, parseImageId(imageId), w, ifNoneMatch));
     }
 
-    private ResponseEntity<byte[]> imageResponse(CatalogService.ListingImageView image, Integer width) {
-        ImageResizer.Resized out = ImageResizer.resize(
-                image.bytes(), image.contentType(), width, imageBudget, decodePermits);
-        return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(out.contentType()))
-                // Tells a client whether it actually got a smaller copy. A WebP
-                // (no JDK decoder) or an already-narrow image comes back at full
-                // size, and silently doing so would look like the parameter was
-                // ignored.
-                .header("X-Image-Resized", Boolean.toString(out.resized()))
-                // OWASP A03: stop the browser MIME-sniffing the stored bytes into
-                // an executable type (e.g. HTML/JS) regardless of the served
-                // Content-Type — defence-in-depth alongside upload magic-byte checks.
-                .header("X-Content-Type-Options", "nosniff")
-                // A busy decode limiter answered with the original: a
-                // transient answer, never cached under the thumbnail URL.
-                .cacheControl(out.cacheable()
-                        ? CacheControl.maxAge(Duration.ofHours(1)).cachePublic()
-                        : CacheControl.noStore())
-                .body(out.bytes());
+    /**
+     * Headers are the pre-V25 set plus a strong {@code ETag}; the cache policy
+     * gained {@code must-revalidate}. Not {@code immutable}: both URLs are
+     * OVERWRITABLE — a primary replace keeps the image id and swaps its bytes,
+     * and a primary swap or delete re-points {@code /{id}/image} — so after the
+     * hour a cache must ask again, which the ETag makes a body-less 304.
+     */
+    private static ResponseEntity<byte[]> imageResponse(ListingImageVariants.ServedImage image) {
+        HttpHeaders headers = new HttpHeaders();
+        // Tells a client whether it actually got a smaller copy. A WebP
+        // (no JDK decoder) or an already-narrow image comes back at full
+        // size, and silently doing so would look like the parameter was
+        // ignored.
+        headers.set("X-Image-Resized", Boolean.toString(image.resized()));
+        // OWASP A03: stop the browser MIME-sniffing the stored bytes into
+        // an executable type (e.g. HTML/JS) regardless of the served
+        // Content-Type — defence-in-depth alongside upload magic-byte checks.
+        headers.set("X-Content-Type-Options", "nosniff");
+        // A busy decode limiter answered with the original: a transient
+        // answer, never cached under the thumbnail URL (and given no ETag).
+        headers.setCacheControl(image.cacheable()
+                ? CacheControl.maxAge(Duration.ofHours(1)).mustRevalidate().cachePublic()
+                : CacheControl.noStore());
+        if (image.etag() != null) {
+            headers.setETag(ImageEtags.quoted(image.etag()));
+        }
+        if (image.notModified()) {
+            return new ResponseEntity<>(headers, HttpStatus.NOT_MODIFIED);
+        }
+        headers.setContentType(MediaType.parseMediaType(image.contentType()));
+        return new ResponseEntity<>(image.bytes(), headers, HttpStatus.OK);
     }
 
     /** Manual parse: GlobalExceptionHandler has no MethodArgumentTypeMismatch

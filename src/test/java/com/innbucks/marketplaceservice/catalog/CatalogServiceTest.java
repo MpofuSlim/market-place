@@ -78,7 +78,7 @@ class CatalogServiceTest {
         reviewService = mock(com.innbucks.marketplaceservice.review.ReviewService.class);
         collectionPoints = mock(com.innbucks.marketplaceservice.pickup.CollectionPointViews.class);
         variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
-        catalogService = new CatalogService(listingRepository, listingImageRepository,
+        catalogService = new CatalogService(listingRepository,
                 categoryRepository,
                 new ListingViewAssembler(listingImageRepository, categoryRepository, sellerService,
                         mock(ListingDeliveryTownRepository.class), TestTowns.zimbabwe(),
@@ -786,69 +786,7 @@ class CatalogServiceTest {
         verify(listingRepository, never()).countByMerchantId(any(UUID.class));
     }
 
-    // ------------------------------------------------------------------
-    // Image serving: primary via /image, any gallery image via
-    // /images/{imageId}; every miss is the same 404
-    // ------------------------------------------------------------------
-
-    private static final byte[] PNG =
-            {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3};
-
-    private static ListingImage image(UUID listingId, boolean primary) {
-        return ListingImage.builder()
-                .id(UUID.randomUUID()).listingId(listingId)
-                .imageBytes(PNG).contentType("image/png")
-                .primaryImage(primary).position(0)
-                .createdAt(java.time.Instant.now())
-                .build();
-    }
-
-    @Test
-    void primaryImageOfAnUnknownListingIs404ImageNotFound() {
-        UUID id = UUID.randomUUID();
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(id))
-                .thenReturn(Optional.empty());
-
-        ApiException ex = assertThatApiException(() -> catalogService.getImage(id));
-
-        assertThat(ex.status()).isEqualTo(HttpStatus.NOT_FOUND);
-        assertThat(ex.code()).isEqualTo("image_not_found");
-    }
-
-    @Test
-    void primaryImageIsServedFromTheGallery() {
-        // Status-independent by design: the query never touches the listing
-        // row, so a DRAFT owner's preview URL works — unlike getById, which
-        // hides non-ACTIVE listings.
-        UUID id = UUID.randomUUID();
-        when(listingImageRepository.findByListingIdAndPrimaryImageTrue(id))
-                .thenReturn(Optional.of(image(id, true)));
-
-        CatalogService.ListingImageView view = catalogService.getImage(id);
-
-        assertThat(view.bytes()).isEqualTo(PNG);
-        assertThat(view.contentType()).isEqualTo("image/png");
-    }
-
-    @Test
-    void galleryImageIsServedOnlyThroughItsOwnListingsUrl() {
-        UUID listingId = UUID.randomUUID();
-        UUID imageId = UUID.randomUUID();
-        when(listingImageRepository.findByIdAndListingId(imageId, listingId))
-                .thenReturn(Optional.of(image(listingId, false)));
-
-        CatalogService.ListingImageView view = catalogService.getImageById(listingId, imageId);
-        assertThat(view.contentType()).isEqualTo("image/png");
-
-        // The (listingId, imageId) pair must match — a valid imageId under a
-        // DIFFERENT listing id is the same indistinguishable 404.
-        UUID otherListing = UUID.randomUUID();
-        when(listingImageRepository.findByIdAndListingId(imageId, otherListing))
-                .thenReturn(Optional.empty());
-        ApiException ex = assertThatApiException(
-                () -> catalogService.getImageById(otherListing, imageId));
-        assertThat(ex.code()).isEqualTo("image_not_found");
-    }
+    // Image serving moved to ListingImageVariants (V25): ListingImageVariantsTest.
 
     private static ApiException assertThatApiException(Runnable call) {
         try {

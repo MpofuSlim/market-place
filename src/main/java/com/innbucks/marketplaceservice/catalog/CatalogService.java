@@ -60,7 +60,6 @@ public class CatalogService {
     static final int MAX_PAGE_SIZE = 50;
 
     private final ListingRepository listingRepository;
-    private final ListingImageRepository listingImageRepository;
     private final CategoryRepository categoryRepository;
     private final ListingViewAssembler assembler;
     private final SellerService sellerService;
@@ -347,39 +346,6 @@ public class CatalogService {
     }
 
     /**
-     * Raw PRIMARY-image bytes + stored content type for the public image
-     * endpoint — the unchanged V2 contract on top of the V3 gallery.
-     *
-     * <p>DELIBERATELY served regardless of listing status (unlike
-     * {@link #getById}, which hides non-ACTIVE listings): listing UUIDs are
-     * unguessable, a product image leaks nothing sensitive, and the owning
-     * merchant needs the image URL to preview a DRAFT listing before
-     * publishing it. Missing listing, missing gallery, and missing primary
-     * are the same 404 — the endpoint never confirms which.
-     */
-    @Transactional(readOnly = true)
-    public ListingImageView getImage(UUID listingId) {
-        return listingImageRepository.findByListingIdAndPrimaryImageTrue(listingId)
-                .map(img -> new ListingImageView(img.getImageBytes(), img.getContentType()))
-                .orElseThrow(() -> ApiException.notFound("image_not_found",
-                        "No image has been uploaded for this listing"));
-    }
-
-    /**
-     * Raw bytes of ONE gallery image, addressed by (listingId, imageId) —
-     * the pair must match, so an imageId can never be probed across listings.
-     * Same status-independent, indistinguishable-404 discipline as
-     * {@link #getImage}.
-     */
-    @Transactional(readOnly = true)
-    public ListingImageView getImageById(UUID listingId, UUID imageId) {
-        return listingImageRepository.findByIdAndListingId(imageId, listingId)
-                .map(img -> new ListingImageView(img.getImageBytes(), img.getContentType()))
-                .orElseThrow(() -> ApiException.notFound("image_not_found",
-                        "No image has been uploaded for this listing"));
-    }
-
-    /**
      * The full two-level category tree for the public endpoint: top-level
      * nodes with their children, both levels display-name ordered. One query;
      * the table is a few dozen migration-seeded rows, so in-memory grouping
@@ -399,9 +365,6 @@ public class CatalogService {
                                 .toList()))
                 .toList();
     }
-
-    /** Mirror of event-service's {@code BannerImage} pair. */
-    public record ListingImageView(byte[] bytes, String contentType) {}
 
     /** Parent code -> itself + its children; child/unknown code -> itself. */
     private List<String> expandCategory(String rawCode) {
