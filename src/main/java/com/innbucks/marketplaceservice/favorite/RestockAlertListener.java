@@ -5,9 +5,11 @@ import com.innbucks.marketplaceservice.catalog.ListingRepository;
 import com.innbucks.marketplaceservice.catalog.ListingRestocked;
 import com.innbucks.marketplaceservice.config.AsyncConfig;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
+import com.innbucks.marketplaceservice.notify.FanoutCircuitBreaker;
 import com.innbucks.marketplaceservice.notify.MarketplaceNotificationProperties;
 import com.innbucks.marketplaceservice.notify.OrderNotificationComposer;
 import com.innbucks.marketplaceservice.notify.UserNotifyGateway;
+import com.innbucks.marketplaceservice.notify.UserNotifyGateway.Delivery;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -44,6 +46,20 @@ import java.util.UUID;
  *       must never sit in front of an order-paid or parcel SMS on the
  *       per-order pool. A saturated bulk pool DROPS the event (metered), it
  *       never runs it on the committing thread.</li>
+ *   <li><b>A circuit breaker over user-service</b> ({@link FanoutCircuitBreaker},
+ *       {@code restock-alerts.breaker.*}). Each call costs up to the
+ *       user-service connect + read timeout (2 s + 5 s), so without it a
+ *       user-service outage made every one of the 200 recipients wait in turn
+ *       — ~23 minutes of a bulk thread per event. Once the breaker is open the
+ *       REST of the fan-out is skipped at once: counted
+ *       ({@code outcome=breaker_open}, amount = skipped recipients) and logged,
+ *       never retried — there is no store of pending alerts to retry from, and
+ *       the next 0 &rarr; &gt;0 restock alerts again. Only no-answer / 5xx / 429
+ *       and slow calls count against it; a 404 for one vanished user does
+ *       not.</li>
+ *   <li><b>No transaction is held while sending</b>: the listener is not
+ *       {@code @Transactional}; the two lookups run in their own short
+ *       read-only repository transactions before the first call.</li>
  *   <li><b>Nothing may escape an after-commit callback</b> (it would surface
  *       to the caller of a commit that already succeeded) — the listener
  *       swallows and logs; {@code UserNotifyGateway} itself never throws.</li>
@@ -59,6 +75,7 @@ public class RestockAlertListener {
     private final UserNotifyGateway userNotifyGateway;
     private final MarketplaceNotificationProperties properties;
     private final MarketplaceMetrics metrics;
+    private final FanoutCircuitBreaker breaker;
 
     @Async(AsyncConfig.BULK_NOTIFICATION_EXECUTOR)
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -89,15 +106,28 @@ public class RestockAlertListener {
             String subject = OrderNotificationComposer.restockSubject();
             String message = OrderNotificationComposer.restockMessage(listing);
             int sent = 0;
-            for (UUID buyerUuid : recipients) {
-                boolean accepted = userNotifyGateway.notify(buyerUuid, subject, message);
+            int skipped = 0;
+            for (int i = 0; i < recipients.size(); i++) {
+                UUID buyerUuid = recipients.get(i);
+                Delivery delivery = breaker.call(() -> userNotifyGateway.deliver(buyerUuid, subject, message));
+                if (delivery == Delivery.SHORT_CIRCUITED) {
+                    // user-service is clearly failing: skip the rest of this
+                    // fan-out now rather than wait out a timeout per recipient.
+                    skipped = recipients.size() - i;
+                    metrics.notificationOutcome("restock_alert", MarketplaceMetrics.RESTOCK_BREAKER_OPEN, skipped);
+                    log.warn("Restock alerts skipped listingId={} skipped={} breaker={} state={} "
+                            + "(user-service notify failing; not retried)",
+                            event.listingId(), skipped, breaker.name(), breaker.state());
+                    break;
+                }
+                boolean accepted = delivery == Delivery.ACCEPTED;
                 metrics.notificationOutcome("restock_alert", accepted ? "sent" : "failed");
                 if (accepted) {
                     sent++;
                 }
             }
-            log.info("Restock alerts dispatched listingId={} recipients={} accepted={}",
-                    event.listingId(), recipients.size(), sent);
+            log.info("Restock alerts dispatched listingId={} recipients={} accepted={} skipped={}",
+                    event.listingId(), recipients.size(), sent, skipped);
         } catch (RuntimeException ex) {
             // Notification-only path: a failure here must never look like a
             // failed cancel/update to anyone. Log and move on.

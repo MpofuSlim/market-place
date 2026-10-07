@@ -31,6 +31,14 @@ public class MarketplaceNotificationProperties {
          * metered ({@code outcome=overflow}), never silently dropped.
          */
         private int maxRecipientsPerEvent = 200;
+        /**
+         * Circuit breaker over the fan-out's user-service calls
+         * ({@code marketplace.notifications.restock-alerts.breaker.*}). Once
+         * user-service is clearly failing, the rest of the fan-out is skipped
+         * in milliseconds and metered ({@code outcome=breaker_open}) instead of
+         * each recipient waiting out its timeout. See {@link FanoutCircuitBreaker}.
+         */
+        private final FanoutCircuitBreaker.Settings breaker = new FanoutCircuitBreaker.Settings();
     }
 
     @Data

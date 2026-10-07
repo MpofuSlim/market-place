@@ -62,6 +62,11 @@ public class MarketplaceMetrics {
     public static final String SELLER_PLAN_UNIFORM = "uniform";
     public static final String SELLER_PLAN_MIXED = "mixed";
 
+    /** {@code marketplace.notifications{type=restock_alert,outcome=breaker_open}}:
+     *  favoriters NOT alerted because the fan-out's circuit breaker was open
+     *  (user-service notify failing). Registered at 0 from boot. */
+    public static final String RESTOCK_BREAKER_OPEN = "breaker_open";
+
     private final MeterRegistry registry;
     private final Counter listingsCreated;
     private final Counter confirmMismatch;
@@ -119,6 +124,9 @@ public class MarketplaceMetrics {
                 .description("Listings whose stock moved from 0 to >0 (back-in-stock signal)")
                 .baseUnit("listings")
                 .register(registry);
+        // Alerts the restock fan-out's circuit breaker skipped. Pre-registered
+        // so the first skip is a visible increase, not a series born at 1.
+        notificationOutcomeCounter("restock_alert", RESTOCK_BREAKER_OPEN);
         // OWASP A09 tamper signal from the audit-log HMAC verifier. The invariant
         // is zero, so ANY increase is page-worthy — someone altered an
         // audit_events row, or the audit hmac-secret rotated without a re-seal.
@@ -321,7 +329,7 @@ public class MarketplaceMetrics {
      * {@code marketplace.notifications{type,outcome}}. Types are trigger names
      * ({@code order_paid}, {@code restock_alert}, {@code merchant_order},
      * {@code user_notify}); outcomes are the bounded vocabulary
-     * {@code sent|fallback|failed|disabled|overflow|accepted|no_recipients} —
+     * {@code sent|fallback|failed|disabled|overflow|accepted|no_recipients|breaker_open} —
      * never per-message values. {@code failed} rising means buyers are moving
      * money blind; {@code overflow} means a restock event exceeded the
      * recipient cap.
@@ -336,12 +344,15 @@ public class MarketplaceMetrics {
         if (amount <= 0) {
             return;
         }
-        Counter.builder("marketplace.notifications")
+        notificationOutcomeCounter(type, outcome).increment(amount);
+    }
+
+    private Counter notificationOutcomeCounter(String type, String outcome) {
+        return Counter.builder("marketplace.notifications")
                 .description("Marketplace notification sends by trigger type and outcome")
                 .tag("type", type == null ? "unknown" : type)
                 .tag("outcome", outcome == null ? "unknown" : outcome)
-                .register(registry)
-                .increment(amount);
+                .register(registry);
     }
 
     /**

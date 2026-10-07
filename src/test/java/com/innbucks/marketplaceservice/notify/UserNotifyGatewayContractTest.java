@@ -198,4 +198,38 @@ class UserNotifyGatewayContractTest {
         assertThat(gateway.notify(USER, "s", " ")).isFalse();
         wireMock.verify(0, postRequestedFor(urlPathMatching("/users/internal/.*")));
     }
+
+    @Test
+    @DisplayName("deliver() says WHY: 202 ACCEPTED, 404/401 REFUSED, 5xx/429/reset UNAVAILABLE, blank SKIPPED")
+    void deliver_classifiesEveryShape() {
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(202)));
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.ACCEPTED);
+
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(404)));
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.REFUSED);
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(401)));
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.REFUSED);
+
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(503)));
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.UNAVAILABLE);
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH)).willReturn(aResponse().withStatus(429)));
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.UNAVAILABLE);
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH))
+                .willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.UNAVAILABLE);
+
+        assertThat(gateway.deliver(USER, " ", "m")).isEqualTo(UserNotifyGateway.Delivery.SKIPPED);
+        // Same meter as notify(): one accepted, five failed, the blank one uncounted.
+        assertThat(outcome("accepted")).isEqualTo(1.0);
+        assertThat(outcome("failed")).isEqualTo(5.0);
+    }
+
+    @Test
+    @DisplayName("read timeout (user-service hung): UNAVAILABLE after the client's own read timeout")
+    void readTimeout_isUnavailable() {
+        wireMock.stubFor(post(urlEqualTo(NOTIFY_PATH))
+                .willReturn(aResponse().withStatus(202).withFixedDelay(3000)));
+
+        assertThat(gateway.deliver(USER, "s", "m")).isEqualTo(UserNotifyGateway.Delivery.UNAVAILABLE);
+    }
 }
