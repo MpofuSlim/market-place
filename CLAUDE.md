@@ -550,6 +550,47 @@ never change either casually.
   metered), gated by `marketplace.notifications.restock-alerts.enabled`
   (default true). Metrics `marketplace.restock_events` +
   `marketplace.notifications{type=restock_alert}`.
+  * **The fan-out goes through a circuit breaker** (`notify/FanoutCircuitBreaker`,
+    resilience4j-circuitbreaker, the bare module — no Spring auto-config; bean
+    in `favorite/RestockAlertBreakerConfig`). Each recipient is one
+    `POST /users/internal/{uuid}/notify` costing up to connect + read timeout
+    (2 s + 5 s), so a down or hung user-service used to cost a 200-recipient
+    event ~23 minutes of a bulk-pool thread and a pooled connection — with two
+    bulk threads, two events stalled the whole pool and the queue behind it.
+    Now, once the breaker opens, the REST of the fan-out is skipped in
+    milliseconds. Defaults (`marketplace.notifications.restock-alerts.breaker.*`,
+    `MARKETPLACE_RESTOCK_BREAKER_*`): count window 10, verdict after 5 calls,
+    opens at 50% failures OR 50% calls slower than 2 s, 30 s open, then 2
+    half-open trial calls (the transition happens on the next call — no timer
+    thread) that close or re-open it. One breaker per process, shared by both
+    bulk threads, so one event's failures protect the next event.
+  * **Only "no answer" counts against it**: connect refused, timeout, reset,
+    5xx and 429 (`UserNotifyGateway.Delivery.UNAVAILABLE`). A 404/401 is
+    user-service ANSWERING (`REFUSED`) and is a success to the breaker — so a
+    favourite whose account vanished can never open it. Blank input (`SKIPPED`)
+    releases the permission unrecorded. `deliver()` is the outcome-bearing twin
+    of `notify()`; their meters are identical.
+  * **Skipped alerts are counted and logged, NOT retried**:
+    `marketplace.notifications{type=restock_alert,outcome=breaker_open}`
+    (amount = recipients skipped; registered at 0) plus one WARN per event.
+    There is no store of pending restock alerts to retry from, by design — the
+    favourite is still there and the next 0 → >0 restock alerts again. Breaker
+    health: `marketplace.notifications.breaker_state{breaker=restock_alert_user_notify}`
+    (0 closed, 1 open, 2 half-open, 3 disabled) and
+    `marketplace.notifications.breaker_transitions{breaker,to=open|half_open|closed}`,
+    all present from boot; every transition is a WARN.
+  * **Scoped to the fan-out, deliberately.** The per-order notices and the
+    payout-destination warning ("told on EVERY change") make one call each and
+    do NOT use the breaker — an open breaker would drop them for up to 30 s
+    after user-service recovered. A NEW fan-out (many sequential calls to one
+    downstream in one task) gets its own `FanoutCircuitBreaker` bean; a single
+    best-effort notice does not.
+  * The listener holds no transaction while sending (it is not
+    `@Transactional`; the two lookups are short repository reads) — pinned by
+    `NotificationExecutorsIT`. Pinned by `RestockAlertListenerTest` and the
+    WireMock `UserNotifyFanoutBreakerContractTest` (opens on 5xx / 429 / reset /
+    connect refused / slow 202s, never on 404/401; half-open trial closes or
+    re-opens it; nothing reaches the wire while open).
 * **Reports + moderation queue (V7)**: `POST
   /marketplace/catalog/{listingId}/report` — any AUTHENTICATED user (401
   anonymous — spam control; the catalog permitAll is GET-scoped, pinned by
@@ -2358,7 +2399,8 @@ look like a failed payment confirm; copied from the middleware/ticketing
 discipline).** Three pools (`config/AsyncConfig`), a bulkhead: per-order notices
 (order paid, parcel updates, refunds, dispute resolved, seller alerts) on
 `notificationExecutor`; the restock fan-out (up to 200 sequential S2S calls per
-event) ALONE on `bulkNotificationExecutor`, so it can never queue in front of
+event, behind a circuit breaker — see the V6 invariant) ALONE on
+`bulkNotificationExecutor`, so it can never queue in front of
 the "delivered" SMS that tells a buyer their dispute window has started. Both
 are fixed-size and **DISCARD on overflow** (`MeteredRejectionPolicy`:
 `marketplace.notifications.executor_rejected{executor,policy,reason}` on every

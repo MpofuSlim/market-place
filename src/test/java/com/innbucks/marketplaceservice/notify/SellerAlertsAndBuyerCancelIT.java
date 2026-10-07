@@ -95,6 +95,8 @@ class SellerAlertsAndBuyerCancelIT extends PostgresTestContainer {
         when(adminResolver.adminUserUuids(merchantId)).thenReturn(List.of(sellerAdmin));
         when(userNotifyGateway.notify(any(), any(UserNotice.class))).thenReturn(true);
         when(userNotifyGateway.notify(any(), anyString(), anyString())).thenReturn(true);
+        when(userNotifyGateway.deliver(any(), anyString(), anyString()))
+                .thenReturn(UserNotifyGateway.Delivery.ACCEPTED);
         when(sms.isConfigured()).thenReturn(true);
     }
 

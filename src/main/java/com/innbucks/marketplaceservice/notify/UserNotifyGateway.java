@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -55,6 +56,28 @@ public class UserNotifyGateway {
     }
 
     /**
+     * What became of one notify request. The boolean {@link #notify} methods
+     * collapse it to "accepted or not"; the restock fan-out needs the split,
+     * because only {@link #UNAVAILABLE} says anything about user-service's
+     * health — a 404 for one vanished user is user-service answering fine.
+     */
+    public enum Delivery {
+        /** 2xx: user-service queued it (delivery itself is async there). */
+        ACCEPTED,
+        /** A 4xx other than 429: user-service answered and declined THIS
+         *  request (unknown user, bad token). Not a health signal. */
+        REFUSED,
+        /** No usable answer: connect refused, timeout, reset, 5xx or 429. The
+         *  only outcome a circuit breaker counts as a failure. */
+        UNAVAILABLE,
+        /** Blank input — nothing was sent. */
+        SKIPPED,
+        /** Never returned by this gateway: a {@link FanoutCircuitBreaker} that
+         *  was open and did not call it at all. */
+        SHORT_CIRCUITED
+    }
+
+    /**
      * Ask user-service to deliver {@code subject}/{@code message} to
      * {@code userUuid} over that user's channels. Returns whether user-service
      * ACCEPTED the request (2xx) — acceptance, not delivery, which is async
@@ -71,6 +94,21 @@ public class UserNotifyGateway {
      * null, so the wire shape for a plain notice is exactly what it always was.
      */
     public boolean notify(UUID userUuid, UserNotice notice) {
+        return deliver(userUuid, notice) == Delivery.ACCEPTED;
+    }
+
+    /** {@link #deliver(UUID, UserNotice)} for a plain subject + message. */
+    public Delivery deliver(UUID userUuid, String subject, String message) {
+        return deliver(userUuid, UserNotice.plain(subject, message));
+    }
+
+    /**
+     * The same request as {@link #notify(UUID, UserNotice)}, reporting WHY it
+     * was not accepted. Never throws, never returns null, never returns
+     * {@link Delivery#SHORT_CIRCUITED}. Metrics and logging are identical to
+     * {@code notify} ({@code user_notify} {@code accepted|failed}).
+     */
+    public Delivery deliver(UUID userUuid, UserNotice notice) {
         String subject = notice == null ? null : notice.subject();
         String message = notice == null ? null : notice.message();
         if (userUuid == null || subject == null || subject.isBlank()
@@ -78,7 +116,7 @@ public class UserNotifyGateway {
             log.debug("Skipping user notify: uuid present={} subject blank={} message blank={}",
                     userUuid != null, subject == null || subject.isBlank(),
                     message == null || message.isBlank());
-            return false;
+            return Delivery.SKIPPED;
         }
         try {
             restClient.post()
@@ -90,14 +128,22 @@ public class UserNotifyGateway {
                     .toBodilessEntity();
             metrics.notificationOutcome("user_notify", "accepted");
             log.debug("User notify accepted userUuid={}", userUuid);
-            return true;
+            return Delivery.ACCEPTED;
+        } catch (RestClientResponseException e) {
+            int status = e.getStatusCode().value();
+            return failed(userUuid, e, status >= 500 || status == 429 ? Delivery.UNAVAILABLE : Delivery.REFUSED);
         } catch (RuntimeException e) {
-            // Best-effort: a notification failure must never fail the action it
-            // accompanies (order paid, restock). Logged + metered, never thrown.
-            metrics.notificationOutcome("user_notify", "failed");
-            log.warn("User notify failed userUuid={} cause={}", userUuid, e.toString());
-            return false;
+            // Connect refused, read timeout, reset: no answer at all.
+            return failed(userUuid, e, Delivery.UNAVAILABLE);
         }
+    }
+
+    private Delivery failed(UUID userUuid, RuntimeException e, Delivery delivery) {
+        // Best-effort: a notification failure must never fail the action it
+        // accompanies (order paid, restock). Logged + metered, never thrown.
+        metrics.notificationOutcome("user_notify", "failed");
+        log.warn("User notify failed userUuid={} outcome={} cause={}", userUuid, delivery, e.toString());
+        return delivery;
     }
 
     private static Map<String, String> body(UserNotice notice) {

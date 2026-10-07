@@ -114,6 +114,8 @@ public class NotificationFlowIT extends PostgresTestContainer {
         when(sms.isConfigured()).thenReturn(true);
         when(whatsApp.isConfigured()).thenReturn(false);
         when(userNotifyGateway.notify(Mockito.any(), anyString(), anyString())).thenReturn(true);
+        when(userNotifyGateway.deliver(Mockito.any(), anyString(), anyString()))
+                .thenReturn(UserNotifyGateway.Delivery.ACCEPTED);
         buyerUuid = UUID.randomUUID();
         customerToken = TestJwts.customer(buyerUuid, jwtSecret);
     }
@@ -190,7 +192,7 @@ public class NotificationFlowIT extends PostgresTestContainer {
                 .andExpect(status().isOk());
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                verify(userNotifyGateway).notify(buyerUuid,
+                verify(userNotifyGateway).deliver(buyerUuid,
                         "Back in stock on InnBucks Marketplace",
                         "Back in stock. Solar Lantern 20W - USD 15.50 on InnBucks Marketplace"));
         // The order-paid channels stay silent on a cancel.
@@ -220,7 +222,7 @@ public class NotificationFlowIT extends PostgresTestContainer {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.stockQty").value(3));
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                verify(userNotifyGateway).notify(buyerUuid,
+                verify(userNotifyGateway).deliver(buyerUuid,
                         "Back in stock on InnBucks Marketplace",
                         "Back in stock. Cotton Crew Tee - from USD 19.99 on InnBucks Marketplace"));
 
@@ -235,7 +237,7 @@ public class NotificationFlowIT extends PostgresTestContainer {
         // Held for a window: a single immediate read would pass before a
         // wrongly-fired async alert had any chance to land.
         await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(3)).untilAsserted(() ->
-                verify(userNotifyGateway, times(1)).notify(eq(buyerUuid), anyString(), anyString()));
+                verify(userNotifyGateway, times(1)).deliver(eq(buyerUuid), anyString(), anyString()));
     }
 
     @Test

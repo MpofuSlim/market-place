@@ -19,6 +19,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -151,12 +152,16 @@ class NotificationExecutorsIT extends PostgresTestContainer {
     }
 
     @Test
-    @DisplayName("A restock fan-out runs on the bulk pool; the order-paid SMS on the per-order pool")
+    @DisplayName("A restock fan-out runs on the bulk pool, outside any transaction; the order-paid SMS on "
+            + "the per-order pool")
     void eachListenerRunsOnItsOwnPool() throws Exception {
         AtomicReference<String> restockThread = new AtomicReference<>();
-        when(userNotifyGateway.notify(any(), anyString(), anyString())).thenAnswer(inv -> {
+        AtomicReference<Boolean> restockInTransaction = new AtomicReference<>();
+        when(userNotifyGateway.deliver(any(), anyString(), anyString())).thenAnswer(inv -> {
+            restockInTransaction.compareAndSet(null,
+                    TransactionSynchronizationManager.isActualTransactionActive());
             restockThread.compareAndSet(null, Thread.currentThread().getName());
-            return true;
+            return UserNotifyGateway.Delivery.ACCEPTED;
         });
         AtomicReference<String> smsThread = new AtomicReference<>();
         when(sms.isConfigured()).thenReturn(true);
@@ -176,6 +181,8 @@ class NotificationExecutorsIT extends PostgresTestContainer {
                 .andExpect(status().isOk());
         await().atMost(Duration.ofSeconds(5)).until(() -> restockThread.get() != null);
         assertThat(restockThread.get()).startsWith("marketplace-notify-bulk-");
+        // No connection or row lock is held across the user-service calls.
+        assertThat(restockInTransaction.get()).isFalse();
 
         // A paid order: the buyer SMS is a per-order notice.
         String paid = createOrder(seedActiveListing(5), "executors-it-2");

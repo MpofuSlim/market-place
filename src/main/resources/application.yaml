@@ -363,6 +363,21 @@ marketplace:
       # Per-event recipient cap (oldest favorites win); overflow is logged +
       # metered marketplace.notifications{type=restock_alert,outcome=overflow}.
       max-recipients-per-event: ${MARKETPLACE_RESTOCK_ALERTS_MAX_RECIPIENTS:200}
+      # Circuit breaker over the fan-out's user-service notify calls
+      # (notify/FanoutCircuitBreaker). Each call can cost connect + read timeout
+      # (2s + 5s); once user-service is clearly failing the REST of the fan-out
+      # is skipped at once and counted
+      # marketplace.notifications{type=restock_alert,outcome=breaker_open} (not
+      # retried). Only no-answer/5xx/429 and slow calls count; a 404 does not.
+      breaker:
+        enabled: ${MARKETPLACE_RESTOCK_BREAKER_ENABLED:true}
+        sliding-window-size: ${MARKETPLACE_RESTOCK_BREAKER_WINDOW:10}
+        minimum-number-of-calls: ${MARKETPLACE_RESTOCK_BREAKER_MIN_CALLS:5}
+        failure-rate-threshold: ${MARKETPLACE_RESTOCK_BREAKER_FAILURE_RATE:50}
+        slow-call-duration-threshold: ${MARKETPLACE_RESTOCK_BREAKER_SLOW_CALL:2s}
+        slow-call-rate-threshold: ${MARKETPLACE_RESTOCK_BREAKER_SLOW_CALL_RATE:50}
+        wait-duration-in-open-state: ${MARKETPLACE_RESTOCK_BREAKER_OPEN_WAIT:30s}
+        permitted-number-of-calls-in-half-open-state: ${MARKETPLACE_RESTOCK_BREAKER_HALF_OPEN_CALLS:2}
     merchant-orders:
       # Merchant new-paid-order alerts to the selling organization's OWNERs and
       # ADMINs, via user-service's GET /users/internal/organizations/{id}/admins.
