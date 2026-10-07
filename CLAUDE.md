@@ -338,13 +338,37 @@ never change either casually.
     (`ImageVariantRenderer` → `ImageResizer.resize(bytes, type, w, budget,
     permits)`), so a stored rendition is byte-identical to what the
     per-request resize returned on the same JDK (`ImageVariantRendererTest`
-    compares them). Rendering runs after validation and BEFORE the listing
-    transaction writes anything (no row lock across a decode); rows are
-    written in the same transaction as the image row (after a `flush()` —
-    they are JDBC, the image row is JPA, and the FK needs the row first).
-    Uploads share the ONE `ImageDecodePermits` semaphore with reads, through
-    `waitingUpTo(500ms)`; a width that gets no permit is left out and made by
-    its first request.
+    compares them). Rows are written in the same transaction as the image
+    row (after a `flush()` — they are JDBC, the image row is JPA, and the FK
+    needs the row first). Uploads share the ONE `ImageDecodePermits` semaphore
+    with reads, through `waitingUpTo(500ms)`; a width that gets no permit is
+    left out and made by its first request.
+  * **Rendering happens with NO transaction open — never inside one.** A
+    render is decode + scale + encode, seconds of CPU for a large photo, and
+    the first version ran it inside the upload's `@Transactional` method, so
+    every upload held a pooled connection (and, on a replace, sat between the
+    ownership read and the row lock) for the whole render — a few large
+    uploads could starve the pool for every other request. So the three
+    upload paths (`create` with images, `uploadImage`, `addImage`) are NOT
+    `@Transactional`: each runs its checks in the OLD order (ownership, file
+    validation, the gallery / listing limit, title, category — each read
+    commits on its own), renders, and only then opens ONE short transaction
+    (`TransactionOperations`, Boot's `TransactionTemplate`) that re-checks
+    what must hold at the write — ownership, the gallery count (which also
+    decides the empty-gallery primary flag), the listing limit,
+    replace-or-create against the primary as it is NOW — and writes every row.
+    A failure anywhere still leaves nothing half-written. The pre-checks are
+    there so a refused upload never pays for a render; the in-transaction
+    re-checks are the authoritative ones (the limits' check-then-insert race
+    is still the accepted one, its window now the write alone, not the
+    render). Error codes, messages and their order are unchanged. Concurrency
+    stays bounded by the permits above (2 decodes cell-wide). Pinned by
+    `ImageRenderOutsideTransactionIT` (a `@Primary` probing renderer asserts
+    `isActualTransactionActive()` is false and no `EntityManagerHolder` /
+    `ConnectionHolder` is bound on every upload path; the old code fails it)
+    and the render-order cases in `ListingServiceTest`. **A new upload path
+    renders before its transaction too** — never call `ListingImageVariants
+    .render` from a `@Transactional` method.
   * **Serving** (`ListingImageVariants.serve`): one indexed query —
     `listing_image JOIN listing_image_variant` by `(image_id, variant)`, which
     selects the rendition's columns only — answers a resized rendition. A

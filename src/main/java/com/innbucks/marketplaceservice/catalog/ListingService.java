@@ -28,6 +28,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -65,6 +66,17 @@ import java.util.UUID;
  * statements. The <b>publish gate</b> leans on it: a status change TO ACTIVE
  * requires a primary image (422 {@code primary_image_required}) — drafts may
  * be imageless, pre-existing ACTIVE rows are untouched.
+ *
+ * <p><b>Image uploads render OUTSIDE the transaction.</b> Making an upload's
+ * renditions (decode + scale + encode, seconds of CPU for a large photo) is
+ * done before any transaction opens, so no pooled connection and no row lock
+ * is held across it. The three upload paths ({@link #create(AuthenticatedUser,
+ * ListingCreateRequest, MultipartFile, List)}, {@link #uploadImage},
+ * {@link #addImage}) are therefore NOT {@code @Transactional}: they run the
+ * checks in their old order (each read commits on its own), validate and
+ * render, and only then open ONE short transaction ({@link #transactions})
+ * that repeats the checks that must hold at the write and writes every row,
+ * so a failure still leaves nothing half-written.
  */
 @Service
 public class ListingService {
@@ -115,6 +127,10 @@ public class ListingService {
     private final ListingVariantService variants;
     private final ImagePixelBudget imageBudget;
     private final ListingImageVariants imageVariants;
+    /** The upload paths' write transaction, opened only after rendering.
+     *  Boot's {@code TransactionTemplate} in the app; a recording stand-in in
+     *  unit tests. */
+    private final TransactionOperations transactions;
     private final String cellCurrency;
     private final int maxPerMerchant;
 
@@ -131,6 +147,7 @@ public class ListingService {
                           ListingVariantService variants,
                           ImagePixelBudget imageBudget,
                           ListingImageVariants imageVariants,
+                          TransactionOperations transactions,
                           @Value("${innbucks.currency}") String cellCurrency,
                           @Value("${marketplace.listing.max-per-merchant}") int maxPerMerchant) {
         this.listingRepository = listingRepository;
@@ -146,11 +163,14 @@ public class ListingService {
         this.variants = variants;
         this.imageBudget = imageBudget;
         this.imageVariants = imageVariants;
+        this.transactions = transactions;
         this.cellCurrency = cellCurrency;
         this.maxPerMerchant = maxPerMerchant;
     }
 
-    @Transactional
+    /** The JSON create: {@link #create(AuthenticatedUser, ListingCreateRequest,
+     *  MultipartFile, List)} with no images (same checks, same one write
+     *  transaction). */
     public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request) {
         return create(caller, request, null, null);
     }
@@ -166,8 +186,13 @@ public class ListingService {
      * always satisfies the one-primary invariant. A PRESENT-but-invalid file
      * (any of them) refuses the WHOLE create — every file is validated before
      * the insert so a bad file never leaves a half-created listing behind.
+     *
+     * <p>Not {@code @Transactional}: every check runs first, in the order the
+     * errors have always come in, then the images are rendered, and only then
+     * does the write transaction open — so no connection is held across a
+     * decode. The listing limit is checked again inside it, against the
+     * insert it guards.
      */
-    @Transactional
     public ListingResponse create(AuthenticatedUser caller, ListingCreateRequest request,
                                   MultipartFile primaryImage, List<MultipartFile> additionalImages) {
         UUID merchantId = resolveCreateMerchantId(caller, request);
@@ -195,12 +220,12 @@ public class ListingService {
         }
         // Row-volume abuse guard. ARCHIVED rows still count: listings are never
         // physically deleted, so this caps the merchant's total row footprint.
-        // The check-then-insert race under concurrency is accepted — the cap is
-        // an abuse guard, not an invariant. Applies to the TARGET merchant on
-        // SUPER_ADMIN on-behalf creation too.
-        if (listingRepository.countByMerchantId(merchantId) >= maxPerMerchant) {
-            throw ApiException.conflict("listing_limit_reached", "Merchant listing limit reached");
-        }
+        // Checked here, in the old order and before any image is rendered, and
+        // again in the write transaction (createTx). The check-then-insert race
+        // under concurrency is accepted — the cap is an abuse guard, not an
+        // invariant. Applies to the TARGET merchant on SUPER_ADMIN on-behalf
+        // creation too.
+        requireListingCapacity(merchantId);
         // Validate EVERY file before any insert (atomicity). A sent-but-empty
         // part still fails with image_required — only an ABSENT part means
         // "no image".
@@ -211,17 +236,31 @@ public class ListingService {
         for (MultipartFile extra : extras) {
             validated.add(validateImage(extra));
         }
-        // Renditions are made once every file has passed, and before anything
-        // is written, so no row lock is held across a decode.
+        // The last two refusals, in their old order (title, then category), so
+        // a refused create never pays for a render.
+        String title = requiredTitle(request.title());
+        String categoryCode = resolveCategoryCode(request.categoryCode());
+        // Renditions are made once every file has passed and BEFORE the write
+        // transaction opens: no connection, no row lock across a decode.
         validated.replaceAll(this::withVariants);
+        return Objects.requireNonNull(transactions.execute(tx -> createTx(caller, request, merchantId,
+                coverage, plan, validated, title, categoryCode)));
+    }
+
+    /** The write half of {@link #create(AuthenticatedUser, ListingCreateRequest,
+     *  MultipartFile, List)}: everything is checked and rendered already. */
+    private ListingResponse createTx(AuthenticatedUser caller, ListingCreateRequest request, UUID merchantId,
+                                     List<ListingDeliveryTown> coverage, VariantPlan plan,
+                                     List<ValidatedImage> validated, String title, String categoryCode) {
+        requireListingCapacity(merchantId);
         Instant now = Instant.now();
         Listing listing = Listing.builder()
                 .id(UUID.randomUUID())
                 .merchantId(merchantId)
                 .shopId(optionalShopId(caller))
-                .title(requiredTitle(request.title()))
+                .title(title)
                 .description(sanitizedOrNull(request.description()))
-                .categoryCode(resolveCategoryCode(request.categoryCode()))
+                .categoryCode(categoryCode)
                 .condition(request.condition() == null ? ItemCondition.NEW : request.condition())
                 .city(sanitizedOrNull(request.city()))
                 .area(sanitizedOrNull(request.area()))
@@ -531,11 +570,21 @@ public class ListingService {
      * magic-byte signature (the declared type is attacker-controlled), size
      * capped at {@link #MAX_IMAGE_BYTES}. Owner-or-SUPER_ADMIN via
      * {@link #managedListing}.
+     *
+     * <p>Not {@code @Transactional}: ownership is checked (its read commits
+     * on its own), the file validated and its renditions rendered with no
+     * transaction open; then one short transaction re-loads the listing under
+     * the same ownership rule, decides replace-or-create against the gallery
+     * as it is NOW, and writes.
      */
-    @Transactional
     public ListingResponse uploadImage(AuthenticatedUser caller, UUID listingId, MultipartFile file) {
-        Listing listing = managedListing(caller, listingId);
+        managedListing(caller, listingId);
         ValidatedImage validated = withVariants(validateImage(file));
+        return Objects.requireNonNull(transactions.execute(tx -> uploadImageTx(caller, listingId, validated)));
+    }
+
+    private ListingResponse uploadImageTx(AuthenticatedUser caller, UUID listingId, ValidatedImage validated) {
+        Listing listing = managedListing(caller, listingId);
         Instant now = Instant.now();
         ImageMeta primary = listingImageRepository
                 .findMetaByListingIdAndPrimaryImageTrue(listing.getId())
@@ -570,17 +619,28 @@ public class ListingService {
      * where the sole image becomes primary so the one-primary-when-any-images
      * invariant (and the publish gate) can't be wedged into an unpublishable
      * state. 409 {@code image_limit_reached} at {@value #MAX_GALLERY_IMAGES}.
+     *
+     * <p>Not {@code @Transactional}: ownership, the file and the gallery limit
+     * are checked (in that order, as always) and the renditions rendered with
+     * no transaction open; the write transaction then re-checks ownership and
+     * re-counts the gallery — the count that decides the 409 and the primary
+     * flag is the one taken next to the insert, never the one from before the
+     * render.
      */
-    @Transactional
     public ListingResponse addImage(AuthenticatedUser caller, UUID listingId, MultipartFile file) {
+        managedListing(caller, listingId);
+        ValidatedImage checked = validateImage(file);
+        requireGalleryCapacity(listingId);
+        ValidatedImage validated = withVariants(checked);
+        return Objects.requireNonNull(transactions.execute(tx -> addImageTx(caller, listingId, validated)));
+    }
+
+    private ListingResponse addImageTx(AuthenticatedUser caller, UUID listingId, ValidatedImage validated) {
         Listing listing = managedListing(caller, listingId);
-        ValidatedImage validated = validateImage(file);
         long count = listingImageRepository.countByListingId(listing.getId());
         if (count >= MAX_GALLERY_IMAGES) {
-            throw ApiException.conflict("image_limit_reached",
-                    "A listing can have at most 10 images");
+            throw galleryFull();
         }
-        validated = withVariants(validated);
         Instant now = Instant.now();
         ListingImage saved = insertImage(listing.getId(), validated, count == 0, now);
         touch(listing, now);
@@ -745,7 +805,9 @@ public class ListingService {
         return now.truncatedTo(ChronoUnit.MICROS);
     }
 
-    /** Renders every servable rendition of a validated upload (no database). */
+    /** Renders every servable rendition of a validated upload. Never called
+     *  with a transaction open (no connection held across a decode) — pinned
+     *  by {@code ImageRenderOutsideTransactionIT}. */
     private ValidatedImage withVariants(ValidatedImage image) {
         return new ValidatedImage(image.bytes(), image.contentType(),
                 imageVariants.render(image.bytes(), image.contentType()));
@@ -770,8 +832,17 @@ public class ListingService {
 
     private void requireGalleryCapacity(UUID listingId) {
         if (listingImageRepository.countByListingId(listingId) >= MAX_GALLERY_IMAGES) {
-            throw ApiException.conflict("image_limit_reached",
-                    "A listing can have at most 10 images");
+            throw galleryFull();
+        }
+    }
+
+    private static ApiException galleryFull() {
+        return ApiException.conflict("image_limit_reached", "A listing can have at most 10 images");
+    }
+
+    private void requireListingCapacity(UUID merchantId) {
+        if (listingRepository.countByMerchantId(merchantId) >= maxPerMerchant) {
+            throw ApiException.conflict("listing_limit_reached", "Merchant listing limit reached");
         }
     }
 
@@ -981,8 +1052,8 @@ public class ListingService {
         } catch (IOException e) {
             // Genuine server-side I/O failure reading the upload stream — let
             // the catch-all in GlobalExceptionHandler return 500 with a
-            // sanitised message. Wrapped so the IOException doesn't escape
-            // the @Transactional boundary unchecked.
+            // sanitised message. Wrapped so a checked IOException does not
+            // leak through the service API.
             throw new IllegalStateException("Failed to read listing image", e);
         }
         // OWASP A03: the declared Content-Type is attacker-controlled, so confirm
