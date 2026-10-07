@@ -22,7 +22,8 @@ import java.util.UUID;
  *
  * <p><b>Write side</b> (the upload paths in {@link ListingService}):
  * {@link #render} runs the resizer for every rendition BEFORE the listing
- * transaction writes anything (so no row lock is held across a decode), and
+ * write transaction OPENS (so neither a pooled connection nor a row lock is
+ * held across a decode — the upload paths are not {@code @Transactional}), and
  * {@link #store} writes them in the same transaction as the image row.
  * Replacing an image rewrites its renditions; deleting one deletes them.
  *
@@ -64,7 +65,8 @@ public class ListingImageVariants {
     // Write side
     // ------------------------------------------------------------------
 
-    /** Every rendition of a validated upload. Pure: touches no database. */
+    /** Every rendition of a validated upload. Pure: touches no database, and
+     *  must be called with no transaction open. */
     public List<RenderedVariant> render(byte[] bytes, String contentType) {
         return renderer.renderAll(bytes, contentType);
     }

@@ -27,9 +27,14 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -90,7 +95,33 @@ class ListingServiceTest {
     private ListingDeliveryTownRepository deliveryTownRepository;
     private AuditService auditService;
     private SimpleMeterRegistry registry;
+    private RecordingTransactions transactions;
     private ListingService service;
+
+    /**
+     * Runs each callback inline, like {@code TransactionOperations
+     * .withoutTransaction()}, but knows when one is running — so a test can
+     * tell whether the renderer was called with the write transaction open.
+     */
+    private static final class RecordingTransactions implements TransactionOperations {
+        private boolean open;
+        private int opened;
+
+        @Override
+        public <T> T execute(TransactionCallback<T> action) {
+            if (open) {
+                throw new AssertionError("a nested write transaction was opened");
+            }
+            open = true;
+            opened++;
+            try {
+                TransactionStatus status = new SimpleTransactionStatus();
+                return action.doInTransaction(status);
+            } finally {
+                open = false;
+            }
+        }
+    }
 
     @BeforeEach
     void setUp() {
@@ -111,6 +142,7 @@ class ListingServiceTest {
         when(sellerService.canPublish(any())).thenReturn(true);
         variantRepository = mock(com.innbucks.marketplaceservice.catalog.variant.ListingVariantRepository.class);
         eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+        transactions = new RecordingTransactions();
         stockFake();
         service = newService(true);
     }
@@ -137,6 +169,7 @@ class ListingServiceTest {
                         variantRepository, listingStock, variantsEnabled, 50),
                 ImagePixelBudget.defaults(),
                 imageVariants,
+                transactions,
                 "USD", MAX_PER_MERCHANT);
     }
 
@@ -966,6 +999,146 @@ class ListingServiceTest {
 
         verify(imageVariants, never()).render(any(), any());
         verify(imageVariants, never()).store(any(), any(), any());
+    }
+
+    /**
+     * The renditions are made with NO transaction open (decode + scale +
+     * encode is seconds of CPU for a large photo, and a pooled connection held
+     * across it starves the pool), and every row is written inside exactly one
+     * transaction. All three upload paths. The real-Postgres version, with
+     * Spring's own transaction state as the witness, is
+     * {@code ImageRenderOutsideTransactionIT}.
+     */
+    @Test
+    void everyUploadPathRendersBeforeItsWriteTransactionOpens() {
+        List<Boolean> renderedInTransaction = new ArrayList<>();
+        List<Boolean> storedInTransaction = new ArrayList<>();
+        when(imageVariants.render(any(), any())).thenAnswer(inv -> {
+            renderedInTransaction.add(transactions.open);
+            return List.of();
+        });
+        org.mockito.Mockito.doAnswer(inv -> {
+            storedInTransaction.add(transactions.open);
+            return null;
+        }).when(imageVariants).store(any(), any(), any());
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.maxPosition(listingId)).thenReturn(-1);
+
+        // Multipart create with a primary and two more: three renders.
+        service.create(MERCHANT, createReq("Solar Lantern", null, null),
+                new MockMultipartFile("image", "a.png", "image/png", pngBytes()),
+                List.of(new MockMultipartFile("images", "b.png", "image/png", pngBytes()),
+                        new MockMultipartFile("images", "c.png", "image/png", pngBytes())));
+        // POST /{id}/image into an empty gallery, then as a replace.
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.empty());
+        service.uploadImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "d.png", "image/png", pngBytes()));
+        when(listingImageRepository.findMetaByListingIdAndPrimaryImageTrue(listingId))
+                .thenReturn(Optional.of(meta(UUID.randomUUID(), listingId, true, 0)));
+        service.uploadImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "e.png", "image/png", pngBytes()));
+        // POST /{id}/images.
+        service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "f.png", "image/png", pngBytes()));
+
+        assertEquals(List.of(false, false, false, false, false, false), renderedInTransaction,
+                "no rendition may be rendered with the write transaction open");
+        assertEquals(List.of(true, true, true, true, true, true), storedInTransaction,
+                "every rendition is written inside the write transaction");
+        assertEquals(4, transactions.opened, "one write transaction per upload request");
+    }
+
+    @Test
+    void anUploadToAnotherMerchantsListingRendersNothingAndOpensNoTransaction() {
+        UUID listingId = UUID.randomUUID();
+        Listing foreign = owned(listingId);
+        foreign.setMerchantId(UUID.randomUUID());
+        when(listingRepository.findById(listingId)).thenReturn(Optional.of(foreign));
+
+        assertThrows(ApiException.class, () -> service.uploadImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes())));
+        ApiException ex = assertThrows(ApiException.class, () -> service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes())));
+
+        assertEquals("listing_not_owned", ex.code());
+        verify(imageVariants, never()).render(any(), any());
+        assertEquals(0, transactions.opened);
+    }
+
+    /** The count that decides the 409 (and the primary flag) is the one taken
+     *  inside the write transaction: a gallery that filled up while this
+     *  upload was rendering is still refused, and nothing is written. */
+    @Test
+    void aGalleryThatFilledWhileRenderingIsStillRefused() {
+        UUID listingId = UUID.randomUUID();
+        stubOwned(listingId);
+        when(listingImageRepository.countByListingId(listingId)).thenReturn(9L, 10L);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.addImage(MERCHANT, listingId,
+                new MockMultipartFile("image", "photo.png", "image/png", pngBytes())));
+
+        assertEquals(HttpStatus.CONFLICT, ex.status());
+        assertEquals("image_limit_reached", ex.code());
+        assertEquals("A listing can have at most 10 images", ex.getMessage());
+        verify(imageVariants).render(any(), any());
+        assertEquals(1, transactions.opened);
+        verify(listingImageRepository, never()).save(any());
+        verify(imageVariants, never()).store(any(), any(), any());
+    }
+
+    /** Same for the listing limit on create: checked before the render (so a
+     *  merchant at the limit never costs one) and again next to the insert. */
+    @Test
+    void aListingLimitReachedWhileRenderingIsStillRefused() {
+        when(listingRepository.countByMerchantId(MERCHANT_ID))
+                .thenReturn((long) MAX_PER_MERCHANT - 1, (long) MAX_PER_MERCHANT);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                createReq("Solar Lantern", null, null),
+                new MockMultipartFile("image", "a.png", "image/png", pngBytes()), null));
+
+        assertEquals("listing_limit_reached", ex.code());
+        verify(imageVariants).render(any(), any());
+        verify(listingRepository, never()).save(any());
+        verify(sellerService, never()).ensureExists(any());
+    }
+
+    @Test
+    void aMerchantAtTheListingLimitNeverPaysForARender() {
+        when(listingRepository.countByMerchantId(MERCHANT_ID)).thenReturn((long) MAX_PER_MERCHANT);
+
+        ApiException ex = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                createReq("Solar Lantern", null, null),
+                new MockMultipartFile("image", "a.png", "image/png", pngBytes()), null));
+
+        assertEquals("listing_limit_reached", ex.code());
+        verify(imageVariants, never()).render(any(), any());
+        assertEquals(0, transactions.opened);
+    }
+
+    /** title_invalid and unknown_category still come after the image checks
+     *  (their old order), and before any render. */
+    @Test
+    void aCreateRefusedOnTitleOrCategoryRendersNothing() {
+        when(categoryRepository.existsById("nope")).thenReturn(false);
+
+        ApiException title = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                createReq("<img src=x>", null, null),
+                new MockMultipartFile("image", "a.png", "image/png", pngBytes()), null));
+        ApiException category = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                createReq("Solar Lantern", null, "nope"),
+                new MockMultipartFile("image", "a.png", "image/png", pngBytes()), null));
+        ApiException imageFirst = assertThrows(ApiException.class, () -> service.create(MERCHANT,
+                createReq("<img src=x>", null, "nope"),
+                new MockMultipartFile("image", "a.gif", "image/gif", gifBytes()), null));
+
+        assertEquals("title_invalid", title.code());
+        assertEquals("unknown_category", category.code());
+        assertEquals("unsupported_image_type", imageFirst.code());
+        verify(imageVariants, never()).render(any(), any());
+        assertEquals(0, transactions.opened);
     }
 
     @Test
