@@ -53,7 +53,7 @@
              io.netty:netty-handler) fixed in 4.2.17.Final. The netty-bom import
              pins every netty-* artifact so one property bump cascades cleanly.
              Same pin ticketing-system already carries. -->
-        <netty.version>4.2.18.Final</netty.version>
+        <netty.version>4.2.19.Final</netty.version>
         <!-- jackson-databind: CVE-2026-68497 (HIGH, CPU denial of service via
              unbounded numeric parsing) in BOTH lines the image carries —
              Jackson 3 (tools.jackson, Boot 4's default) at 3.1.5 and Jackson 2
