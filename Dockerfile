@@ -28,8 +28,12 @@ FROM eclipse-temurin:25-jre-alpine AS runtime
 # libexpat >= 2.8.5-r0
 #   CVE-2026-93990 (HIGH) — XML injection via malformed UTF-16 input. The
 #   Release for the #64 merge failed Trivy on the cached 2.8.4-r0.
+# brotli-libs >= 1.2.1-r0
+#   CVE-2026-111497 (HIGH) — out-of-bounds write in the Brotli decoder. The
+#   alpine 3.24.3 base ships 1.2.0-r1 (it failed the same gate in
+#   ticketing-system and InnRewards).
 RUN apk update && apk --no-cache upgrade \
- && apk add --no-cache --upgrade 'libexpat>=2.8.5-r0'
+ && apk add --no-cache --upgrade 'libexpat>=2.8.5-r0' 'brotli-libs>=1.2.1-r0'
 RUN addgroup -S app && adduser -S -G app app \
     && mkdir -p /app \
     && chown -R app:app /app
