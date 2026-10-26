@@ -36,7 +36,7 @@
              caught up. -->
         <tomcat.version>11.0.27</tomcat.version>
         <!-- postgres JDBC: CVE-2026-42198 (HIGH) fixed in 42.7.11+. -->
-        <postgresql.version>42.7.13</postgresql.version>
+        <postgresql.version>42.7.14</postgresql.version>
         <!-- httpcore5 5.4.2 arrives transitively through httpclient5 (the Apache
              HttpClient backing Spring's RestClient) and so lands in the service
              image. Two HIGH DoS CVEs, both fixed in 5.4.3:
