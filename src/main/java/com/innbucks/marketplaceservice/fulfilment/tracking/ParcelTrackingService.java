@@ -14,6 +14,7 @@ import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
 import com.innbucks.marketplaceservice.pickup.CollectionPointViews;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository;
 import com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository;
 import lombok.RequiredArgsConstructor;
@@ -190,7 +191,7 @@ public class ParcelTrackingService {
         // match is waived for SUPER_ADMIN, which already reads every order
         // (GET /marketplace/orders/{id}) and oversees the platform.
         if (!order.getId().equals(orderId)
-                || (!buyer.isSuperAdmin()
+                || (!PlatformReader.readsEverySeller(buyer)
                     && !order.getBuyerUuid().equals(UUID.fromString(buyer.uuid())))) {
             throw notFound();
         }

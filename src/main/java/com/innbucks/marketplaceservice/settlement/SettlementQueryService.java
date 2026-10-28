@@ -5,6 +5,7 @@ import com.innbucks.marketplaceservice.audit.AuditEventType;
 import com.innbucks.marketplaceservice.audit.AuditService;
 import com.innbucks.marketplaceservice.config.MarketZone;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import com.innbucks.marketplaceservice.seller.MarketplaceSeller;
 import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.seller.SellerService;
@@ -70,7 +71,7 @@ public class SettlementQueryService {
 
     @Transactional(readOnly = true)
     public SettlementPageResponse list(AuthenticatedUser caller, EarningsQuery query) {
-        UUID scope = caller.isSuperAdmin() ? query.merchantId() : requireMerchantId(caller);
+        UUID scope = PlatformReader.readsEverySeller(caller) ? query.merchantId() : requireMerchantId(caller);
         Pageable pageable = PageRequest.of(Math.max(query.page(), 0),
                 Math.clamp(query.size(), 1, MAX_PAGE_SIZE),
                 Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
@@ -116,7 +117,7 @@ public class SettlementQueryService {
      *  (owner rule: no read may scope the platform owner out). */
     @Transactional(readOnly = true)
     public SettlementSummaryResponse summary(AuthenticatedUser caller, UUID merchantIdFilter) {
-        if (caller.isSuperAdmin()) {
+        if (PlatformReader.readsEverySeller(caller)) {
             return merchantIdFilter == null ? platformSummary() : summaryFor(merchantIdFilter);
         }
         return summaryFor(requireMerchantId(caller));
@@ -334,7 +335,7 @@ public class SettlementQueryService {
                             LocalDate to, UUID merchantIdFilter) {
         // SUPER_ADMIN may name a merchant; with none named it exports every
         // seller's rows (the merchantId column says whose each one is).
-        UUID merchantId = caller.isSuperAdmin() ? merchantIdFilter : requireMerchantId(caller);
+        UUID merchantId = PlatformReader.readsEverySeller(caller) ? merchantIdFilter : requireMerchantId(caller);
         Page<MerchantSettlement> page = settlementRepository.findAll(
                 earnings(merchantId, status, from, to),
                 PageRequest.of(0, MAX_STATEMENT_ROWS + 1,

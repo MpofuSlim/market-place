@@ -9,6 +9,7 @@ import com.innbucks.marketplaceservice.catalog.dto.ListingStatusRequest;
 import com.innbucks.marketplaceservice.catalog.dto.ListingUpdateRequest;
 import com.innbucks.marketplaceservice.catalog.dto.VariantStockRequest;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
@@ -1719,7 +1720,8 @@ public class ListingController {
             description = "One listing in ANY status (DRAFT, ACTIVE, INACTIVE, ARCHIVED) — the edit "
                     + "screen's read. The public `GET /marketplace/catalog/{id}` serves ACTIVE "
                     + "listings only. A MERCHANT_ADMIN reads their own merchant's listings; "
-                    + "SUPER_ADMIN reads any merchant's.")
+                    + "SUPER_ADMIN reads any merchant's."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The listing",
                     content = @Content(mediaType = "application/json",
@@ -1740,6 +1742,8 @@ public class ListingController {
                             examples = @ExampleObject(name = "not-found", value = EXAMPLE_NOT_FOUND_404)))
     })
     @GetMapping("/{id}")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     public ApiResult<ListingResponse> get(
             @Parameter(description = "Listing id", example = "b4c2f0a8-3d1e-4e5a-9c7b-2f8d6a1e4b93",
                     schema = @Schema(type = "string", format = "uuid"))
@@ -1751,7 +1755,8 @@ public class ListingController {
             description = "All of the caller's merchant's listings (every status), newest first. "
                     + "Page size is clamped to 50. SUPER_ADMIN gets ALL merchants' listings (any "
                     + "status), optionally narrowed with ?merchantId=; for MERCHANT_ADMIN callers "
-                    + "that filter is ignored — their scope always comes from the JWT claim.")
+                    + "that filter is ignored — their scope always comes from the JWT claim."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of listings",
                     content = @Content(mediaType = "application/json",
@@ -1769,6 +1774,8 @@ public class ListingController {
                             @ExampleObject(name = "merchant-scope-missing", value = EXAMPLE_SCOPE_403)}))
     })
     @GetMapping("/mine")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     public ApiResult<ListingPageResponse> listMine(
             @Parameter(description = "Zero-based page index",
                     schema = @Schema(type = "integer", defaultValue = "0"))

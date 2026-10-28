@@ -9,6 +9,7 @@ import com.innbucks.marketplaceservice.seller.dto.PayoutDestinationResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerDecisionRequest;
 import com.innbucks.marketplaceservice.seller.dto.SellerPageResponse;
 import com.innbucks.marketplaceservice.seller.dto.SellerResponse;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -123,9 +124,12 @@ public class SellerAdminController {
             }""";
 
     @GetMapping
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "List seller trust records",
             description = "Oldest first (FIFO). Omit `status` to list every seller. Pre-V8 merchants "
-                    + "were backfilled as PENDING — that backlog is the queue's initial content.")
+                    + "were backfilled as PENDING — that backlog is the queue's initial content."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses(@ApiResponse(responseCode = "200", description = "A page of sellers",
             content = @Content(mediaType = "application/json",
                     examples = @ExampleObject(value = EXAMPLE_QUEUE))))
@@ -282,10 +286,13 @@ public class SellerAdminController {
     }
 
     @GetMapping("/{merchantId}/collection")
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "Whether buyers may collect from this seller",
             description = "V20. `collectionEnabled: false` is a DELIVERY-ONLY seller. A merchant "
                     + "with no seller record (or one who never changed it) reads `true` with "
-                    + "`updatedAt: null` — reading never creates a record.")
+                    + "`updatedAt: null` — reading never creates a record."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The seller's setting",
                     content = @Content(mediaType = "application/json", examples = {

@@ -11,6 +11,7 @@ import com.innbucks.marketplaceservice.settlement.dto.SettlementResponse;
 import com.innbucks.marketplaceservice.settlement.dto.ResolveDisputeRequest;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementPageResponse;
 import com.innbucks.marketplaceservice.settlement.dto.SettlementSummaryResponse;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -175,7 +176,8 @@ public class SettlementController {
     // ------------------------------------------------------------------
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "My settlements",
             description = "One row per parcel: what the platform holds, has cleared, has paid, or "
                     + "has refunded. Newest first. A MERCHANT_ADMIN always reads their own — "
@@ -187,7 +189,8 @@ public class SettlementController {
                     + "`itemSummary` names an option the way the buyer bought it - \"1 x Cotton "
                     + "Crew Tee (XL - Black)\" - and is unchanged for an item without one.\n\n"
                     + "`from` / `to` are calendar days in this market (inclusive), matched on "
-                    + "when the buyer paid. The same filters export as CSV at `/statement`.")
+                    + "when the buyer paid. The same filters export as CSV at `/statement`."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of settlements",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SETTLEMENT_PAGE_200))),
@@ -220,7 +223,8 @@ public class SettlementController {
     }
 
     @GetMapping(value = "/statement", produces = "text/csv")
-    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "My statement (CSV)",
             description = "The same rows as `GET /marketplace/settlements`, same filters, oldest "
                     + "first, as a spreadsheet. Dates and times are this market's wall clock; the "
@@ -229,7 +233,8 @@ public class SettlementController {
                     + "a shorter period.\n\n"
                     + "A MERCHANT_ADMIN always exports their own; SUPER_ADMIN may name a "
                     + "`merchantId`, or leave it out to export every seller (the trailing "
-                    + "`merchantId` column says whose each row is).")
+                    + "`merchantId` column says whose each row is)."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "CSV attachment",
                     content = @Content(mediaType = "text/csv", examples = @ExampleObject(value =
@@ -271,7 +276,8 @@ public class SettlementController {
     }
 
     @GetMapping("/summary")
-    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "Where is my money",
             description = "Parcels and net totals grouped by escrow state, in one read — the "
                     + "seller wallet header. States with nothing in them are simply not listed.\n\n"
@@ -283,7 +289,8 @@ public class SettlementController {
                     + "SUPER_ADMIN may name a `merchantId`, or leave it out for the whole "
                     + "platform: `merchantId` is then null, the totals cover every seller, "
                     + "`lastPayout` is the latest payout run, and `payoutDestinationConfigured` "
-                    + "says whether every seller who is owed money (RELEASABLE) can be paid.")
+                    + "says whether every seller who is owed money (RELEASABLE) can be paid."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The caller's totals",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_SUMMARY_200))),
@@ -300,10 +307,12 @@ public class SettlementController {
     // ------------------------------------------------------------------
 
     @GetMapping("/disputes")
-    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "The dispute queue",
             description = "OLDEST first (FIFO — the buyer who has waited longest is served "
-                    + "first). Default shows OPEN.")
+                    + "first). Default shows OPEN."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses(@ApiResponse(responseCode = "200", description = "One page of disputes",
             content = @Content(examples = @ExampleObject(value = """
                     {
@@ -401,7 +410,8 @@ public class SettlementController {
     }
 
     @GetMapping("/stale")
-    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "Money nobody is moving",
             description = "Settlements still HELD past the staleness threshold "
                     + "(`marketplace.settlement.stale-after-days`, default 14), oldest first.\n\n"
@@ -412,7 +422,8 @@ public class SettlementController {
                     + "declined, and nobody watching.\n\n"
                     + "Nothing is decided for you, deliberately: chase the seller, or have them "
                     + "decline the parcel so the refund queues itself. The gauge "
-                    + "`marketplace.settlements.stale` carries the same count for alerting.")
+                    + "`marketplace.settlements.stale` carries the same count for alerting."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses(@ApiResponse(responseCode = "200", description = "Stale settlements, oldest first",
             content = @Content(examples = @ExampleObject(value = EXAMPLE_SETTLEMENT_PAGE_200))))
     public ResponseEntity<ApiResult<SettlementPageResponse>> stale(

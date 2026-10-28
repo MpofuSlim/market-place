@@ -20,6 +20,7 @@ import com.innbucks.marketplaceservice.delivery.DeliveryTown;
 import com.innbucks.marketplaceservice.delivery.DeliveryTownCatalog;
 import com.innbucks.marketplaceservice.metrics.MarketplaceMetrics;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.seller.SellerService;
 import org.springframework.beans.factory.annotation.Value;
@@ -731,7 +732,7 @@ public class ListingService {
      */
     @NameResolvingRead
     public ListingResponse get(AuthenticatedUser caller, UUID listingId) {
-        return assembler.toResponse(managedListing(caller, listingId));
+        return assembler.toResponse(readableListing(caller, listingId));
     }
 
     /**
@@ -747,7 +748,7 @@ public class ListingService {
         PageRequest pageable = PageRequest.of(Math.max(page, 0),
                 Math.clamp(size, 1, CatalogService.MAX_PAGE_SIZE), NEWEST_FIRST);
         Page<Listing> result;
-        if (caller.isSuperAdmin()) {
+        if (PlatformReader.readsEverySeller(caller)) {
             result = merchantIdFilter == null
                     ? listingRepository.findAll(pageable)
                     : listingRepository.findByMerchantId(merchantIdFilter, pageable);
@@ -937,6 +938,20 @@ public class ListingService {
      * bypasses both — fleet oversight manages any merchant's listing and
      * carries no merchant claim.
      */
+    /**
+     * {@link #managedListing} for the by-id READ: a holder of
+     * {@code marketplace-reports:read} reads any listing too, on a GET only
+     * ({@link PlatformReader#readsEverySeller}). Every write keeps
+     * {@link #managedListing}, which only SUPER_ADMIN bypasses.
+     */
+    private Listing readableListing(AuthenticatedUser caller, UUID listingId) {
+        if (PlatformReader.isReportsReader(caller) && PlatformReader.readsEverySeller(caller)) {
+            return listingRepository.findById(listingId)
+                    .orElseThrow(() -> ApiException.notFound("listing_not_found", "Listing not found"));
+        }
+        return managedListing(caller, listingId);
+    }
+
     private Listing managedListing(AuthenticatedUser caller, UUID listingId) {
         UUID merchantId = caller.isSuperAdmin() ? null : requireMerchantId(caller);
         Listing listing = listingRepository.findById(listingId)

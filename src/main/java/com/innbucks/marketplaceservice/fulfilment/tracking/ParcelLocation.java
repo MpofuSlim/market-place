@@ -1,6 +1,7 @@
 package com.innbucks.marketplaceservice.fulfilment.tracking;
 
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -25,6 +26,11 @@ public record ParcelLocation(
 
     /** Null when no position has been posted for this parcel. */
     public static ParcelLocation of(OrderFulfilment parcel) {
+        // A courier's last fix is usually near the buyer's door: a reports
+        // reader never gets it.
+        if (PlatformReader.redactsBuyerContact()) {
+            return null;
+        }
         if (parcel.getLastLatitude() == null || parcel.getLastLongitude() == null
                 || parcel.getLastLocationAt() == null) {
             return null;

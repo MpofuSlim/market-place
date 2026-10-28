@@ -5,6 +5,7 @@ import com.innbucks.marketplaceservice.api.ApiResult;
 import com.innbucks.marketplaceservice.pickup.dto.CollectionPointRequest;
 import com.innbucks.marketplaceservice.pickup.dto.CollectionPointResponse;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -51,7 +52,11 @@ public class AdminCollectionPointController {
     private final CollectionPointService service;
 
     @GetMapping
-    @Operation(summary = "A seller's collection points", description = "Default first.")
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
+    @Operation(summary = "A seller's collection points",
+            description = "Default first."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses(@ApiResponse(responseCode = "200", description = "The seller's points",
             content = @Content(mediaType = "application/json",
                     examples = @ExampleObject(value = EXAMPLE_LIST_200))))
