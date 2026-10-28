@@ -9,6 +9,7 @@ import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentPageResp
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentStatsResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -210,6 +211,8 @@ public class FulfilmentController {
             }""";
 
     @GetMapping
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "My fulfilment queue",
             description = "Parcels owed by the caller's merchant, OLDEST FIRST so the order that "
                     + "has waited longest never starves behind newer ones. A MERCHANT_ADMIN always "
@@ -230,7 +233,12 @@ public class FulfilmentController {
                     + "file here, so search their phone or reference. The delivery recipient's name "
                     + "and phone match a DELIVERY parcel only. Combine with `status` and "
                     + "`deliveryMethod` - each parcel's own - (e.g. "
-                    + "`status=DISPATCHED&deliveryMethod=COLLECTION` is \"ready to collect\").")
+                    + "`status=DISPATCHED&deliveryMethod=COLLECTION` is \"ready to collect\")."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access). Such a "
+                    + "reader searches by order reference or tracking code only (a phone or a "
+                    + "name is 403 `buyer_lookup_not_allowed`: that look-up is customer "
+                    + "support's), and sees buyer phones masked, street addresses and the "
+                    + "courier's last position withheld.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of the queue",
                     content = @Content(examples = @ExampleObject(value = EXAMPLE_QUEUE_200))),
@@ -243,9 +251,12 @@ public class FulfilmentController {
                                     {"code":"invalid_search","message":"That is not a tracking code - they look like TRK-7F3K9Q2M4X"}"""),
                             @ExampleObject(name = "Unknown filter value", value = """
                                     {"code":"invalid_parameter","message":"'deliveryMethod' has a value we cannot read"}""")})),
-            @ApiResponse(responseCode = "403", description = "Not a seller or admin, or a merchant "
-                    + "token with no merchant scope",
-                    content = @Content(examples = @ExampleObject(value = EXAMPLE_SCOPE_403)))
+            @ApiResponse(responseCode = "403", description = "Not a seller or admin, a merchant "
+                    + "token with no merchant scope, or a reports reader searching by phone or name",
+                    content = @Content(examples = {
+                            @ExampleObject(name = "No merchant scope", value = EXAMPLE_SCOPE_403),
+                            @ExampleObject(name = "Reports reader looking a buyer up", value = """
+                                    {"code":"buyer_lookup_not_allowed","message":"Search by order reference or tracking code. Looking a buyer up by phone or name is done in customer support."}""")}))
     })
     public ResponseEntity<ApiResult<MerchantFulfilmentPageResponse>> queue(
             @Parameter(description = "Narrow to one state. Omitted returns every state — the "
@@ -269,6 +280,8 @@ public class FulfilmentController {
     }
 
     @GetMapping("/stats")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "My fulfilment stats",
             description = "The trust figures shoppers see on the public seller profile — from the "
                     + "SAME computation, so a seller wondering \"why does my profile say 2 days?\" "
@@ -278,7 +291,8 @@ public class FulfilmentController {
                     + "Every figure is COMPUTED from real parcels; small samples stay null rather "
                     + "than pretending two orders make a percentage. A MERCHANT_ADMIN always reads "
                     + "their own merchant — `merchantId` is ignored for them. SUPER_ADMIN may name "
-                    + "one, or leave it out for the same figures over every seller's parcels.")
+                    + "one, or leave it out for the same figures over every seller's parcels."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The caller's stats",
                     content = @Content(examples = @ExampleObject(value = """
@@ -308,6 +322,8 @@ public class FulfilmentController {
     }
 
     @GetMapping("/tracking/{code}")
+    @PreAuthorize("hasAnyRole('MERCHANT_ADMIN','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "Find a parcel by its tracking code",
             description = "The portal's search box: type or scan the `trackingCode` a buyer quotes "
                     + "and get the parcel — status, destination, and where the courier last "
@@ -315,7 +331,8 @@ public class FulfilmentController {
                     + "the characters people confuse (I/L for 1, O for 0) are all forgiven.\n\n"
                     + "A MERCHANT_ADMIN finds only their own business's parcels — another "
                     + "seller's code is the same 404 as a code that does not exist, so the box "
-                    + "cannot be used to probe codes. SUPER_ADMIN finds any.")
+                    + "cannot be used to probe codes. SUPER_ADMIN finds any."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The parcel",
                     content = @Content(examples = @ExampleObject(value = """

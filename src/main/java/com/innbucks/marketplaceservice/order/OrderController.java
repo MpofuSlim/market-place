@@ -10,6 +10,7 @@ import com.innbucks.marketplaceservice.order.dto.CreateOrderRequest;
 import com.innbucks.marketplaceservice.order.dto.OrderPageResponse;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -871,11 +872,16 @@ public class OrderController {
     }
 
     @GetMapping
-    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "List all orders (SUPER_ADMIN)",
             description = "Fleet-oversight read: every buyer's orders, newest first, optionally "
                     + "narrowed with ?buyerUuid=. Page size is hard-capped fleet-wide. SUPER_ADMIN "
-                    + "only — CUSTOMER tokens are refused (buyers read their own via /mine).")
+                    + "only — CUSTOMER tokens are refused (buyers read their own via /mine)."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access). Such a "
+                    + "reader may not filter by `buyerUuid` (403 `buyer_lookup_not_allowed`: one "
+                    + "buyer's history is customer support's look-up), and sees buyer phones "
+                    + "masked and street addresses withheld.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Orders returned",
                     content = @Content(mediaType = "application/json",
@@ -940,11 +946,16 @@ public class OrderController {
                             examples = @ExampleObject(value = """
                                     {"code":"UNAUTHORIZED","message":"Invalid or missing token","data":null}
                                     """))),
-            @ApiResponse(responseCode = "403", description = "Authenticated but not SUPER_ADMIN",
+            @ApiResponse(responseCode = "403", description = "Authenticated but neither SUPER_ADMIN "
+                    + "nor a reports reader, or a reports reader filtering by buyer",
                     content = @Content(mediaType = "application/json",
-                            examples = @ExampleObject(value = """
-                                    {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}
-                                    """)))
+                            examples = {
+                                    @ExampleObject(name = "Insufficient role", value = """
+                                            {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}
+                                            """),
+                                    @ExampleObject(name = "Reports reader filtering by buyer", value = """
+                                            {"code":"buyer_lookup_not_allowed","message":"Filtering orders by buyer is done in customer support."}
+                                            """)}))
     })
     public ResponseEntity<ApiResult<OrderPageResponse>> getAll(
             @Parameter(description = "Optional filter: only this buyer's orders",
@@ -953,16 +964,26 @@ public class OrderController {
             @RequestParam(value = "buyerUuid", required = false) String buyerUuid,
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC)
             Pageable pageable) {
+        if (buyerUuid != null && !buyerUuid.isBlank()
+                && PlatformReader.isReportsReader(CurrentUser.get())) {
+            // One buyer's order history is customer support's look-up, logged there.
+            throw ApiException.forbidden("buyer_lookup_not_allowed",
+                    "Filtering orders by buyer is done in customer support.");
+        }
         return ResponseEntity.ok(ApiResult.ok(OrderPageResponse.from(
                 orderService.getAll(parseOptionalBuyerUuid(buyerUuid), pageable))));
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "Get one order",
             description = "CUSTOMER: owner-scoped — an order that exists but belongs to someone else "
                     + "returns the same 404 as a nonexistent id. SUPER_ADMIN: reads ANY order by id "
-                    + "(fleet oversight, no owner masking).")
+                    + "(fleet oversight, no owner masking)."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access). Such a "
+                    + "reader sees buyer phones masked, street addresses and the gift message "
+                    + "withheld.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Order returned",
                     content = @Content(mediaType = "application/json",
@@ -1347,7 +1368,8 @@ public class OrderController {
     }
 
     @GetMapping("/{id}/fulfilments/{fulfilmentId}/tracking")
-    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')")
+    @PreAuthorize("hasAnyRole('CUSTOMER','SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "Track a parcel",
             description = "The tracking screen for one parcel of your order. `trackingStatus` is "
                     + "one of four stages:\n\n"
@@ -1368,7 +1390,10 @@ public class OrderController {
                     + "the order, from the same server rules; `receivedAt`, `closedAt`, "
                     + "`closedBy`, `disputableUntil` and `paymentReleasesAt` are there too.\n\n"
                     + "Someone else's order, or a parcel that is not on this order, is the same "
-                    + "404 as one that does not exist.")
+                    + "404 as one that does not exist."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access). Such a "
+                    + "reader sees buyer phones masked, street addresses and the courier's live "
+                    + "position withheld.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "The parcel's tracking",
                     content = @Content(mediaType = "application/json",

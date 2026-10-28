@@ -8,6 +8,7 @@ import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentResponse
 import com.innbucks.marketplaceservice.fulfilment.tracking.TrackingCodes;
 import com.innbucks.marketplaceservice.order.MarketOrder;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Predicate;
@@ -74,7 +75,30 @@ public class SellerParcelQueryService {
 
     @Transactional(readOnly = true)
     public MerchantFulfilmentPageResponse queue(AuthenticatedUser caller, ParcelQuery query) {
-        return page(caller.isSuperAdmin() ? query.merchantId() : requireMerchantId(caller), query);
+        if (PlatformReader.isReportsReader(caller)) {
+            refuseBuyerLookup(query.q());
+        }
+        return page(PlatformReader.readsEverySeller(caller) ? query.merchantId() : requireMerchantId(caller),
+                query);
+    }
+
+    /**
+     * A reports reader searches by order reference or tracking code only. A
+     * phone or a name finds one person's parcels, and that look-up belongs to
+     * customer support's logged surface ({@code /marketplace/support/**}).
+     * Decided on the raw shape, before the number is normalised, so a
+     * refused look-up never reaches the parser.
+     */
+    private static void refuseBuyerLookup(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return;
+        }
+        String upper = raw.trim().toUpperCase(Locale.ROOT);
+        if (!upper.startsWith("MKT") && !upper.startsWith("TRK")) {
+            throw ApiException.forbidden("buyer_lookup_not_allowed",
+                    "Search by order reference or tracking code. Looking a buyer up by phone "
+                            + "or name is done in customer support.");
+        }
     }
 
     /**

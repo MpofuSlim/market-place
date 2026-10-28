@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.fulfilment.OrderFulfilmentRepository.Parc
 import com.innbucks.marketplaceservice.fulfilment.dto.MerchantFulfilmentStatsResponse;
 import com.innbucks.marketplaceservice.fulfilment.dto.SellerFulfilmentStats;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -71,7 +72,7 @@ public class SellerFulfilmentStatsService {
                                                          UUID merchantIdFilter) {
         // SUPER_ADMIN oversees the platform (owner rule: no read may scope it
         // out): with no merchant named it reads EVERY seller's parcels.
-        if (caller.isSuperAdmin() && merchantIdFilter == null) {
+        if (PlatformReader.readsEverySeller(caller) && merchantIdFilter == null) {
             return platformStats();
         }
         return statsFor(resolveMerchant(caller, merchantIdFilter));
@@ -159,7 +160,7 @@ public class SellerFulfilmentStatsService {
      * cannot-widen-own-scope stance the queue takes.
      */
     private static UUID resolveMerchant(AuthenticatedUser caller, UUID merchantIdFilter) {
-        if (caller.isSuperAdmin()) {
+        if (PlatformReader.readsEverySeller(caller)) {
             if (merchantIdFilter == null) {
                 throw ApiException.badRequest("merchant_id_required",
                         "merchantId is required when a SUPER_ADMIN reads a merchant's stats");

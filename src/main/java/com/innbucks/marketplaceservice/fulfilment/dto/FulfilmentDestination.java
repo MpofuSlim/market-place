@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.innbucks.marketplaceservice.delivery.DeliveryMethod;
 import com.innbucks.marketplaceservice.fulfilment.OrderFulfilment;
 import com.innbucks.marketplaceservice.order.MarketOrder;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.UUID;
@@ -96,6 +97,13 @@ public record FulfilmentDestination(
     private static FulfilmentDestination of(MarketOrder order, UUID addressId) {
         if (order.getDeliveryLine1() == null) {
             return null;
+        }
+        if (PlatformReader.redactsBuyerContact()) {
+            // A reports reader sees which town a parcel goes to, never the door:
+            // the number masked, street lines and landmark withheld.
+            return new FulfilmentDestination(order.getDeliveryRecipientName(),
+                    PlatformReader.maskPhone(order.getDeliveryRecipientMsisdn()), null, null,
+                    order.getDeliveryCity(), order.getDeliveryArea(), null, addressId);
         }
         return new FulfilmentDestination(order.getDeliveryRecipientName(),
                 order.getDeliveryRecipientMsisdn(), order.getDeliveryLine1(),

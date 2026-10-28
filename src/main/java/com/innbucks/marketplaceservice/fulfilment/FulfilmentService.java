@@ -20,6 +20,7 @@ import com.innbucks.marketplaceservice.order.MarketOrderItem;
 import com.innbucks.marketplaceservice.order.MarketOrderItemRepository;
 import com.innbucks.marketplaceservice.order.MarketOrderRepository;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import com.innbucks.marketplaceservice.settlement.MerchantSettlement;
 import com.innbucks.marketplaceservice.notify.CollectCodeNotifier;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
@@ -234,7 +235,8 @@ public class FulfilmentService {
         }
         OrderFulfilment parcel = fulfilmentRepository.findByTrackingCode(code)
                 .orElseThrow(FulfilmentService::notFound);
-        if (!caller.isSuperAdmin() && !parcel.getMerchantId().equals(requireMerchantId(caller))) {
+        if (!PlatformReader.readsEverySeller(caller)
+                && !parcel.getMerchantId().equals(requireMerchantId(caller))) {
             throw notFound();
         }
         return toMerchantView(parcel);

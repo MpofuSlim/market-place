@@ -35,6 +35,7 @@ import com.innbucks.marketplaceservice.order.dto.OrderRejectionDetails;
 import com.innbucks.marketplaceservice.order.dto.OrderResponse;
 import com.innbucks.marketplaceservice.pickup.CollectionPoint;
 import com.innbucks.marketplaceservice.security.AuthenticatedUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import com.innbucks.marketplaceservice.seller.NameResolvingRead;
 import com.innbucks.marketplaceservice.settlement.SettlementService;
 import lombok.extern.slf4j.Slf4j;
@@ -815,7 +816,7 @@ public class OrderService {
      */
     @NameResolvingRead
     public OrderResponse getOrder(AuthenticatedUser caller, UUID orderId) {
-        MarketOrder order = caller.isSuperAdmin()
+        MarketOrder order = PlatformReader.readsEverySeller(caller)
                 ? orderRepository.findById(orderId)
                         .orElseThrow(() -> ApiException.notFound("order_not_found", "Order not found"))
                 : requireOwn(caller, orderId);

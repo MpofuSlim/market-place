@@ -19,6 +19,7 @@ import com.innbucks.marketplaceservice.settlement.MerchantSettlementRepository;
 import com.innbucks.marketplaceservice.settlement.SettlementDispute;
 import com.innbucks.marketplaceservice.settlement.SettlementDisputeRepository;
 import com.innbucks.marketplaceservice.settlement.dto.DisputeResponse;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
@@ -240,6 +241,11 @@ public class OrderViewAssembler {
     private static OrderResponse.Recipient toRecipient(MarketOrder order) {
         if (order.getRecipientName() == null) {
             return null;
+        }
+        if (PlatformReader.redactsBuyerContact()) {
+            // A reports reader: the number masked, the buyer's own words withheld.
+            return new OrderResponse.Recipient(order.getRecipientName(),
+                    PlatformReader.maskPhone(order.getRecipientMsisdn()), null);
         }
         return new OrderResponse.Recipient(order.getRecipientName(),
                 order.getRecipientMsisdn(), order.getGiftMessage());

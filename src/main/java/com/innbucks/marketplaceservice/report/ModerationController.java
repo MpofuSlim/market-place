@@ -6,6 +6,7 @@ import com.innbucks.marketplaceservice.report.dto.ReportPageResponse;
 import com.innbucks.marketplaceservice.report.dto.ReportResolutionRequest;
 import com.innbucks.marketplaceservice.report.dto.ReportResponse;
 import com.innbucks.marketplaceservice.security.CurrentUser;
+import com.innbucks.marketplaceservice.security.PlatformReader;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -104,11 +105,14 @@ public class ModerationController {
             {"code":"FORBIDDEN","message":"Forbidden - insufficient role","data":null}""";
 
     @GetMapping
+    @PreAuthorize("hasRole('SUPER_ADMIN')"
+            + PlatformReader.OR_CAN_READ)
     @Operation(summary = "List reports (moderation queue)",
             description = "Reports filtered by ?status= (OPEN — the default — RESOLVED or "
                     + "DISMISSED), OLDEST first: the queue is worked FIFO so the oldest complaint "
                     + "never starves. Rows carry a live summary of the reported listing "
-                    + "(title/merchant/current status). Page size is clamped to 50.")
+                    + "(title/merchant/current status). Page size is clamped to 50."
+                    + "\n\nAlso `marketplace-reports:read` (read-only platform access).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "One page of reports",
                     content = @Content(mediaType = "application/json",

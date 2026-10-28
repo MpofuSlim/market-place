@@ -2069,6 +2069,50 @@ scoped on one must give it a way in:
 Still deliberately self-scoped: the buyer's own cart, favourites, addresses and
 `/orders/mine`, and the seller's `/sellers/me/**` — each has an admin twin.
 
+## Read-only platform access (`marketplace-reports:read`)
+
+**A holder of `marketplace-reports:read` reads what SUPER_ADMIN reads across
+every seller, listing and order, through GET endpoints only, and changes
+nothing.** It exists for the developer account on production (`PRODUCT_OFFICER`
+plus a custom role), which saw no Marketplace at all: every cross-seller read
+was SUPER_ADMIN-only. It is a PERMISSION, not a role. user-service's
+`PermissionCatalog` defines it (`Scope.PLATFORM`), it arrives in `perms`, and
+`JwtFilter` grants it as a bare authority after `JwtUtil.extractPermissions`'s
+shape check, so a `ROLE_*` entry can never ride in on it.
+
+- **The gate.** Each granted GET appends `PlatformReader.OR_CAN_READ` to its own
+  `@PreAuthorize` (a method-level one, which replaces a controller's
+  class-level check for that handler only). Granted: listing by id and
+  `/listings/mine`; `/orders`, `/orders/{id}` and its tracking; the parcel queue,
+  `/fulfilments/stats` and the tracking-code lookup; settlements (list, summary,
+  statement CSV, disputes, stale); the moderation queue; the seller directory,
+  a seller's collection setting and collection points.
+- **Never granted:** any write; payout destinations (`/admin/sellers/{id}/payout-destination`)
+  and the payout report, whose columns are the bank and wallet details; the
+  seller's and buyer's own `/me`, cart, address, favourite and `/orders/mine`
+  reads; the support surface; `/internal/**`; the public surfaces.
+- **The scope is GET-only.** A read whose scope was decided by role asks
+  `PlatformReader.readsEverySeller(caller)`, which is true for SUPER_ADMIN and,
+  for the permission, only on a GET or HEAD request (no request at all = false).
+  Write-side ownership checks keep `isSuperAdmin()`; `ListingService.get` has
+  its own `readableListing`, and `managedListing` (every write) is unchanged.
+- **A reader is not SUPER_ADMIN about buyers** (`PlatformReader.isReportsReader`).
+  Buyer look-ups are customer support's, which logs every one: the parcel queue
+  refuses a phone- or name-shaped `q` and `/orders` refuses `buyerUuid`, both
+  `403 buyer_lookup_not_allowed`. Views redact buyer contact for a reader
+  (`redactsBuyerContact`, read from the request's principal at the three
+  factories that build it: `FulfilmentDestination.of`, the order's gift
+  `Recipient`, `ParcelLocation.of`): phones masked to the last four, street
+  lines, landmark, gift message and the courier's position withheld. Town and
+  names stay.
+- **Pinned by** `ReportsReadIsGetOnlyTest` (walks every `@RestController`
+  handler: any handler that is not GET-only and names the permission fails the
+  build, and the granted GETs are an exact list, so a new grant is a reviewed
+  edit there), `PlatformReaderTest` (the GET-only rule) and
+  `ReportsReaderFlowIT` (a real `PRODUCT_OFFICER` token with the permission and
+  no org claims: reads another seller, is refused every write and every
+  excluded read, sees contact redacted; without the permission, nothing).
+
 ## Customer support (`/marketplace/support/**`) — the call center's surface (V22, V23)
 
 Agents find a buyer, an order or a seller, see everything about them, and keep
