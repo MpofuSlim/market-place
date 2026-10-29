@@ -42,7 +42,11 @@ never change either casually.
 > HEAD), push that, and delete any `claude/*` branch that reached the remote.
 > The operator has stated this preference explicitly and permanently — do not
 > ask again, just comply. One feature per branch; push with
-> `git push -u origin <branch>` and open a **draft** PR.
+> `git push -u origin <branch>` and open the PR **ready for review, never as a draft**
+> (owner decision, 2026-10-29). A draft cannot be merged, and taking a PR out
+> of draft is a GraphQL-only GitHub operation, which this account is often
+> refused (`graphql_rate_limit`); that left ticketing PR #570 green but
+> unmergeable.
 
 ## Be critical: build the best product, not the request (owner rule, 2026-10-27)
 
@@ -73,6 +77,13 @@ never change either casually.
   owner a reply they can send back.
 - **Flag it when the owner's own request is the weak link.** Disagreeing with
   evidence is part of the job; silent compliance is not.
+
+## Files for the owner: Markdown only for the frontend (owner rule, 2026-10-29)
+
+**Send a Markdown file (`SendUserFile`) only when it is a frontend integration
+guide.** Everything meant for Tawanda (plans, briefs for another session,
+deploy steps, investigation results, summaries) goes in the chat reply, not a
+file. Don't re-send a file because one line in it changed; say what changed.
 
 ## What this service deliberately does NOT own
 
