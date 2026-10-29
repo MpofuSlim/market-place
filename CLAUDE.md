@@ -42,7 +42,11 @@ never change either casually.
 > HEAD), push that, and delete any `claude/*` branch that reached the remote.
 > The operator has stated this preference explicitly and permanently — do not
 > ask again, just comply. One feature per branch; push with
-> `git push -u origin <branch>` and open a **draft** PR.
+> `git push -u origin <branch>` and open the PR **ready for review, never as a draft**
+> (owner decision, 2026-10-29). A draft cannot be merged, and taking a PR out
+> of draft is a GraphQL-only GitHub operation, which this account is often
+> refused (`graphql_rate_limit`); that left ticketing PR #570 green but
+> unmergeable.
 
 ## Be critical: build the best product, not the request (owner rule, 2026-10-27)
 
