@@ -84,7 +84,7 @@
              (OWASP A03 / stored-XSS defense) on listing write paths.
              1.23.2: CVE-2026-75140 (HIGH, DoS via deeply nested XML) in 1.23.1
              failed the Release Trivy gate on 2026-10-06. -->
-        <jsoup.version>1.23.2</jsoup.version>
+        <jsoup.version>1.24.1</jsoup.version>
     </properties>
 
     <dependencyManagement>
